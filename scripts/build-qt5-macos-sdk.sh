@@ -191,6 +191,11 @@ patch_qtbase_for_modern_cpp() {
             perl -0pi -e 's/\A/#include <CoreGraphics\/CGColorSpace.h>\n/' "${qiosurface_header}"
         fi
     fi
+
+    local configure_script="${source_dir}/configure"
+    if [[ -f "${configure_script}" ]] && ! grep -q 'relpathMangled/qtbase.pro' "${configure_script}"; then
+        perl -0pi -e 's/"\$relpathMangled" --/"\$relpathMangled\/qtbase.pro" --/g' "${configure_script}"
+    fi
 }
 
 source_dir="${BUILD_DIR}/qtbase-src"
@@ -242,7 +247,7 @@ mac_arch="$(mac_arch_for_target "${TARGET}")"
     export MACOSX_DEPLOYMENT_TARGET="${deployment_target}"
     export QMAKE_MACOSX_DEPLOYMENT_TARGET="${deployment_target}"
     export QMAKE_APPLE_DEVICE_ARCHS="${mac_arch}"
-    "${PREFIX}/bin/qmake" "${qttools_source_dir}/src/macdeployqt/macdeployqt.pro" \
+    "${PREFIX}/bin/qmake" "${qttools_source_dir}/src/macdeployqt/macdeployqt/macdeployqt.pro" \
         QMAKE_MACOSX_DEPLOYMENT_TARGET="${deployment_target}" \
         QMAKE_APPLE_DEVICE_ARCHS="${mac_arch}"
     make -j"${JOBS}"

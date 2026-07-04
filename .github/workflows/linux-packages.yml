@@ -46,38 +46,77 @@ permissions:
   contents: write
 
 jobs:
+  plan:
+    name: Select package targets
+    runs-on: ubuntu-22.04
+    outputs:
+      linux_enabled: ${{ steps.matrix.outputs.linux_enabled }}
+      linux_matrix: ${{ steps.matrix.outputs.linux_matrix }}
+      windows_enabled: ${{ steps.matrix.outputs.windows_enabled }}
+      windows_matrix: ${{ steps.matrix.outputs.windows_matrix }}
+      macos_enabled: ${{ steps.matrix.outputs.macos_enabled }}
+      macos_matrix: ${{ steps.matrix.outputs.macos_matrix }}
+    steps:
+      - id: matrix
+        shell: bash
+        env:
+          REQUESTED_TARGET: ${{ github.event_name == 'workflow_dispatch' && inputs.target || 'all' }}
+        run: |
+          set -euo pipefail
+
+          linux_x86_64='{"arch":"x86_64","platform":"linux/amd64","image":"debian:bookworm","qt_secret":"QT_LINUX_X86_64_URL","sdk_release_tag":"qt-sdk-linux-x86_64","sdk_asset":"qt5-linux-x86_64.tar.xz"}'
+          linux_x86_32='{"arch":"x86_32","platform":"linux/386","image":"i386/debian:bookworm","qt_secret":"QT_LINUX_X86_32_URL","sdk_release_tag":"qt-sdk-linux-x86_32","sdk_asset":"qt5-linux-x86_32.tar.xz"}'
+          linux_arm64='{"arch":"arm64","platform":"linux/arm64","image":"arm64v8/debian:bookworm","qt_secret":"QT_LINUX_ARM64_URL","sdk_release_tag":"qt-sdk-linux-arm64","sdk_asset":"qt5-linux-arm64.tar.xz"}'
+          linux_arm32='{"arch":"arm32","platform":"linux/arm/v7","image":"arm32v7/debian:bookworm","qt_secret":"QT_LINUX_ARM32_URL","sdk_release_tag":"qt-sdk-linux-arm32","sdk_asset":"qt5-linux-arm32.tar.xz"}'
+          windows_x86_64='{"arch":"x86_64","mingw_triple":"x86_64-w64-mingw32","apt_package":"g++-mingw-w64-x86-64-posix","qt_secret":"QT_WINDOWS_X86_64_URL","sdk_release_tag":"qt-sdk-windows-x86_64","sdk_asset":"qt5-windows-x86_64.tar.xz"}'
+          windows_x86_32='{"arch":"x86_32","mingw_triple":"i686-w64-mingw32","apt_package":"g++-mingw-w64-i686-posix","qt_secret":"QT_WINDOWS_X86_32_URL","sdk_release_tag":"qt-sdk-windows-x86_32","sdk_asset":"qt5-windows-x86_32.tar.xz"}'
+          macos_x86_64='{"arch":"x86_64","runner":"macos-13","cmake_arch":"x86_64","deployment_target":"10.13","qt_secret":"QT_MACOS_X86_64_URL","sdk_release_tag":"qt-sdk-macos-x86_64","sdk_asset":"qt5-macos-x86_64.tar.xz"}'
+          macos_aarch64='{"arch":"aarch64","runner":"macos-14","cmake_arch":"arm64","deployment_target":"11.0","qt_secret":"QT_MACOS_ARM64_URL","sdk_release_tag":"qt-sdk-macos-aarch64","sdk_asset":"qt5-macos-aarch64.tar.xz"}'
+
+          linux='[]'
+          windows='[]'
+          macos='[]'
+          case "${REQUESTED_TARGET}" in
+            all)
+              linux="[${linux_x86_64},${linux_x86_32},${linux_arm64},${linux_arm32}]"
+              windows="[${windows_x86_64},${windows_x86_32}]"
+              macos="[${macos_x86_64},${macos_aarch64}]"
+              ;;
+            linux-x86_64) linux="[${linux_x86_64}]" ;;
+            linux-x86_32) linux="[${linux_x86_32}]" ;;
+            linux-arm64) linux="[${linux_arm64}]" ;;
+            linux-arm32) linux="[${linux_arm32}]" ;;
+            windows-x86_64) windows="[${windows_x86_64}]" ;;
+            windows-x86_32) windows="[${windows_x86_32}]" ;;
+            macos-x86_64) macos="[${macos_x86_64}]" ;;
+            macos-aarch64) macos="[${macos_aarch64}]" ;;
+            *)
+              echo "unsupported target: ${REQUESTED_TARGET}" >&2
+              exit 2
+              ;;
+          esac
+
+          enabled() {
+            [[ "$1" != "[]" ]] && printf true || printf false
+          }
+
+          {
+            echo "linux_enabled=$(enabled "${linux}")"
+            echo "linux_matrix={\"include\":${linux}}"
+            echo "windows_enabled=$(enabled "${windows}")"
+            echo "windows_matrix={\"include\":${windows}}"
+            echo "macos_enabled=$(enabled "${macos}")"
+            echo "macos_matrix={\"include\":${macos}}"
+          } >> "${GITHUB_OUTPUT}"
+
   linux:
     name: Linux ${{ matrix.arch }} deb/rpm/AppImage
-    if: github.event_name != 'workflow_dispatch' || inputs.target == 'all' || startsWith(inputs.target, 'linux-')
+    needs: plan
+    if: needs.plan.outputs.linux_enabled == 'true'
     runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - arch: x86_64
-            platform: linux/amd64
-            image: debian:bookworm
-            qt_secret: QT_LINUX_X86_64_URL
-            sdk_release_tag: qt-sdk-linux-x86_64
-            sdk_asset: qt5-linux-x86_64.tar.xz
-          - arch: x86_32
-            platform: linux/386
-            image: i386/debian:bookworm
-            qt_secret: QT_LINUX_X86_32_URL
-            sdk_release_tag: qt-sdk-linux-x86_32
-            sdk_asset: qt5-linux-x86_32.tar.xz
-          - arch: arm64
-            platform: linux/arm64
-            image: arm64v8/debian:bookworm
-            qt_secret: QT_LINUX_ARM64_URL
-            sdk_release_tag: qt-sdk-linux-arm64
-            sdk_asset: qt5-linux-arm64.tar.xz
-          - arch: arm32
-            platform: linux/arm/v7
-            image: arm32v7/debian:bookworm
-            qt_secret: QT_LINUX_ARM32_URL
-            sdk_release_tag: qt-sdk-linux-arm32
-            sdk_asset: qt5-linux-arm32.tar.xz
+      matrix: ${{ fromJSON(needs.plan.outputs.linux_matrix) }}
     env:
       QT_ARCHIVE_URL: ${{ secrets[matrix.qt_secret] }}
       QT_ARCHIVE_FALLBACK_URL: https://github.com/${{ github.repository }}/releases/download/${{ matrix.sdk_release_tag }}/${{ matrix.sdk_asset }}
@@ -255,24 +294,12 @@ jobs:
 
   windows:
     name: Windows ${{ matrix.arch }} MinGW exe
-    if: github.event_name != 'workflow_dispatch' || inputs.target == 'all' || startsWith(inputs.target, 'windows-')
+    needs: plan
+    if: needs.plan.outputs.windows_enabled == 'true'
     runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - arch: x86_64
-            mingw_triple: x86_64-w64-mingw32
-            apt_package: g++-mingw-w64-x86-64-posix
-            qt_secret: QT_WINDOWS_X86_64_URL
-            sdk_release_tag: qt-sdk-windows-x86_64
-            sdk_asset: qt5-windows-x86_64.tar.xz
-          - arch: x86_32
-            mingw_triple: i686-w64-mingw32
-            apt_package: g++-mingw-w64-i686-posix
-            qt_secret: QT_WINDOWS_X86_32_URL
-            sdk_release_tag: qt-sdk-windows-x86_32
-            sdk_asset: qt5-windows-x86_32.tar.xz
+      matrix: ${{ fromJSON(needs.plan.outputs.windows_matrix) }}
     env:
       QT_ARCHIVE_URL: ${{ secrets[matrix.qt_secret] }}
       QT_ARCHIVE_FALLBACK_URL: https://github.com/${{ github.repository }}/releases/download/${{ matrix.sdk_release_tag }}/${{ matrix.sdk_asset }}
@@ -399,26 +426,12 @@ jobs:
 
   macos:
     name: macOS ${{ matrix.arch }} dmg
-    if: github.event_name != 'workflow_dispatch' || inputs.target == 'all' || startsWith(inputs.target, 'macos-')
+    needs: plan
+    if: needs.plan.outputs.macos_enabled == 'true'
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - arch: x86_64
-            runner: macos-13
-            cmake_arch: x86_64
-            deployment_target: "10.13"
-            qt_secret: QT_MACOS_X86_64_URL
-            sdk_release_tag: qt-sdk-macos-x86_64
-            sdk_asset: qt5-macos-x86_64.tar.xz
-          - arch: aarch64
-            runner: macos-14
-            cmake_arch: arm64
-            deployment_target: "11.0"
-            qt_secret: QT_MACOS_ARM64_URL
-            sdk_release_tag: qt-sdk-macos-aarch64
-            sdk_asset: qt5-macos-aarch64.tar.xz
+      matrix: ${{ fromJSON(needs.plan.outputs.macos_matrix) }}
     env:
       QT_ARCHIVE_URL: ${{ secrets[matrix.qt_secret] }}
       QT_ARCHIVE_FALLBACK_URL: https://github.com/${{ github.repository }}/releases/download/${{ matrix.sdk_release_tag }}/${{ matrix.sdk_asset }}

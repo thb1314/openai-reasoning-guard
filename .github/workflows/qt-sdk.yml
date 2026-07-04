@@ -50,22 +50,84 @@ permissions:
   contents: write
 
 jobs:
+  plan:
+    name: Select Qt SDK targets
+    runs-on: ubuntu-22.04
+    outputs:
+      linux_enabled: ${{ steps.matrix.outputs.linux_enabled }}
+      linux_matrix: ${{ steps.matrix.outputs.linux_matrix }}
+      windows_enabled: ${{ steps.matrix.outputs.windows_enabled }}
+      windows_matrix: ${{ steps.matrix.outputs.windows_matrix }}
+      macos_enabled: ${{ steps.matrix.outputs.macos_enabled }}
+      macos_matrix: ${{ steps.matrix.outputs.macos_matrix }}
+    steps:
+      - id: matrix
+        shell: bash
+        env:
+          REQUESTED_TARGET: ${{ inputs.target }}
+        run: |
+          set -euo pipefail
+          linux='[]'
+          windows='[]'
+          macos='[]'
+
+          case "${REQUESTED_TARGET}" in
+            all)
+              linux='[{"target":"linux-x86_64","image":"debian:bookworm"},{"target":"linux-x86_32","image":"i386/debian:bookworm"},{"target":"linux-arm64","image":"arm64v8/debian:bookworm"},{"target":"linux-arm32","image":"arm32v7/debian:bookworm"}]'
+              windows='[{"target":"windows-x86_64"},{"target":"windows-x86_32"}]'
+              macos='[{"target":"macos-x86_64","runner":"macos-13"},{"target":"macos-aarch64","runner":"macos-14"}]'
+              ;;
+            linux-x86_64)
+              linux='[{"target":"linux-x86_64","image":"debian:bookworm"}]'
+              ;;
+            linux-x86_32)
+              linux='[{"target":"linux-x86_32","image":"i386/debian:bookworm"}]'
+              ;;
+            linux-arm64)
+              linux='[{"target":"linux-arm64","image":"arm64v8/debian:bookworm"}]'
+              ;;
+            linux-arm32)
+              linux='[{"target":"linux-arm32","image":"arm32v7/debian:bookworm"}]'
+              ;;
+            windows-x86_64)
+              windows='[{"target":"windows-x86_64"}]'
+              ;;
+            windows-x86_32)
+              windows='[{"target":"windows-x86_32"}]'
+              ;;
+            macos-x86_64)
+              macos='[{"target":"macos-x86_64","runner":"macos-13"}]'
+              ;;
+            macos-aarch64)
+              macos='[{"target":"macos-aarch64","runner":"macos-14"}]'
+              ;;
+            *)
+              echo "unsupported target: ${REQUESTED_TARGET}" >&2
+              exit 2
+              ;;
+          esac
+
+          enabled() {
+            [[ "$1" != "[]" ]] && printf true || printf false
+          }
+
+          {
+            echo "linux_enabled=$(enabled "${linux}")"
+            echo "linux_matrix={\"include\":${linux}}"
+            echo "windows_enabled=$(enabled "${windows}")"
+            echo "windows_matrix={\"include\":${windows}}"
+            echo "macos_enabled=$(enabled "${macos}")"
+            echo "macos_matrix={\"include\":${macos}}"
+          } >> "${GITHUB_OUTPUT}"
+
   linux:
     name: Qt SDK ${{ matrix.target }}
-    if: inputs.target == 'all' || startsWith(inputs.target, 'linux-')
+    needs: plan
+    if: needs.plan.outputs.linux_enabled == 'true'
     runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - target: linux-x86_64
-            image: debian:bookworm
-          - target: linux-x86_32
-            image: i386/debian:bookworm
-          - target: linux-arm64
-            image: arm64v8/debian:bookworm
-          - target: linux-arm32
-            image: arm32v7/debian:bookworm
+      matrix: ${{ fromJSON(needs.plan.outputs.linux_matrix) }}
     env:
       BUILD_TARGET: ${{ inputs.target }}
       DOWNLOAD_PROXY: ${{ secrets.DOWNLOAD_PROXY }}
@@ -120,14 +182,12 @@ jobs:
 
   windows-mingw:
     name: Qt SDK ${{ matrix.target }}
-    if: inputs.target == 'all' || startsWith(inputs.target, 'windows-')
+    needs: plan
+    if: needs.plan.outputs.windows_enabled == 'true'
     runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - target: windows-x86_64
-          - target: windows-x86_32
+      matrix: ${{ fromJSON(needs.plan.outputs.windows_matrix) }}
     env:
       BUILD_TARGET: ${{ inputs.target }}
       DOWNLOAD_PROXY: ${{ secrets.DOWNLOAD_PROXY }}
@@ -176,16 +236,12 @@ jobs:
 
   macos:
     name: Qt SDK ${{ matrix.target }}
-    if: inputs.target == 'all' || startsWith(inputs.target, 'macos-')
+    needs: plan
+    if: needs.plan.outputs.macos_enabled == 'true'
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - target: macos-x86_64
-            runner: macos-13
-          - target: macos-aarch64
-            runner: macos-14
+      matrix: ${{ fromJSON(needs.plan.outputs.macos_matrix) }}
     env:
       BUILD_TARGET: ${{ inputs.target }}
       DOWNLOAD_PROXY: ${{ secrets.DOWNLOAD_PROXY }}

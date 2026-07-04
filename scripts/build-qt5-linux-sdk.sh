@@ -311,6 +311,11 @@ patch_qtbase_for_modern_cpp() {
     if [[ -f "${qbytearraymatcher_header}" ]] && ! grep -q '#include <limits>' "${qbytearraymatcher_header}"; then
         sed -i '/#include <QtCore\/qbytearray.h>/a #include <limits>' "${qbytearraymatcher_header}"
     fi
+
+    local configure_script="${source_dir}/configure"
+    if [[ -f "${configure_script}" ]] && ! grep -q 'relpathMangled/qtbase.pro' "${configure_script}"; then
+        sed -i 's/"\$relpathMangled" --/"$relpathMangled\/qtbase.pro" --/g' "${configure_script}"
+    fi
 }
 
 build_openssl() {
