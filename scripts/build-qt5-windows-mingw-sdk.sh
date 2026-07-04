@@ -22,6 +22,7 @@ UPLOAD_PROXY="${UPLOAD_PROXY:-}"
 REPO="${REPO:-thb1314/openai-reasoning-guard}"
 RELEASE_TAG="${RELEASE_TAG:-}"
 SECRET_NAME="${SECRET_NAME:-}"
+ORIGINAL_PATH="${PATH}"
 
 usage() {
     cat <<EOF
@@ -249,6 +250,11 @@ extract_one() {
 
 patch_qtbase_for_modern_mingw() {
     local source_dir="$1"
+    local qfloat16_header="${source_dir}/src/corelib/global/qfloat16.h"
+    if [[ -f "${qfloat16_header}" ]] && ! grep -q '#include <limits>' "${qfloat16_header}"; then
+        sed -i '/#include <QtCore\/qglobal.h>/a #include <limits>' "${qfloat16_header}"
+    fi
+
     local qt_mouse_src="${source_dir}/src/plugins/platforms/windows/qwindowsmousehandler.cpp"
     if [[ -f "${qt_mouse_src}" ]]; then
         sed -i 's/#if defined(Q_CC_MINGW) || !defined(TOUCHEVENTF_MOVE)/#if !defined(TOUCHEVENTF_MOVE)/' "${qt_mouse_src}"
@@ -295,6 +301,7 @@ build_qtbase() {
     mkdir -p "${qt_build}"
     (
         cd "${qt_build}"
+        export PATH="${ORIGINAL_PATH}:${CROSS_BIN_DIR}"
         "${source_dir}/configure" \
             -opensource \
             -confirm-license \

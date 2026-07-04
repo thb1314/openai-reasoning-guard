@@ -59,9 +59,13 @@ jobs:
       matrix:
         include:
           - target: linux-x86_64
+            image: debian:bookworm
           - target: linux-x86_32
+            image: i386/debian:bookworm
           - target: linux-arm64
+            image: arm64v8/debian:bookworm
           - target: linux-arm32
+            image: arm32v7/debian:bookworm
     env:
       BUILD_TARGET: ${{ inputs.target }}
       DOWNLOAD_PROXY: ${{ secrets.DOWNLOAD_PROXY }}
@@ -99,6 +103,7 @@ jobs:
           args=(
             --target "${{ matrix.target }}"
             --docker
+            --docker-image "${{ matrix.image }}"
             --qtbase-source-archive "${RUNNER_TEMP}/qtbase.tar.xz"
             --openssl-source-archive "${RUNNER_TEMP}/openssl.tar.gz"
             --archive

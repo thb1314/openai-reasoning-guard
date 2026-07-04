@@ -56,25 +56,25 @@ jobs:
         include:
           - arch: x86_64
             platform: linux/amd64
-            image: ubuntu:24.04
+            image: debian:bookworm
             qt_secret: QT_LINUX_X86_64_URL
             sdk_release_tag: qt-sdk-linux-x86_64
             sdk_asset: qt5-linux-x86_64.tar.xz
           - arch: x86_32
             platform: linux/386
-            image: ubuntu:24.04
+            image: i386/debian:bookworm
             qt_secret: QT_LINUX_X86_32_URL
             sdk_release_tag: qt-sdk-linux-x86_32
             sdk_asset: qt5-linux-x86_32.tar.xz
           - arch: arm64
             platform: linux/arm64
-            image: ubuntu:24.04
+            image: arm64v8/debian:bookworm
             qt_secret: QT_LINUX_ARM64_URL
             sdk_release_tag: qt-sdk-linux-arm64
             sdk_asset: qt5-linux-arm64.tar.xz
           - arch: arm32
             platform: linux/arm/v7
-            image: ubuntu:24.04
+            image: arm32v7/debian:bookworm
             qt_secret: QT_LINUX_ARM32_URL
             sdk_release_tag: qt-sdk-linux-arm32
             sdk_asset: qt5-linux-arm32.tar.xz
@@ -151,6 +151,7 @@ jobs:
                 patchelf \
                 rpm \
                 unzip \
+                xz-utils \
                 zlib1g
 
               qt_dir=/opt/qt-sdk

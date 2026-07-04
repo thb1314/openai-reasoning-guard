@@ -19,7 +19,7 @@ RELEASE_TAG="${RELEASE_TAG:-}"
 SECRET_NAME="${SECRET_NAME:-}"
 JOBS="${JOBS:-$(nproc 2>/dev/null || echo 2)}"
 DOCKER="${DOCKER:-0}"
-DOCKER_IMAGE="${DOCKER_IMAGE:-ubuntu:24.04}"
+DOCKER_IMAGE="${DOCKER_IMAGE:-}"
 SKIP_DEPS="${SKIP_DEPS:-0}"
 CLEAN="${CLEAN:-0}"
 
@@ -49,7 +49,7 @@ Environment overrides:
   BUILD_DIR=${BUILD_DIR}
   PREFIX=${PREFIX}
   JOBS=${JOBS}
-  DOCKER_IMAGE=${DOCKER_IMAGE}
+  DOCKER_IMAGE=${DOCKER_IMAGE:-target-specific Debian bookworm image}
 EOF
 }
 
@@ -147,6 +147,19 @@ platform_for_target() {
     esac
 }
 
+docker_image_for_target() {
+    case "$1" in
+        linux-x86_64) echo debian:bookworm ;;
+        linux-x86_32) echo i386/debian:bookworm ;;
+        linux-arm64) echo arm64v8/debian:bookworm ;;
+        linux-arm32) echo arm32v7/debian:bookworm ;;
+        *)
+            echo "unknown target: $1" >&2
+            exit 2
+            ;;
+    esac
+}
+
 secret_for_target() {
     case "$1" in
         linux-x86_64) echo QT_LINUX_X86_64_URL ;;
@@ -220,6 +233,7 @@ run_in_docker() {
     require_file "${OPENSSL_SOURCE_ARCHIVE}"
     local platform
     platform="$(platform_for_target "${TARGET}")"
+    local image="${DOCKER_IMAGE:-$(docker_image_for_target "${TARGET}")}"
 
     local staged_sources="${PROJECT_DIR}/.package-work/qt-sdk-source-${TARGET}"
     rm -rf "${staged_sources}"
@@ -234,7 +248,7 @@ run_in_docker() {
         -v "${staged_sources}:/qt-sources:ro" \
         -v "${OUTPUT_ROOT}:/qt-output" \
         -w /workspace \
-        "${DOCKER_IMAGE}" \
+        "${image}" \
         bash -lc "set -euo pipefail; /workspace/scripts/build-qt5-linux-sdk.sh --target '${TARGET}' --qtbase-source-archive /qt-sources/qtbase.tar.xz --openssl-source-archive /qt-sources/openssl.tar.gz --output-root /qt-output --build-dir /qt-output/build-${TARGET} --prefix /qt-output/qt5-${TARGET} --jobs '${JOBS}' --archive"
 
     if ((UPLOAD == 1 || SET_SECRET == 1)); then
@@ -253,12 +267,29 @@ extract_one() {
     tar -xf "${archive}" -C "${dest}" --strip-components=1
 }
 
+patch_qtbase_for_modern_cpp() {
+    local source_dir="$1"
+    local qfloat16_header="${source_dir}/src/corelib/global/qfloat16.h"
+    if [[ -f "${qfloat16_header}" ]] && ! grep -q '#include <limits>' "${qfloat16_header}"; then
+        sed -i '/#include <QtCore\/qglobal.h>/a #include <limits>' "${qfloat16_header}"
+    fi
+}
+
 build_openssl() {
     local source_dir="${BUILD_DIR}/openssl-src"
     extract_one "${OPENSSL_SOURCE_ARCHIVE}" "${source_dir}"
     (
         cd "${source_dir}"
-        ./config --prefix="${PREFIX}" --openssldir="${PREFIX}/ssl" shared no-ssl3 no-comp
+        if [[ "${TARGET}" == "linux-arm32" ]]; then
+            ./Configure linux-generic32 no-asm \
+                --prefix="${PREFIX}" \
+                --openssldir="${PREFIX}/ssl" \
+                shared \
+                no-ssl3 \
+                no-comp
+        else
+            ./config --prefix="${PREFIX}" --openssldir="${PREFIX}/ssl" shared no-ssl3 no-comp
+        fi
         make -j"${JOBS}"
         make install_sw
     )
@@ -268,6 +299,7 @@ build_qtbase() {
     local source_dir="${BUILD_DIR}/qtbase-src"
     local qt_build="${BUILD_DIR}/qtbase-build"
     extract_one "${QTBASE_SOURCE_ARCHIVE}" "${source_dir}"
+    patch_qtbase_for_modern_cpp "${source_dir}"
     rm -rf "${qt_build}"
     mkdir -p "${qt_build}"
     (
