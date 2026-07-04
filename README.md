@@ -293,7 +293,7 @@ SDK workflow 输入：
 | `target` | `windows-x86_64` | 要构建的 SDK 目标；也可以选 `all`，但会非常耗时。 |
 | `qtbase_url` | `https://download.qt.io/archive/qt/5.15/5.15.2/submodules/qtbase-everywhere-src-5.15.2.tar.xz` | Qt 5.15.x qtbase 源码 archive 下载地址。 |
 | `qttools_url` | `https://download.qt.io/archive/qt/5.15/5.15.2/submodules/qttools-everywhere-src-5.15.2.tar.xz` | macOS SDK 需要，用来构建 `macdeployqt`。 |
-| `openssl_url` | `https://www.openssl.org/source/old/1.1.1/openssl-1.1.1w.tar.gz` | Linux 和 Windows MinGW SDK 需要；macOS 使用 SecureTransport，不需要。 |
+| `openssl_url` | `https://github.com/openssl/openssl/releases/download/OpenSSL_1_1_1w/openssl-1.1.1w.tar.gz` | Linux 和 Windows MinGW SDK 需要；macOS 使用 SecureTransport，不需要。 |
 | `release_tag` | 空 | 留空时自动使用 `qt-sdk-<target>`，这是包构建 workflow 的默认 fallback。 |
 | `clean` | `true` | 是否清理 SDK build 目录后重建。 |
 
