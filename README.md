@@ -83,7 +83,7 @@ cmake -S . -B build
 cmake --build build -j2
 ```
 
-默认使用当前环境里的 Qt 5.9.6 SDK：
+默认使用当前环境里的显式 Qt 5 SDK。CI 统一按 Qt 5.15.x 生产 SDK archive：
 
 ```text
 /mnt/data/qt-2080ti-sync/qt5-openssl
@@ -103,7 +103,7 @@ cmake -S . -B build \
 项目提供三个本地打包入口：
 
 - Linux: [scripts/package-linux.sh](scripts/package-linux.sh)，产出 `.deb`、`.rpm`、GUI AppImage 和 CLI AppImage。
-- Windows: [scripts/package-windows-mingw.sh](scripts/package-windows-mingw.sh)，在 Linux 上用 MinGW 交叉编译并产出包含 GUI/CLI exe 和 Qt runtime 的 zip；[scripts/package-windows.ps1](scripts/package-windows.ps1) 保留给原生 Windows/MSVC 构建。
+- Windows: [scripts/package-windows-mingw.sh](scripts/package-windows-mingw.sh)，在 Linux 上用 MinGW 交叉编译并产出 installer `.exe` 和 portable `.zip`；[scripts/package-windows.ps1](scripts/package-windows.ps1) 保留给原生 Windows/MSVC 构建。
 - macOS: [scripts/package-macos.sh](scripts/package-macos.sh)，产出包含 GUI app 和 CLI 的 dmg。
 
 所有平台都按同一个原则处理 Qt：构建和打包只使用显式 Qt SDK，不自动使用系统 Qt5。本机 Linux 默认搜索 `/mnt/data/qt-2080ti-sync` 下的自编译 Qt5；CI 必须通过各架构 Qt SDK archive secret 提供 Qt。
@@ -177,7 +177,12 @@ CI 默认使用 MinGW 路线：在 Linux 上安装 MinGW 编译器，配合 Wind
 - `plugins/platforms/qwindows.dll`：Windows Qt platform plugin。
 - `lib/cmake/Qt5/Qt5Config.cmake` 和 `lib/libQt5Core.a` 或 `lib/libQt5Core.dll.a`：CMake package 和 MinGW import lib。
 
-打包脚本会生成一个 zip，内部包含：
+打包脚本会生成两个文件：
+
+- installer `.exe`：NSIS 安装包。
+- portable `.zip`：单文件便携包，解压后直接运行。
+
+包内包含：
 
 - `openai-reasoning-guard-gui.exe`
 - `openai-reasoning-guard-cli.exe`
@@ -186,7 +191,7 @@ CI 默认使用 MinGW 路线：在 Linux 上安装 MinGW 编译器，配合 Wind
 Linux/MinGW 示例：
 
 ```bash
-QT_ROOT=/path/to/qt-5.9.6-mingw64-posix \
+QT_ROOT=/path/to/qt-5.15.x-mingw64-posix \
 MINGW_TRIPLE=x86_64-w64-mingw32 \
 scripts/package-windows-mingw.sh --arch x86_64 --clean
 ```
@@ -194,7 +199,8 @@ scripts/package-windows-mingw.sh --arch x86_64 --clean
 输出示例：
 
 ```text
-dist/openai-reasoning-guard-windows-x86_64-0.1.0.zip
+dist/openai-reasoning-guard-windows-x86_64-0.1.0-installer.exe
+dist/openai-reasoning-guard-windows-x86_64-0.1.0-portable.zip
 ```
 
 原生 Windows/MSVC 路线仍可用，适合已有 MSVC Qt SDK 的机器：
@@ -241,8 +247,8 @@ dist/openai-reasoning-guard-macos-aarch64-0.1.0.dmg
 | Linux x86_32 | `linux/386` Docker | deb、rpm、GUI AppImage、CLI AppImage | `QT_LINUX_X86_32_URL` |
 | Linux arm64 | `linux/arm64` Docker | deb、rpm、GUI AppImage、CLI AppImage | `QT_LINUX_ARM64_URL` |
 | Linux arm32 | `linux/arm/v7` Docker | deb、rpm、GUI AppImage、CLI AppImage | `QT_LINUX_ARM32_URL` |
-| Windows x86_64 | Ubuntu runner + MinGW `x86_64-w64-mingw32` | zip，内含 x86_64 exe | `QT_WINDOWS_X86_64_URL` |
-| Windows x86_32 | Ubuntu runner + MinGW `i686-w64-mingw32` | zip，内含 x86 exe | `QT_WINDOWS_X86_32_URL` |
+| Windows x86_64 | Ubuntu runner + MinGW `x86_64-w64-mingw32` | installer `.exe`、portable `.zip` | `QT_WINDOWS_X86_64_URL` |
+| Windows x86_32 | Ubuntu runner + MinGW `i686-w64-mingw32` | installer `.exe`、portable `.zip` | `QT_WINDOWS_X86_32_URL` |
 | macOS x86_64 | `macos-13` | dmg | `QT_MACOS_X86_64_URL` |
 | macOS aarch64 | `macos-14` | dmg | `QT_MACOS_ARM64_URL` |
 
@@ -285,16 +291,17 @@ SDK workflow 输入：
 | 输入 | 示例 | 说明 |
 | --- | --- | --- |
 | `target` | `windows-x86_64` | 要构建的 SDK 目标；也可以选 `all`，但会非常耗时。 |
-| `qtbase_url` | `https://.../qtbase-opensource-src-5.9.6.tar.xz` | qtbase 源码 archive 下载地址。macOS aarch64 需要使用支持 Apple Silicon 的 Qt 5 源码，例如 Qt 5.15.x。 |
-| `openssl_url` | `https://.../openssl-1.0.2u.tar.gz` | Linux 和 Windows MinGW SDK 需要；macOS 使用 SecureTransport，不需要。 |
+| `qtbase_url` | `https://download.qt.io/archive/qt/5.15/5.15.2/submodules/qtbase-everywhere-src-5.15.2.tar.xz` | Qt 5.15.x qtbase 源码 archive 下载地址。 |
+| `qttools_url` | `https://download.qt.io/archive/qt/5.15/5.15.2/submodules/qttools-everywhere-src-5.15.2.tar.xz` | macOS SDK 需要，用来构建 `macdeployqt`。 |
+| `openssl_url` | `https://www.openssl.org/source/old/1.1.1/openssl-1.1.1w.tar.gz` | Linux 和 Windows MinGW SDK 需要；macOS 使用 SecureTransport，不需要。 |
 | `release_tag` | 空 | 留空时自动使用 `qt-sdk-<target>`，这是包构建 workflow 的默认 fallback。 |
 | `clean` | `true` | 是否清理 SDK build 目录后重建。 |
 
-Linux 可以直接从本机已有 Qt 源码构建。当前机器上的源码默认路径是：
+Linux 可以直接从 Qt 5.15.x qtbase 和 OpenSSL 1.1.1w 源码构建。脚本默认路径是：
 
 ```text
-/mnt/data/qt-2080ti-sync/archives/qtbase-opensource-src-5.9.6.tar.xz
-/mnt/data/qt-2080ti-sync/archives/openssl-1.0.2u.tar.gz
+/mnt/data/qt-2080ti-sync/archives/qtbase-everywhere-src-5.15.2.tar.xz
+/mnt/data/qt-2080ti-sync/archives/openssl-1.1.1w.tar.gz
 ```
 
 本机 x86_64 Linux 构建并上传：
@@ -308,7 +315,7 @@ scripts/build-qt5-linux-sdk.sh \
   --upload-proxy http://127.0.0.1:7890
 ```
 
-Linux 其它架构通过 Docker/QEMU 在目标架构 Debian 容器里编译同一份源码：
+Linux 其它架构通过 Docker/QEMU 在目标架构 Ubuntu 容器里编译同一份源码：
 
 ```bash
 scripts/build-qt5-linux-sdk.sh --target linux-x86_32 --docker --archive --upload --set-secret
@@ -327,31 +334,33 @@ scripts/archive-qt-sdk.sh \
   --upload-proxy http://127.0.0.1:7890
 ```
 
-macOS 在对应架构 runner/机器上原生编译。x86_64 可以使用旧 Qt 5.9.6；aarch64 需要 Qt 5.15.x 或其它支持 Apple Silicon 的 Qt 5 源码：
+macOS 在对应架构 runner/机器上原生编译，统一使用 Qt 5.15.x 的 qtbase + qttools 源码：
 
 ```bash
 scripts/build-qt5-macos-sdk.sh \
   --target macos-x86_64 \
-  --qtbase-source-archive /path/to/qtbase-opensource-src-5.9.6.tar.xz \
+  --qtbase-source-archive /path/to/qtbase-everywhere-src-5.15.2.tar.xz \
+  --qttools-source-archive /path/to/qttools-everywhere-src-5.15.2.tar.xz \
   --archive \
   --upload \
   --set-secret
 
 scripts/build-qt5-macos-sdk.sh \
   --target macos-aarch64 \
-  --qtbase-source-archive /path/to/qtbase-opensource-src-5.15.x.tar.xz \
+  --qtbase-source-archive /path/to/qtbase-everywhere-src-5.15.x.tar.xz \
+  --qttools-source-archive /path/to/qttools-everywhere-src-5.15.x.tar.xz \
   --archive \
   --upload \
   --set-secret
 ```
 
-Windows CI 推荐使用 MinGW cross Qt SDK。2080ti 上 `qt-5.9.6-mingw64-posix` 的价值主要是参考它的结构：Linux host `moc/rcc/uic` 加 Windows target `Qt5*.dll/import libs`。正式 SDK 应优先由 `build-qt5-windows-mingw-sdk.sh` 或 `Qt SDK Archives` workflow 从源码生成，避免绑定某台机器的手工目录。
+Windows CI 推荐使用 MinGW cross Qt SDK。SDK 结构是 Linux host `moc/rcc/uic` 加 Windows target `Qt5*.dll/import libs`。正式 SDK 应优先由 `build-qt5-windows-mingw-sdk.sh` 或 `Qt SDK Archives` workflow 从源码生成，避免绑定某台机器的手工目录。
 
 已有可用 SDK 时，也可以只归档上传：
 
 ```bash
 scripts/archive-qt-sdk.sh \
-  --qt-root /path/to/qt-5.9.6-mingw64-posix \
+  --qt-root /path/to/qt-5.15.x-mingw64-posix \
   --target windows-x86_64 \
   --mingw-runtime-dir /path/to/mingw-gcc-runtime \
   --mingw-runtime-dir /path/to/mingw-sysroot/lib \
@@ -376,8 +385,8 @@ scripts/build-qt5-windows-mingw-sdk.sh \
 脚本默认使用本机已有源码：
 
 ```text
-/mnt/data/qt-2080ti-sync/archives/qtbase-opensource-src-5.9.6.tar.xz
-/mnt/data/qt-2080ti-sync/archives/openssl-1.0.2u.tar.gz
+/mnt/data/qt-2080ti-sync/archives/qtbase-everywhere-src-5.15.2.tar.xz
+/mnt/data/qt-2080ti-sync/archives/openssl-1.1.1w.tar.gz
 ```
 
 它会按 Qt cross build 方式生成 Linux host `moc/rcc/uic` 和 Windows target `Qt5*.dll`，并用 `-openssl-runtime` 打开 QtNetwork HTTPS 支持。x86_32 使用：
@@ -391,7 +400,7 @@ scripts/build-qt5-windows-mingw-sdk.sh --target windows-x86_32 --archive --uploa
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/build-qt5-windows-sdk.ps1 `
   -Target windows-x86_64 `
-  -QtBaseSourceArchive C:\src\qtbase-opensource-src-5.9.6.tar.xz `
+  -QtBaseSourceArchive C:\src\qtbase-everywhere-src-5.15.2.tar.xz `
   -OpenSslRoot C:\OpenSSL-Win64 `
   -Archive `
   -Upload `

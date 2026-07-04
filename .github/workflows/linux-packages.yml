@@ -132,9 +132,21 @@ jobs:
                 libice-dev \
                 libsm-dev \
                 libx11-dev \
+                libx11-xcb-dev \
                 libxau-dev \
                 libxcb1-dev \
+                libxcb-render0-dev \
+                libxcb-render-util0-dev \
+                libxcb-shape0-dev \
+                libxcb-shm0-dev \
+                libxcb-sync-dev \
+                libxcb-xfixes0-dev \
+                libxcb-xinerama0-dev \
+                libxcb-xkb-dev \
                 libxdmcp-dev \
+                libxext-dev \
+                libxkbcommon-dev \
+                libxkbcommon-x11-dev \
                 uuid-dev \
                 patchelf \
                 rpm \
@@ -278,6 +290,7 @@ jobs:
             curl \
             file \
             ${{ matrix.apt_package }} \
+            nsis \
             unzip \
             xz-utils \
             zip
@@ -341,7 +354,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: openai-reasoning-guard-windows-${{ matrix.arch }}
-          path: dist/windows-${{ matrix.arch }}/*windows-${{ matrix.arch }}*.zip
+          path: |
+            dist/windows-${{ matrix.arch }}/*windows-${{ matrix.arch }}*.zip
+            dist/windows-${{ matrix.arch }}/*windows-${{ matrix.arch }}*.exe
           if-no-files-found: error
 
       - name: Publish Windows package to GitHub Release
@@ -354,7 +369,7 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
-          files=(dist/windows-${{ matrix.arch }}/*windows-${{ matrix.arch }}*.zip)
+          files=(dist/windows-${{ matrix.arch }}/*windows-${{ matrix.arch }}*.zip dist/windows-${{ matrix.arch }}/*windows-${{ matrix.arch }}*.exe)
           shopt -u nullglob
           if ((${#files[@]} == 0)); then
             echo "No Windows package files found for release upload" >&2
@@ -385,12 +400,14 @@ jobs:
           - arch: x86_64
             runner: macos-13
             cmake_arch: x86_64
+            deployment_target: "10.13"
             qt_secret: QT_MACOS_X86_64_URL
             sdk_release_tag: qt-sdk-macos-x86_64
             sdk_asset: qt5-macos-x86_64.tar.xz
           - arch: aarch64
             runner: macos-14
             cmake_arch: arm64
+            deployment_target: "11.0"
             qt_secret: QT_MACOS_ARM64_URL
             sdk_release_tag: qt-sdk-macos-aarch64
             sdk_asset: qt5-macos-aarch64.tar.xz
@@ -450,6 +467,7 @@ jobs:
           cmake -S . -B "${build_dir}" \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_OSX_ARCHITECTURES="${{ matrix.cmake_arch }}" \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET="${{ matrix.deployment_target }}" \
             -DNET_TUNNEL_QT_SDK_ROOT="${QT_ROOT}" \
             -DNET_TUNNEL_BUILD_TESTS=ON
           cmake --build "${build_dir}" -j"$(sysctl -n hw.ncpu)"

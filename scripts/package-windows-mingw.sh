@@ -20,12 +20,14 @@ JOBS="${JOBS:-$(nproc 2>/dev/null || echo 2)}"
 BUILD_TESTS="${BUILD_TESTS:-OFF}"
 SKIP_BUILD="${SKIP_BUILD:-0}"
 CLEAN="${CLEAN:-0}"
+BUILD_INSTALLER="${BUILD_INSTALLER:-1}"
+MAKENSIS="${MAKENSIS:-}"
 
 usage() {
     cat <<EOF
 Usage: $(basename "$0") [--arch x86_64|x86_32] [--qt-root /path/to/qt] [--clean] [--skip-build]
 
-Cross-build Windows zip packages with MinGW from Linux.
+Cross-build Windows portable zip and installer exe packages with MinGW from Linux.
 
 The Qt SDK must be a MinGW target SDK with Linux host Qt tools:
   bin/moc, bin/rcc, bin/uic
@@ -45,6 +47,8 @@ Environment overrides:
   DIST_DIR=${DIST_DIR}
   WORK_DIR=${WORK_DIR}
   BUILD_TESTS=OFF
+  BUILD_INSTALLER=1
+  MAKENSIS=/path/to/makensis
 EOF
 }
 
@@ -75,6 +79,9 @@ while (($# > 0)); do
             ;;
         --skip-build)
             SKIP_BUILD=1
+            ;;
+        --no-installer)
+            BUILD_INSTALLER=0
             ;;
         -h|--help)
             usage
@@ -149,6 +156,18 @@ find_required_tool() {
         echo "Unable to find MinGW tool: ${MINGW_TRIPLE}-${name}" >&2
         exit 2
     fi
+}
+
+find_makensis() {
+    if [[ -n "${MAKENSIS}" && -x "${MAKENSIS}" ]]; then
+        printf '%s\n' "${MAKENSIS}"
+        return 0
+    fi
+    if command -v makensis >/dev/null 2>&1; then
+        command -v makensis
+        return 0
+    fi
+    return 1
 }
 
 prepare_cross_path() {
@@ -278,7 +297,8 @@ if ((SKIP_BUILD == 0)); then
 fi
 
 stage_dir="${WORK_DIR}/${PACKAGE_ID}-windows-${PACKAGE_ARCH}"
-zip_path="${DIST_DIR}/${PACKAGE_ID}-windows-${PACKAGE_ARCH}-${VERSION}.zip"
+zip_path="${DIST_DIR}/${PACKAGE_ID}-windows-${PACKAGE_ARCH}-${VERSION}-portable.zip"
+installer_path="${DIST_DIR}/${PACKAGE_ID}-windows-${PACKAGE_ARCH}-${VERSION}-installer.exe"
 rm -rf "${stage_dir}"
 mkdir -p "${stage_dir}/plugins/platforms" "${stage_dir}/fonts"
 
@@ -334,10 +354,55 @@ rm -f "${zip_path}"
     zip -qr "${zip_path}" .
 )
 
+if ((BUILD_INSTALLER == 1)); then
+    if makensis_path="$(find_makensis)"; then
+        nsis_script="${WORK_DIR}/${PACKAGE_ID}-${PACKAGE_ARCH}.nsi"
+        nsis_install_dir='$PROGRAMFILES'
+        if [[ "${PACKAGE_ARCH}" == "x86_64" ]]; then
+            nsis_install_dir='$PROGRAMFILES64'
+        fi
+        cat > "${nsis_script}" <<EOF
+Unicode true
+Name "${APP_NAME}"
+OutFile "${installer_path}"
+InstallDir "${nsis_install_dir}\\${APP_NAME}"
+RequestExecutionLevel admin
+SetCompressor /SOLID lzma
+
+Page directory
+Page instfiles
+UninstPage uninstConfirm
+UninstPage instfiles
+
+Section "Install"
+  SetOutPath "\$INSTDIR"
+  File /r "${stage_dir}/*"
+  CreateDirectory "\$SMPROGRAMS\\${APP_NAME}"
+  CreateShortCut "\$SMPROGRAMS\\${APP_NAME}\\${APP_NAME}.lnk" "\$INSTDIR\\${PACKAGE_ID}-gui.exe"
+  CreateShortCut "\$SMPROGRAMS\\${APP_NAME}\\CLI.lnk" "\$INSTDIR\\${PACKAGE_ID}-cli.exe"
+  WriteUninstaller "\$INSTDIR\\Uninstall.exe"
+SectionEnd
+
+Section "Uninstall"
+  Delete "\$SMPROGRAMS\\${APP_NAME}\\${APP_NAME}.lnk"
+  Delete "\$SMPROGRAMS\\${APP_NAME}\\CLI.lnk"
+  RMDir "\$SMPROGRAMS\\${APP_NAME}"
+  RMDir /r "\$INSTDIR"
+SectionEnd
+EOF
+        "${makensis_path}" "${nsis_script}"
+    else
+        echo "warning: makensis not found; installer exe was not built" >&2
+    fi
+fi
+
 echo "Package: ${PACKAGE_ID}"
 echo "App name: ${APP_NAME}"
 echo "Version: ${VERSION}"
 echo "Arch: ${PACKAGE_ARCH}"
 echo "Qt root: ${QT_ROOT}"
 echo "MinGW triple: ${MINGW_TRIPLE}"
-echo "Built Windows MinGW package: ${zip_path}"
+echo "Built Windows portable package: ${zip_path}"
+if [[ -f "${installer_path}" ]]; then
+    echo "Built Windows installer: ${installer_path}"
+fi

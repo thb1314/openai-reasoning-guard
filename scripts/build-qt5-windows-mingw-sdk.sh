@@ -5,8 +5,8 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 
 TARGET="${TARGET:-windows-x86_64}"
-QTBASE_SOURCE_ARCHIVE="${QTBASE_SOURCE_ARCHIVE:-/mnt/data/qt-2080ti-sync/archives/qtbase-opensource-src-5.9.6.tar.xz}"
-OPENSSL_SOURCE_ARCHIVE="${OPENSSL_SOURCE_ARCHIVE:-/mnt/data/qt-2080ti-sync/archives/openssl-1.0.2u.tar.gz}"
+QTBASE_SOURCE_ARCHIVE="${QTBASE_SOURCE_ARCHIVE:-/mnt/data/qt-2080ti-sync/archives/qtbase-everywhere-src-5.15.2.tar.xz}"
+OPENSSL_SOURCE_ARCHIVE="${OPENSSL_SOURCE_ARCHIVE:-/mnt/data/qt-2080ti-sync/archives/openssl-1.1.1w.tar.gz}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-${PROJECT_DIR}/dist/qt-sdk-build}"
 BUILD_DIR="${BUILD_DIR:-}"
 PREFIX="${PREFIX:-}"
@@ -27,7 +27,7 @@ usage() {
     cat <<EOF
 Usage: $(basename "$0") --target windows-x86_64 [--archive] [--upload] [--set-secret]
 
-Build a Windows MinGW Qt 5 SDK from qtbase source on Linux. The resulting SDK
+Build a Windows MinGW Qt 5.15.x SDK from qtbase source on Linux. The resulting SDK
 contains Linux host tools (moc/rcc/uic) and Windows target DLL/import libs, so
 GitHub Actions can cross-build Windows packages from an Ubuntu runner.
 
@@ -300,6 +300,7 @@ build_qtbase() {
             -confirm-license \
             -release \
             -shared \
+            -no-pch \
             -c++std c++11 \
             -opengl desktop \
             -prefix "${PREFIX}" \

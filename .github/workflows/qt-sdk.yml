@@ -19,12 +19,19 @@ on:
           - "macos-aarch64"
           - "all"
       qtbase_url:
-        description: "Download URL for qtbase source archive; use Qt 5.15.x or newer Qt 5 for macos-aarch64"
+        description: "Download URL for Qt 5.15.x qtbase source archive"
         required: true
+        default: "https://download.qt.io/archive/qt/5.15/5.15.2/submodules/qtbase-everywhere-src-5.15.2.tar.xz"
+        type: string
+      qttools_url:
+        description: "Download URL for Qt 5.15.x qttools source archive; required for macOS SDKs"
+        required: false
+        default: "https://download.qt.io/archive/qt/5.15/5.15.2/submodules/qttools-everywhere-src-5.15.2.tar.xz"
         type: string
       openssl_url:
         description: "Download URL for OpenSSL source archive; required for Linux and Windows MinGW SDKs"
         required: false
+        default: "https://www.openssl.org/source/old/1.1.1/openssl-1.1.1w.tar.gz"
         type: string
       release_tag:
         description: "Optional override; default is qt-sdk-<target>. Avoid overriding when target=all"
@@ -188,11 +195,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          if [[ -z "${{ inputs.qttools_url }}" ]]; then
+            echo "qttools_url is required for macOS Qt SDK builds because macdeployqt is needed" >&2
+            exit 2
+          fi
           curl_args=(-L --fail --connect-timeout 30)
           if [[ -n "${DOWNLOAD_PROXY:-}" ]]; then
             curl_args+=(--proxy "${DOWNLOAD_PROXY}")
           fi
           curl "${curl_args[@]}" -o "${RUNNER_TEMP}/qtbase.tar.xz" "${{ inputs.qtbase_url }}"
+          curl "${curl_args[@]}" -o "${RUNNER_TEMP}/qttools.tar.xz" "${{ inputs.qttools_url }}"
 
       - name: Build and publish macOS Qt SDK
         if: env.BUILD_TARGET == 'all' || env.BUILD_TARGET == matrix.target
@@ -202,6 +214,7 @@ jobs:
           args=(
             --target "${{ matrix.target }}"
             --qtbase-source-archive "${RUNNER_TEMP}/qtbase.tar.xz"
+            --qttools-source-archive "${RUNNER_TEMP}/qttools.tar.xz"
             --archive
             --upload
           )

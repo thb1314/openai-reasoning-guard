@@ -76,6 +76,17 @@ cmake_arch_for() {
     esac
 }
 
+minimum_macos_version_for() {
+    if [[ -n "${MACOSX_DEPLOYMENT_TARGET:-}" ]]; then
+        echo "${MACOSX_DEPLOYMENT_TARGET}"
+        return
+    fi
+    case "$1" in
+        aarch64) echo "11.0" ;;
+        *) echo "10.13" ;;
+    esac
+}
+
 require_tool() {
     local tool="$1"
     if ! command -v "${tool}" >/dev/null 2>&1; then
@@ -138,9 +149,12 @@ build_project() {
         return
     fi
     local cmake_arch="${CMAKE_OSX_ARCHITECTURES:-$(cmake_arch_for "${ARCH}")}"
+    local deployment_target
+    deployment_target="$(minimum_macos_version_for "${ARCH}")"
     cmake -S "${PROJECT_DIR}" -B "${BUILD_DIR}" \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_OSX_ARCHITECTURES="${cmake_arch}" \
+        -DCMAKE_OSX_DEPLOYMENT_TARGET="${deployment_target}" \
         -DNET_TUNNEL_BUILD_TESTS="${BUILD_TESTS}" \
         -DNET_TUNNEL_QT_SDK_ROOT="${QT_ROOT_RESOLVED}"
     cmake --build "${BUILD_DIR}" -j"${JOBS}"
@@ -189,7 +203,7 @@ stage_app_bundle() {
   <key>CFBundleIconFile</key>
   <string>openai-reasoning-guard</string>
   <key>LSMinimumSystemVersion</key>
-  <string>10.13</string>
+  <string>$(minimum_macos_version_for "${ARCH}")</string>
   <key>NSHighResolutionCapable</key>
   <true/>
 </dict>

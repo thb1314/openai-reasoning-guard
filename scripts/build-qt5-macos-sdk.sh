@@ -10,6 +10,7 @@ case "${TARGET}" in
 esac
 
 QTBASE_SOURCE_ARCHIVE="${QTBASE_SOURCE_ARCHIVE:-}"
+QTTOOLS_SOURCE_ARCHIVE="${QTTOOLS_SOURCE_ARCHIVE:-}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-${PROJECT_DIR}/dist/qt-sdk-build}"
 BUILD_DIR="${BUILD_DIR:-}"
 PREFIX="${PREFIX:-}"
@@ -24,22 +25,22 @@ RELEASE_TAG="${RELEASE_TAG:-}"
 
 usage() {
     cat <<EOF
-Usage: $(basename "$0") --qtbase-source-archive /path/to/qtbase.tar.xz --target macos-x86_64 [--archive] [--upload] [--set-secret]
+Usage: $(basename "$0") --qtbase-source-archive /path/to/qtbase.tar.xz --qttools-source-archive /path/to/qttools.tar.xz --target macos-x86_64 [--archive] [--upload] [--set-secret]
 
-Build a reusable Qt 5 macOS SDK from qtbase source. Run this on the matching
+Build a reusable Qt 5.15.x macOS SDK from qtbase and qttools source. Run this on the matching
 macOS host:
   macos-x86_64   on Intel macOS runner/host
   macos-aarch64  on Apple Silicon macOS runner/host
 
-Use a Qt 5 source tree that supports the requested CPU architecture. The
-project can use Qt 5.9.6 for Intel macOS, but Apple Silicon requires a newer
-Qt 5 SDK/source with arm64 support.
+Use a Qt 5 source tree that supports the requested CPU architecture.
 
 Examples:
-  scripts/build-qt5-macos-sdk.sh --target macos-x86_64 --qtbase-source-archive ~/qtbase-opensource-src-5.9.6.tar.xz --archive
-  scripts/build-qt5-macos-sdk.sh --target macos-aarch64 --qtbase-source-archive ~/qtbase-opensource-src-5.15.x.tar.xz --archive --upload --set-secret
+  scripts/build-qt5-macos-sdk.sh --target macos-x86_64 --qtbase-source-archive ~/qtbase-everywhere-src-5.15.2.tar.xz --qttools-source-archive ~/qttools-everywhere-src-5.15.2.tar.xz --archive
+  scripts/build-qt5-macos-sdk.sh --target macos-aarch64 --qtbase-source-archive ~/qtbase-everywhere-src-5.15.x.tar.xz --qttools-source-archive ~/qttools-everywhere-src-5.15.x.tar.xz --archive --upload --set-secret
 
 Environment overrides:
+  QTBASE_SOURCE_ARCHIVE=${QTBASE_SOURCE_ARCHIVE}
+  QTTOOLS_SOURCE_ARCHIVE=${QTTOOLS_SOURCE_ARCHIVE}
   REPO=${REPO}
   RELEASE_TAG=qt-sdk-macos-x86_64
 EOF
@@ -54,6 +55,10 @@ while (($# > 0)); do
         --qtbase-source-archive)
             shift
             QTBASE_SOURCE_ARCHIVE="${1:?missing qtbase source archive}"
+            ;;
+        --qttools-source-archive)
+            shift
+            QTTOOLS_SOURCE_ARCHIVE="${1:?missing qttools source archive}"
             ;;
         --output-root)
             shift
@@ -124,21 +129,41 @@ if [[ -z "${QTBASE_SOURCE_ARCHIVE}" || ! -f "${QTBASE_SOURCE_ARCHIVE}" ]]; then
     echo "--qtbase-source-archive is required" >&2
     exit 2
 fi
+if [[ -z "${QTTOOLS_SOURCE_ARCHIVE}" || ! -f "${QTTOOLS_SOURCE_ARCHIVE}" ]]; then
+    echo "--qttools-source-archive is required because macOS packaging needs macdeployqt" >&2
+    exit 2
+fi
 
 if ((CLEAN == 1)); then
     rm -rf "${BUILD_DIR}" "${PREFIX}"
 fi
 mkdir -p "${BUILD_DIR}" "$(dirname -- "${PREFIX}")"
 
+extract_one() {
+    local archive="$1"
+    local dest="$2"
+    rm -rf "${dest}"
+    mkdir -p "${dest}"
+    tar -xf "${archive}" -C "${dest}" --strip-components=1
+}
+
 source_dir="${BUILD_DIR}/qtbase-src"
+qttools_source_dir="${BUILD_DIR}/qttools-src"
 qt_build="${BUILD_DIR}/qtbase-build"
-rm -rf "${source_dir}" "${qt_build}"
-mkdir -p "${source_dir}" "${qt_build}"
-tar -xf "${QTBASE_SOURCE_ARCHIVE}" -C "${source_dir}" --strip-components=1
+qttools_build="${BUILD_DIR}/qttools-macdeployqt-build"
+extract_one "${QTBASE_SOURCE_ARCHIVE}" "${source_dir}"
+extract_one "${QTTOOLS_SOURCE_ARCHIVE}" "${qttools_source_dir}"
+rm -rf "${qt_build}" "${qttools_build}"
+mkdir -p "${qt_build}" "${qttools_build}"
+
+deployment_target="${MACOSX_DEPLOYMENT_TARGET:-10.13}"
+if [[ "${TARGET}" == "macos-aarch64" && -z "${MACOSX_DEPLOYMENT_TARGET:-}" ]]; then
+    deployment_target="11.0"
+fi
 
 (
     cd "${qt_build}"
-    QMAKE_MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-10.13}" \
+    QMAKE_MACOSX_DEPLOYMENT_TARGET="${deployment_target}" \
     "${source_dir}/configure" \
         -prefix "${PREFIX}" \
         -opensource \
@@ -146,6 +171,7 @@ tar -xf "${QTBASE_SOURCE_ARCHIVE}" -C "${source_dir}" --strip-components=1
         -release \
         -shared \
         -framework \
+        -no-pch \
         -nomake examples \
         -nomake tests \
         -make libs \
@@ -156,6 +182,20 @@ tar -xf "${QTBASE_SOURCE_ARCHIVE}" -C "${source_dir}" --strip-components=1
         -securetransport
     make -j"${JOBS}"
     make install
+)
+
+(
+    cd "${qttools_build}"
+    "${PREFIX}/bin/qmake" "${qttools_source_dir}/src/macdeployqt/macdeployqt.pro"
+    make -j"${JOBS}"
+    make install || true
+    if [[ ! -x "${PREFIX}/bin/macdeployqt" ]]; then
+        macdeployqt_bin="$(find "${qttools_build}" -type f -name macdeployqt -perm -111 -print -quit)"
+        if [[ -n "${macdeployqt_bin}" ]]; then
+            cp -f "${macdeployqt_bin}" "${PREFIX}/bin/macdeployqt"
+            chmod +x "${PREFIX}/bin/macdeployqt"
+        fi
+    fi
 )
 
 for path in \

@@ -5,8 +5,8 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 
 TARGET="${TARGET:-linux-x86_64}"
-QTBASE_SOURCE_ARCHIVE="${QTBASE_SOURCE_ARCHIVE:-/mnt/data/qt-2080ti-sync/archives/qtbase-opensource-src-5.9.6.tar.xz}"
-OPENSSL_SOURCE_ARCHIVE="${OPENSSL_SOURCE_ARCHIVE:-/mnt/data/qt-2080ti-sync/archives/openssl-1.0.2u.tar.gz}"
+QTBASE_SOURCE_ARCHIVE="${QTBASE_SOURCE_ARCHIVE:-/mnt/data/qt-2080ti-sync/archives/qtbase-everywhere-src-5.15.2.tar.xz}"
+OPENSSL_SOURCE_ARCHIVE="${OPENSSL_SOURCE_ARCHIVE:-/mnt/data/qt-2080ti-sync/archives/openssl-1.1.1w.tar.gz}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-${PROJECT_DIR}/dist/qt-sdk-build}"
 BUILD_DIR="${BUILD_DIR:-}"
 PREFIX="${PREFIX:-}"
@@ -19,6 +19,7 @@ RELEASE_TAG="${RELEASE_TAG:-}"
 SECRET_NAME="${SECRET_NAME:-}"
 JOBS="${JOBS:-$(nproc 2>/dev/null || echo 2)}"
 DOCKER="${DOCKER:-0}"
+DOCKER_IMAGE="${DOCKER_IMAGE:-ubuntu:24.04}"
 SKIP_DEPS="${SKIP_DEPS:-0}"
 CLEAN="${CLEAN:-0}"
 
@@ -26,9 +27,9 @@ usage() {
     cat <<EOF
 Usage: $(basename "$0") --target linux-x86_64 [--docker] [--archive] [--upload] [--set-secret]
 
-Build a reusable Qt 5.9.6 Linux SDK from qtbase source. For non-native Linux
+Build a reusable Qt 5.15.x Linux SDK from qtbase source. For non-native Linux
 targets, use --docker; it runs the same build inside a target-architecture
-Debian container through Docker/QEMU.
+Linux container through Docker/QEMU.
 
 Targets:
   linux-x86_64   Docker platform linux/amd64, secret QT_LINUX_X86_64_URL
@@ -48,6 +49,7 @@ Environment overrides:
   BUILD_DIR=${BUILD_DIR}
   PREFIX=${PREFIX}
   JOBS=${JOBS}
+  DOCKER_IMAGE=${DOCKER_IMAGE}
 EOF
 }
 
@@ -83,6 +85,10 @@ while (($# > 0)); do
             ;;
         --docker)
             DOCKER=1
+            ;;
+        --docker-image)
+            shift
+            DOCKER_IMAGE="${1:?missing docker image}"
             ;;
         --skip-deps)
             SKIP_DEPS=1
@@ -184,9 +190,20 @@ install_linux_deps() {
         libglib2.0-dev \
         libx11-dev \
         libx11-xcb-dev \
+        libxau-dev \
         libxcb1-dev \
+        libxcb-render0-dev \
+        libxcb-render-util0-dev \
+        libxcb-shape0-dev \
+        libxcb-shm0-dev \
+        libxcb-sync-dev \
+        libxcb-xfixes0-dev \
+        libxcb-xinerama0-dev \
+        libxcb-xkb-dev \
         libxext-dev \
         libxrender-dev \
+        libxkbcommon-dev \
+        libxkbcommon-x11-dev \
         make \
         patch \
         perl \
@@ -217,7 +234,7 @@ run_in_docker() {
         -v "${staged_sources}:/qt-sources:ro" \
         -v "${OUTPUT_ROOT}:/qt-output" \
         -w /workspace \
-        debian:bookworm \
+        "${DOCKER_IMAGE}" \
         bash -lc "set -euo pipefail; /workspace/scripts/build-qt5-linux-sdk.sh --target '${TARGET}' --qtbase-source-archive /qt-sources/qtbase.tar.xz --openssl-source-archive /qt-sources/openssl.tar.gz --output-root /qt-output --build-dir /qt-output/build-${TARGET} --prefix /qt-output/qt5-${TARGET} --jobs '${JOBS}' --archive"
 
     if ((UPLOAD == 1 || SET_SECRET == 1)); then
@@ -261,6 +278,7 @@ build_qtbase() {
             -confirm-license \
             -release \
             -shared \
+            -no-pch \
             -nomake examples \
             -nomake tests \
             -make libs \
