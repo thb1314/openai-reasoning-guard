@@ -204,6 +204,11 @@ patch_qtbase_for_modern_cpp() {
         fi
     fi
 
+    local pngpriv_header="${source_dir}/src/3rdparty/libpng/pngpriv.h"
+    if [[ -f "${pngpriv_header}" ]] && grep -q '#      include <fp.h>' "${pngpriv_header}"; then
+        perl -0pi -e 's/#      include <fp\.h>/#      include <math.h>/' "${pngpriv_header}"
+    fi
+
     local configure_script="${source_dir}/configure"
     if [[ -f "${configure_script}" ]] && ! grep -q 'relpathMangled/qtbase.pro' "${configure_script}"; then
         perl -0pi -e 's/"\$relpathMangled" --/"\$relpathMangled\/qtbase.pro" --/g' "${configure_script}"
