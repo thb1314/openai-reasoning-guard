@@ -204,7 +204,13 @@ install_linux_deps() {
         libx11-dev \
         libx11-xcb-dev \
         libxau-dev \
+        libxi-dev \
         libxcb1-dev \
+        libxcb-glx0-dev \
+        libxcb-icccm4-dev \
+        libxcb-image0-dev \
+        libxcb-keysyms1-dev \
+        libxcb-randr0-dev \
         libxcb-render0-dev \
         libxcb-render-util0-dev \
         libxcb-shape0-dev \
