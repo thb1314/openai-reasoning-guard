@@ -236,7 +236,7 @@ dist/openai-reasoning-guard-macos-aarch64-0.1.0.dmg
 
 - `DOWNLOAD_PROXY`：下载 Qt SDK 或 `appimagetool` 时使用的代理，例如 `http://127.0.0.1:7890`。
 
-CI 每个架构都会先编译并运行 QtTest，再调用对应平台打包脚本。Linux 任务在 Debian bookworm 容器内运行，并通过 QEMU 覆盖 arm64/arm32；Windows 和 macOS 使用 GitHub 托管 runner 的原生编译器。workflow 不会安装或使用系统 Qt5。
+CI 每个架构都会先编译并运行 QtTest，再调用对应平台打包脚本。Linux 任务默认在 Ubuntu 24.04 目标架构容器内运行，并通过 QEMU 覆盖 arm64/arm32；Windows 和 macOS 使用 GitHub 托管 runner 的原生编译器。workflow 不会安装或使用系统 Qt5。Linux 容器版本需要不低于 Qt SDK 构建时使用的 glibc 版本；如果要兼容更老发行版，应先在更老的目标容器里重新构建 Qt SDK。
 
 ### 准备 CI 用 Qt SDK
 

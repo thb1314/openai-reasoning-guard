@@ -44,15 +44,19 @@ jobs:
         include:
           - arch: x86_64
             platform: linux/amd64
+            image: ubuntu:24.04
             qt_secret: QT_LINUX_X86_64_URL
           - arch: x86_32
             platform: linux/386
+            image: ubuntu:24.04
             qt_secret: QT_LINUX_X86_32_URL
           - arch: arm64
             platform: linux/arm64
+            image: ubuntu:24.04
             qt_secret: QT_LINUX_ARM64_URL
           - arch: arm32
             platform: linux/arm/v7
+            image: ubuntu:24.04
             qt_secret: QT_LINUX_ARM32_URL
     env:
       QT_ARCHIVE_URL: ${{ secrets[matrix.qt_secret] }}
@@ -86,7 +90,7 @@ jobs:
             -e DOWNLOAD_PROXY="${DOWNLOAD_PROXY:-}" \
             -e PACKAGE_ARCH="${{ matrix.arch }}" \
             -e CLEAN_PACKAGES="${CLEAN_PACKAGES}" \
-            debian:bookworm \
+            ${{ matrix.image }} \
             bash -lc '
               set -euo pipefail
               export DEBIAN_FRONTEND=noninteractive
