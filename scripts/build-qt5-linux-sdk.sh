@@ -432,6 +432,37 @@ EOF
     echo "patched qmake_use.prf pcre2 fallback: ${qmake_use_prf}"
 }
 
+write_prefix_tool_wrappers() {
+    local qt_build="$1"
+    local prefix="$2"
+    local tool
+    mkdir -p "${prefix}/bin"
+    for tool in qmake moc rcc tracegen; do
+        cat > "${prefix}/bin/${tool}" <<EOF
+#!/usr/bin/env bash
+# OpenAI Reasoning Guard temporary Qt SDK build wrapper.
+exec "${qt_build}/bin/${tool}" "\$@"
+EOF
+        chmod +x "${prefix}/bin/${tool}"
+        echo "wrote temporary Qt tool wrapper: ${prefix}/bin/${tool}"
+    done
+}
+
+replace_prefix_tool_wrappers() {
+    local qt_build="$1"
+    local prefix="$2"
+    local tool
+    for tool in qmake moc rcc tracegen; do
+        if [[ -f "${prefix}/bin/${tool}" ]] \
+            && grep -q 'OpenAI Reasoning Guard temporary Qt SDK build wrapper' "${prefix}/bin/${tool}" \
+            && [[ -x "${qt_build}/bin/${tool}" ]]; then
+            cp -f "${qt_build}/bin/${tool}" "${prefix}/bin/${tool}"
+            chmod +x "${prefix}/bin/${tool}"
+            echo "replaced temporary Qt tool wrapper: ${prefix}/bin/${tool}"
+        fi
+    done
+}
+
 normalize_installed_bootstrap_private_pri() {
     local source_dir="$1"
     local prefix="$2"
@@ -530,8 +561,10 @@ build_qtbase() {
             -L "${PREFIX}/lib"
         patch_qmake_use_pcre2_fallback "${source_dir}" "${qt_build}"
         write_bootstrap_private_module_pri "${source_dir}" "${qt_build}" "${PREFIX}"
+        write_prefix_tool_wrappers "${qt_build}" "${PREFIX}"
         make -j"${JOBS}"
         make install
+        replace_prefix_tool_wrappers "${qt_build}" "${PREFIX}"
         normalize_installed_bootstrap_private_pri "${source_dir}" "${PREFIX}"
     )
 }
