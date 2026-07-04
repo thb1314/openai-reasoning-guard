@@ -345,7 +345,7 @@ build_qtbase() {
             -qt-libjpeg \
             -qt-freetype \
             -qt-harfbuzz \
-            -qt-xcb \
+            -xcb \
             -openssl-runtime \
             -I "${PREFIX}/include" \
             -L "${PREFIX}/lib"
