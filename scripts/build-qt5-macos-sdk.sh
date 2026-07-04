@@ -158,6 +158,18 @@ extract_one() {
     tar -xf "${archive}" -C "${dest}" --strip-components=1
 }
 
+patch_qttools_macdeployqt() {
+    local source_dir="$1"
+    local pro_file="${source_dir}/src/macdeployqt/macdeployqt/macdeployqt.pro"
+    if [[ -f "${pro_file}" ]] && ! grep -q 'OpenAI Reasoning Guard CI output override' "${pro_file}"; then
+        {
+            printf '\n'
+            printf '# OpenAI Reasoning Guard CI output override.\n'
+            printf 'DESTDIR = $$OUT_PWD/bin\n'
+        } >> "${pro_file}"
+    fi
+}
+
 patch_qtbase_for_modern_cpp() {
     local source_dir="$1"
     local qglobal_header="${source_dir}/src/corelib/global/qglobal.h"
@@ -205,6 +217,7 @@ qttools_build="${BUILD_DIR}/qttools-macdeployqt-build"
 extract_one "${QTBASE_SOURCE_ARCHIVE}" "${source_dir}"
 extract_one "${QTTOOLS_SOURCE_ARCHIVE}" "${qttools_source_dir}"
 patch_qtbase_for_modern_cpp "${source_dir}"
+patch_qttools_macdeployqt "${qttools_source_dir}"
 rm -rf "${qt_build}" "${qttools_build}"
 mkdir -p "${qt_build}" "${qttools_build}"
 
