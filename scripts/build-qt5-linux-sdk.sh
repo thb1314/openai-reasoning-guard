@@ -27,9 +27,9 @@ usage() {
     cat <<EOF
 Usage: $(basename "$0") --target linux-x86_64 [--docker] [--archive] [--upload] [--set-secret]
 
-Build a reusable Qt 5.15.x Linux SDK from qtbase source. For non-native Linux
-targets, use --docker; it runs the same build inside a target-architecture
-Linux container through Docker/QEMU.
+Build a reusable Qt 5.15.x Linux SDK from qtbase source. GitHub Actions uses
+--docker to run non-native targets inside target-architecture Linux containers
+through Docker/QEMU; local builds can use the same path when needed.
 
 Targets:
   linux-x86_64   Docker platform linux/amd64, secret QT_LINUX_X86_64_URL
@@ -356,7 +356,7 @@ QT_MODULES += bootstrap
 EOF
 
     local module_dir
-    for module_dir in "${qt_build}/mkspecs/modules" "${prefix}/mkspecs/modules"; do
+    for module_dir in "${source_dir}/mkspecs/modules" "${qt_build}/mkspecs/modules" "${prefix}/mkspecs/modules"; do
         mkdir -p "${module_dir}"
         cat > "${module_dir}/qt_lib_bootstrap_private.pri" <<EOF
 QT_MODULE_BIN_BASE = ${qt_build}/bin
@@ -366,6 +366,7 @@ QT_MODULE_HOST_LIB_BASE = ${qt_build}/lib
 include(${modules_inst}/qt_lib_bootstrap_private.pri)
 QT.bootstrap_private.priority = 1
 EOF
+        echo "wrote bootstrap-private module metadata: ${module_dir}/qt_lib_bootstrap_private.pri"
     done
 }
 
