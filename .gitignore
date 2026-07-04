@@ -1,0 +1,39 @@
+# Local configuration
+config.json
+
+# CMake and Qt build outputs
+build/
+build-*/
+build-ci/
+build-package/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+Makefile
+*.a
+*_autogen/
+
+# Packaging outputs
+dist/
+.package-work/
+*.AppImage
+*.deb
+
+# Local evaluation and agent scratch data
+.agents/
+*.pid
+*.log
+*.out
+*.err
+*.jsonl
+
+# Python/editor/OS scratch
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

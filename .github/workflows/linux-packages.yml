@@ -1,0 +1,108 @@
+name: OpenAI Reasoning Guard Linux Packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      qt_root:
+        description: "Qt root on the runner, containing bin/moc and lib/libQt5Core.so.5"
+        required: false
+        default: ""
+      clean:
+        description: "Clean package work/dist directories before building"
+        required: false
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  linux:
+    name: Build deb and AppImage
+    runs-on: ubuntu-22.04
+    env:
+      NET_TUNNEL_QT_ARCHIVE_URL: ${{ secrets.NET_TUNNEL_QT_ARCHIVE_URL }}
+      DOWNLOAD_PROXY: ${{ secrets.DOWNLOAD_PROXY }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            ca-certificates \
+            cmake \
+            curl \
+            dpkg-dev
+
+      - name: Resolve Qt root
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          qt_root_input="${{ inputs.qt_root }}"
+          if [[ -n "${qt_root_input}" ]]; then
+            qt_root="${qt_root_input}"
+          elif [[ -n "${NET_TUNNEL_QT_ARCHIVE_URL:-}" ]]; then
+            mkdir -p "${RUNNER_TEMP}/qt"
+            archive="${RUNNER_TEMP}/qt-sdk"
+            curl -L --fail --connect-timeout 30 -o "${archive}" "${NET_TUNNEL_QT_ARCHIVE_URL}"
+            if tar -tf "${archive}" >/dev/null 2>&1; then
+              tar -xf "${archive}" -C "${RUNNER_TEMP}/qt"
+            else
+              echo "Qt archive must be a tar/tar.gz/tar.xz/tgz file" >&2
+              exit 2
+            fi
+            moc_path="$(find "${RUNNER_TEMP}/qt" -type f -path '*/bin/moc' -print -quit)"
+            if [[ -z "${moc_path}" ]]; then
+              echo "Unable to locate bin/moc inside downloaded Qt archive" >&2
+              exit 2
+            fi
+            qt_root="$(cd -- "$(dirname -- "${moc_path}")/.." && pwd)"
+          elif [[ -x "/mnt/data/qt-2080ti-sync/qt5-openssl/bin/moc" ]]; then
+            qt_root="/mnt/data/qt-2080ti-sync/qt5-openssl"
+          else
+            echo "No Qt SDK found. Provide workflow input qt_root, configure NET_TUNNEL_QT_ARCHIVE_URL, or use a self-hosted runner with /mnt/data/qt-2080ti-sync/qt5-openssl." >&2
+            exit 2
+          fi
+
+          test -x "${qt_root}/bin/moc"
+          test -f "${qt_root}/lib/libQt5Core.so.5"
+          echo "QT_ROOT=${qt_root}" >> "${GITHUB_ENV}"
+          echo "Using Qt root: ${qt_root}"
+
+      - name: Build and run QtTest
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S . -B build-ci \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DNET_TUNNEL_QT_SDK_ROOT="${QT_ROOT}" \
+            -DNET_TUNNEL_BUILD_TESTS=ON
+          cmake --build build-ci -j"$(nproc)"
+          ctest --test-dir build-ci --output-on-failure
+
+      - name: Build packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          clean_arg=()
+          if [[ "${{ inputs.clean }}" != "false" ]]; then
+            clean_arg+=(--clean)
+          fi
+          QT_ROOT="${QT_ROOT}" BUILD_DIR="${PWD}/build-ci" \
+            scripts/package-linux.sh --all --skip-build "${clean_arg[@]}"
+
+      - name: Upload packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: openai-reasoning-guard-linux-packages
+          path: |
+            dist/*.deb
+            dist/*.AppImage
+          if-no-files-found: error
