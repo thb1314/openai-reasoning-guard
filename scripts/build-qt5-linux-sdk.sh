@@ -216,6 +216,7 @@ install_linux_deps() {
         libxcb-shape0-dev \
         libxcb-shm0-dev \
         libxcb-sync-dev \
+        libxcb-util-dev \
         libxcb-xfixes0-dev \
         libxcb-xinerama0-dev \
         libxcb-xkb-dev \
