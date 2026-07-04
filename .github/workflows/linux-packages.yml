@@ -58,20 +58,29 @@ jobs:
             platform: linux/amd64
             image: ubuntu:24.04
             qt_secret: QT_LINUX_X86_64_URL
+            sdk_release_tag: qt-sdk-linux-x86_64
+            sdk_asset: qt5-linux-x86_64.tar.xz
           - arch: x86_32
             platform: linux/386
             image: ubuntu:24.04
             qt_secret: QT_LINUX_X86_32_URL
+            sdk_release_tag: qt-sdk-linux-x86_32
+            sdk_asset: qt5-linux-x86_32.tar.xz
           - arch: arm64
             platform: linux/arm64
             image: ubuntu:24.04
             qt_secret: QT_LINUX_ARM64_URL
+            sdk_release_tag: qt-sdk-linux-arm64
+            sdk_asset: qt5-linux-arm64.tar.xz
           - arch: arm32
             platform: linux/arm/v7
             image: ubuntu:24.04
             qt_secret: QT_LINUX_ARM32_URL
+            sdk_release_tag: qt-sdk-linux-arm32
+            sdk_asset: qt5-linux-arm32.tar.xz
     env:
       QT_ARCHIVE_URL: ${{ secrets[matrix.qt_secret] }}
+      QT_ARCHIVE_FALLBACK_URL: https://github.com/${{ github.repository }}/releases/download/${{ matrix.sdk_release_tag }}/${{ matrix.sdk_asset }}
       DOWNLOAD_PROXY: ${{ secrets.DOWNLOAD_PROXY }}
       CLEAN_PACKAGES: ${{ github.event_name != 'workflow_dispatch' || inputs.clean != 'false' }}
       BUILD_TARGET: ${{ github.event_name == 'workflow_dispatch' && inputs.target || 'all' }}
@@ -89,8 +98,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -z "${QT_ARCHIVE_URL:-}" ]]; then
-            echo "Missing repository secret: ${{ matrix.qt_secret }}" >&2
+          qt_archive_url="${QT_ARCHIVE_URL:-${QT_ARCHIVE_FALLBACK_URL:-}}"
+          if [[ -z "${qt_archive_url}" ]]; then
+            echo "Missing repository secret ${{ matrix.qt_secret }} and no fallback Qt SDK URL is configured" >&2
             exit 2
           fi
 
@@ -98,7 +108,7 @@ jobs:
             --platform "${{ matrix.platform }}" \
             -v "${PWD}:/workspace" \
             -w /workspace \
-            -e QT_ARCHIVE_URL="${QT_ARCHIVE_URL}" \
+            -e QT_ARCHIVE_URL="${qt_archive_url}" \
             -e DOWNLOAD_PROXY="${DOWNLOAD_PROXY:-}" \
             -e PACKAGE_ARCH="${{ matrix.arch }}" \
             -e CLEAN_PACKAGES="${CLEAN_PACKAGES}" \
@@ -224,21 +234,28 @@ jobs:
           gh release upload "${RELEASE_TAG}" "${files[@]}" -R "${GITHUB_REPOSITORY}" --clobber
 
   windows:
-    name: Windows ${{ matrix.arch }} exe
+    name: Windows ${{ matrix.arch }} MinGW exe
     if: github.event_name != 'workflow_dispatch' || inputs.target == 'all' || startsWith(inputs.target, 'windows-')
-    runs-on: windows-2022
+    runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
       matrix:
         include:
           - arch: x86_64
-            msvc_arch: x64
+            mingw_triple: x86_64-w64-mingw32
+            apt_package: g++-mingw-w64-x86-64-posix
             qt_secret: QT_WINDOWS_X86_64_URL
+            sdk_release_tag: qt-sdk-windows-x86_64
+            sdk_asset: qt5-windows-x86_64.tar.xz
           - arch: x86_32
-            msvc_arch: x86
+            mingw_triple: i686-w64-mingw32
+            apt_package: g++-mingw-w64-i686-posix
             qt_secret: QT_WINDOWS_X86_32_URL
+            sdk_release_tag: qt-sdk-windows-x86_32
+            sdk_asset: qt5-windows-x86_32.tar.xz
     env:
       QT_ARCHIVE_URL: ${{ secrets[matrix.qt_secret] }}
+      QT_ARCHIVE_FALLBACK_URL: https://github.com/${{ github.repository }}/releases/download/${{ matrix.sdk_release_tag }}/${{ matrix.sdk_asset }}
       DOWNLOAD_PROXY: ${{ secrets.DOWNLOAD_PROXY }}
       CLEAN_PACKAGES: ${{ github.event_name != 'workflow_dispatch' || inputs.clean != 'false' }}
       BUILD_TARGET: ${{ github.event_name == 'workflow_dispatch' && inputs.target || 'all' }}
@@ -247,124 +264,115 @@ jobs:
         if: env.BUILD_TARGET == 'all' || env.BUILD_TARGET == format('windows-{0}', matrix.arch)
         uses: actions/checkout@v4
 
-      - name: Configure MSVC
+      - name: Install MinGW build dependencies
         if: env.BUILD_TARGET == 'all' || env.BUILD_TARGET == format('windows-{0}', matrix.arch)
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: ${{ matrix.msvc_arch }}
-
-      - name: Install Ninja
-        if: env.BUILD_TARGET == 'all' || env.BUILD_TARGET == format('windows-{0}', matrix.arch)
-        shell: powershell
+        shell: bash
         run: |
-          if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) {
-            choco install ninja --no-progress -y
-          }
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            ca-certificates \
+            cmake \
+            curl \
+            file \
+            ${{ matrix.apt_package }} \
+            unzip \
+            xz-utils \
+            zip
 
       - name: Resolve Qt SDK
         if: env.BUILD_TARGET == 'all' || env.BUILD_TARGET == format('windows-{0}', matrix.arch)
-        shell: powershell
+        shell: bash
         run: |
-          $ErrorActionPreference = "Stop"
-          if (-not $env:QT_ARCHIVE_URL) {
-            throw "Missing repository secret: ${{ matrix.qt_secret }}"
-          }
-          $qtDir = Join-Path $env:RUNNER_TEMP "qt-sdk"
-          $archive = Join-Path $env:RUNNER_TEMP "qt-sdk.archive"
-          New-Item -ItemType Directory -Force -Path $qtDir | Out-Null
-          $curlArgs = @("-L", "--fail", "--connect-timeout", "30", "-o", $archive)
-          if ($env:DOWNLOAD_PROXY) {
-            $curlArgs += @("--proxy", $env:DOWNLOAD_PROXY)
-          }
-          $curlArgs += $env:QT_ARCHIVE_URL
-          curl.exe @curlArgs
-          tar -xf $archive -C $qtDir
-          if ($LASTEXITCODE -ne 0) {
-            Expand-Archive -Path $archive -DestinationPath $qtDir -Force
-          }
-          $moc = Get-ChildItem -Path $qtDir -Recurse -Filter moc.exe | Select-Object -First 1
-          if (-not $moc) {
-            throw "Unable to locate bin/moc.exe inside downloaded Qt archive"
-          }
-          $qtRoot = Split-Path -Parent (Split-Path -Parent $moc.FullName)
-          if (-not (Test-Path (Join-Path $qtRoot "bin/Qt5Core.dll"))) {
-            throw "Qt5Core.dll not found under $qtRoot"
-          }
-          "QT_ROOT=$qtRoot" | Out-File -FilePath $env:GITHUB_ENV -Append
-          "Using Qt root: $qtRoot"
-
-      - name: Build and test
-        if: env.BUILD_TARGET == 'all' || env.BUILD_TARGET == format('windows-{0}', matrix.arch)
-        shell: powershell
-        run: |
-          $ErrorActionPreference = "Stop"
-          $buildDir = "build-ci-${{ matrix.arch }}"
-          cmake -S . -B $buildDir -G Ninja `
-            -DCMAKE_BUILD_TYPE=Release `
-            -DNET_TUNNEL_QT_SDK_ROOT="$env:QT_ROOT" `
-            -DNET_TUNNEL_BUILD_TESTS=ON
-          cmake --build $buildDir --parallel
-          ctest --test-dir $buildDir --output-on-failure
+          set -euo pipefail
+          qt_archive_url="${QT_ARCHIVE_URL:-${QT_ARCHIVE_FALLBACK_URL:-}}"
+          if [[ -z "${qt_archive_url}" ]]; then
+            echo "Missing repository secret ${{ matrix.qt_secret }} and no fallback Qt SDK URL is configured" >&2
+            exit 2
+          fi
+          qt_dir="${RUNNER_TEMP}/qt-sdk"
+          archive="${RUNNER_TEMP}/qt-sdk.archive"
+          mkdir -p "${qt_dir}"
+          curl_args=(-L --fail --connect-timeout 30 -o "${archive}")
+          if [[ -n "${DOWNLOAD_PROXY:-}" ]]; then
+            curl_args+=(--proxy "${DOWNLOAD_PROXY}")
+          fi
+          curl "${curl_args[@]}" "${qt_archive_url}"
+          if tar -tf "${archive}" >/dev/null 2>&1; then
+            tar -xf "${archive}" -C "${qt_dir}"
+          elif unzip -tq "${archive}" >/dev/null 2>&1; then
+            unzip -q "${archive}" -d "${qt_dir}"
+          else
+            echo "Qt archive must be a tar/tar.gz/tar.xz/tgz or zip file" >&2
+            exit 2
+          fi
+          moc_path="$(find "${qt_dir}" -type f -path "*/bin/moc" -print -quit)"
+          if [[ -z "${moc_path}" ]]; then
+            echo "Unable to locate Linux host bin/moc inside downloaded Windows MinGW Qt archive" >&2
+            exit 2
+          fi
+          chmod +x "${moc_path}" || true
+          qt_root="$(cd -- "$(dirname -- "${moc_path}")/.." && pwd)"
+          test -f "${qt_root}/bin/Qt5Core.dll"
+          test -f "${qt_root}/lib/cmake/Qt5/Qt5Config.cmake"
+          echo "QT_ROOT=${qt_root}" >> "${GITHUB_ENV}"
+          echo "Using Qt root: ${qt_root}"
 
       - name: Build Windows package
         if: env.BUILD_TARGET == 'all' || env.BUILD_TARGET == format('windows-{0}', matrix.arch)
-        shell: powershell
+        shell: bash
         run: |
-          $clean = @()
-          if ($env:CLEAN_PACKAGES -eq "true") {
-            $clean += "-Clean"
-          }
-          scripts/package-windows.ps1 `
-            -Arch "${{ matrix.arch }}" `
-            -QtRoot "$env:QT_ROOT" `
-            -BuildDir "build-ci-${{ matrix.arch }}" `
-            -SkipBuild `
-            @clean
+          set -euo pipefail
+          clean_arg=()
+          if [[ "${CLEAN_PACKAGES}" == "true" ]]; then
+            clean_arg+=(--clean)
+          fi
+          QT_ROOT="${QT_ROOT}" \
+          MINGW_TRIPLE="${{ matrix.mingw_triple }}" \
+          PACKAGE_ARCH="${{ matrix.arch }}" \
+          BUILD_DIR="${PWD}/build-ci-windows-${{ matrix.arch }}" \
+          DIST_DIR="${PWD}/dist/windows-${{ matrix.arch }}" \
+          scripts/package-windows-mingw.sh "${clean_arg[@]}"
 
       - name: Upload Windows package
         if: env.BUILD_TARGET == 'all' || env.BUILD_TARGET == format('windows-{0}', matrix.arch)
         uses: actions/upload-artifact@v4
         with:
           name: openai-reasoning-guard-windows-${{ matrix.arch }}
-          path: dist/*windows-${{ matrix.arch }}*.zip
+          path: dist/windows-${{ matrix.arch }}/*windows-${{ matrix.arch }}*.zip
           if-no-files-found: error
 
       - name: Publish Windows package to GitHub Release
         if: (env.BUILD_TARGET == 'all' || env.BUILD_TARGET == format('windows-{0}', matrix.arch)) && (github.event_name == 'push' || inputs.publish_release == 'true')
-        shell: powershell
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.release_tag }}
           RELEASE_PRERELEASE: ${{ github.event_name == 'workflow_dispatch' && 'true' || 'false' }}
         run: |
-          $ErrorActionPreference = "Stop"
-          $files = Get-ChildItem -Path dist -Filter "*windows-${{ matrix.arch }}*.zip" -File
-          if (-not $files) {
-            throw "No Windows package files found for release upload"
-          }
-          gh release view $env:RELEASE_TAG -R $env:GITHUB_REPOSITORY *> $null
-          if ($LASTEXITCODE -ne 0) {
-            $createArgs = @(
-              $env:RELEASE_TAG,
-              "--repo", $env:GITHUB_REPOSITORY,
-              "--title", $env:RELEASE_TAG,
-              "--notes", "OpenAI Reasoning Guard package build $env:GITHUB_SHA."
+          set -euo pipefail
+          shopt -s nullglob
+          files=(dist/windows-${{ matrix.arch }}/*windows-${{ matrix.arch }}*.zip)
+          shopt -u nullglob
+          if ((${#files[@]} == 0)); then
+            echo "No Windows package files found for release upload" >&2
+            exit 2
+          fi
+          if ! gh release view "${RELEASE_TAG}" -R "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            create_args=(
+              "${RELEASE_TAG}"
+              --repo "${GITHUB_REPOSITORY}"
+              --title "${RELEASE_TAG}"
+              --notes "OpenAI Reasoning Guard package build ${GITHUB_SHA}."
             )
-            if ($env:RELEASE_PRERELEASE -eq "true") {
-              $createArgs += "--prerelease"
-            }
-            gh release create @createArgs
-            if ($LASTEXITCODE -ne 0) {
-              gh release view $env:RELEASE_TAG -R $env:GITHUB_REPOSITORY
-            }
-          }
-          $uploadArgs = @($env:RELEASE_TAG)
-          $uploadArgs += $files.FullName
-          $uploadArgs += @("-R", $env:GITHUB_REPOSITORY, "--clobber")
-          gh release upload @uploadArgs
-          if ($LASTEXITCODE -ne 0) {
-            throw "gh release upload failed"
-          }
+            if [[ "${RELEASE_PRERELEASE}" == "true" ]]; then
+              create_args+=(--prerelease)
+            fi
+            gh release create "${create_args[@]}" || gh release view "${RELEASE_TAG}" -R "${GITHUB_REPOSITORY}" >/dev/null
+          fi
+          gh release upload "${RELEASE_TAG}" "${files[@]}" -R "${GITHUB_REPOSITORY}" --clobber
 
   macos:
     name: macOS ${{ matrix.arch }} dmg
@@ -378,12 +386,17 @@ jobs:
             runner: macos-13
             cmake_arch: x86_64
             qt_secret: QT_MACOS_X86_64_URL
+            sdk_release_tag: qt-sdk-macos-x86_64
+            sdk_asset: qt5-macos-x86_64.tar.xz
           - arch: aarch64
             runner: macos-14
             cmake_arch: arm64
             qt_secret: QT_MACOS_ARM64_URL
+            sdk_release_tag: qt-sdk-macos-aarch64
+            sdk_asset: qt5-macos-aarch64.tar.xz
     env:
       QT_ARCHIVE_URL: ${{ secrets[matrix.qt_secret] }}
+      QT_ARCHIVE_FALLBACK_URL: https://github.com/${{ github.repository }}/releases/download/${{ matrix.sdk_release_tag }}/${{ matrix.sdk_asset }}
       DOWNLOAD_PROXY: ${{ secrets.DOWNLOAD_PROXY }}
       CLEAN_PACKAGES: ${{ github.event_name != 'workflow_dispatch' || inputs.clean != 'false' }}
       BUILD_TARGET: ${{ github.event_name == 'workflow_dispatch' && inputs.target || 'all' }}
@@ -397,8 +410,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -z "${QT_ARCHIVE_URL:-}" ]]; then
-            echo "Missing repository secret: ${{ matrix.qt_secret }}" >&2
+          qt_archive_url="${QT_ARCHIVE_URL:-${QT_ARCHIVE_FALLBACK_URL:-}}"
+          if [[ -z "${qt_archive_url}" ]]; then
+            echo "Missing repository secret ${{ matrix.qt_secret }} and no fallback Qt SDK URL is configured" >&2
             exit 2
           fi
           qt_dir="${RUNNER_TEMP}/qt-sdk"
@@ -408,7 +422,7 @@ jobs:
           if [[ -n "${DOWNLOAD_PROXY:-}" ]]; then
             curl_args+=(--proxy "${DOWNLOAD_PROXY}")
           fi
-          curl "${curl_args[@]}" "${QT_ARCHIVE_URL}"
+          curl "${curl_args[@]}" "${qt_archive_url}"
           if tar -tf "${archive}" >/dev/null 2>&1; then
             tar -xf "${archive}" -C "${qt_dir}"
           elif unzip -tq "${archive}" >/dev/null 2>&1; then

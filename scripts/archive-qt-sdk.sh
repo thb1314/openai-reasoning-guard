@@ -14,6 +14,7 @@ UPLOAD="${UPLOAD:-0}"
 SET_SECRET="${SET_SECRET:-0}"
 CLEAN="${CLEAN:-0}"
 UPLOAD_PROXY="${UPLOAD_PROXY:-}"
+MINGW_RUNTIME_DIRS=()
 
 usage() {
     cat <<EOF
@@ -27,6 +28,8 @@ Targets and default secrets:
   linux-x86_32   QT_LINUX_X86_32_URL
   linux-arm64    QT_LINUX_ARM64_URL
   linux-arm32    QT_LINUX_ARM32_URL
+  windows-x86_64 QT_WINDOWS_X86_64_URL
+  windows-x86_32 QT_WINDOWS_X86_32_URL
   macos-x86_64   QT_MACOS_X86_64_URL
   macos-aarch64  QT_MACOS_ARM64_URL
 
@@ -40,6 +43,11 @@ Environment overrides:
   UPLOAD=1
   SET_SECRET=1
   UPLOAD_PROXY=http://127.0.0.1:7890
+
+For Windows MinGW cross SDKs, QT_ROOT must contain Linux host tools
+bin/moc, bin/rcc, bin/uic plus Windows target DLL/import libraries.
+Pass --mingw-runtime-dir one or more times to include MinGW runtime DLLs
+under runtime/mingw inside the archive.
 EOF
 }
 
@@ -83,6 +91,10 @@ while (($# > 0)); do
             shift
             UPLOAD_PROXY="${1:?missing upload proxy}"
             ;;
+        --mingw-runtime-dir)
+            shift
+            MINGW_RUNTIME_DIRS+=("${1:?missing mingw runtime dir}")
+            ;;
         -h|--help)
             usage
             exit 0
@@ -102,6 +114,8 @@ default_secret_for_target() {
         linux-x86_32) echo QT_LINUX_X86_32_URL ;;
         linux-arm64) echo QT_LINUX_ARM64_URL ;;
         linux-arm32) echo QT_LINUX_ARM32_URL ;;
+        windows-x86_64) echo QT_WINDOWS_X86_64_URL ;;
+        windows-x86_32) echo QT_WINDOWS_X86_32_URL ;;
         macos-x86_64) echo QT_MACOS_X86_64_URL ;;
         macos-aarch64) echo QT_MACOS_ARM64_URL ;;
         *)
@@ -119,6 +133,18 @@ require_path() {
     fi
 }
 
+require_any_path() {
+    local path
+    for path in "$@"; do
+        if [[ -e "${path}" ]]; then
+            return 0
+        fi
+    done
+    echo "required Qt artifact missing; tried:" >&2
+    printf '  - %s\n' "$@" >&2
+    exit 2
+}
+
 if [[ -z "${QT_ROOT}" ]]; then
     echo "QT_ROOT or --qt-root is required" >&2
     exit 2
@@ -134,6 +160,18 @@ case "${TARGET}" in
         require_path "${QT_ROOT}/lib/libQt5Core.so.5"
         require_path "${QT_ROOT}/plugins/platforms/libqxcb.so"
         ;;
+    windows-*)
+        require_path "${QT_ROOT}/bin/moc"
+        require_path "${QT_ROOT}/bin/rcc"
+        require_path "${QT_ROOT}/bin/uic"
+        require_path "${QT_ROOT}/bin/Qt5Core.dll"
+        require_path "${QT_ROOT}/bin/Qt5Network.dll"
+        require_path "${QT_ROOT}/bin/Qt5Gui.dll"
+        require_path "${QT_ROOT}/bin/Qt5Widgets.dll"
+        require_path "${QT_ROOT}/plugins/platforms/qwindows.dll"
+        require_path "${QT_ROOT}/lib/cmake/Qt5/Qt5Config.cmake"
+        require_any_path "${QT_ROOT}/lib/libQt5Core.a" "${QT_ROOT}/lib/libQt5Core.dll.a"
+        ;;
     macos-*)
         require_path "${QT_ROOT}/bin/moc"
         require_path "${QT_ROOT}/bin/macdeployqt"
@@ -148,8 +186,32 @@ fi
 archive="${DIST_DIR}/qt5-${TARGET}.tar.xz"
 qt_parent="$(cd -- "${QT_ROOT}/.." && pwd)"
 qt_base="$(basename -- "${QT_ROOT}")"
+tar_parent="${qt_parent}"
+tar_base="${qt_base}"
 
-tar -C "${qt_parent}" -cJf "${archive}" "${qt_base}"
+if [[ "${TARGET}" == windows-* && ${#MINGW_RUNTIME_DIRS[@]} -gt 0 ]]; then
+    stage_root="${DIST_DIR}/.qt5-${TARGET}-archive-root"
+    rm -rf "${stage_root}"
+    mkdir -p "${stage_root}"
+    cp -a "${QT_ROOT}" "${stage_root}/${qt_base}"
+    mkdir -p "${stage_root}/${qt_base}/runtime/mingw"
+    shopt -s nullglob
+    for runtime_dir in "${MINGW_RUNTIME_DIRS[@]}"; do
+        if [[ ! -d "${runtime_dir}" ]]; then
+            echo "MinGW runtime dir does not exist: ${runtime_dir}" >&2
+            exit 2
+        fi
+        runtime_dlls=("${runtime_dir}"/*.dll)
+        if ((${#runtime_dlls[@]} > 0)); then
+            cp -f "${runtime_dlls[@]}" "${stage_root}/${qt_base}/runtime/mingw/"
+        fi
+    done
+    shopt -u nullglob
+    tar_parent="${stage_root}"
+    tar_base="${qt_base}"
+fi
+
+tar -C "${tar_parent}" -cJf "${archive}" "${tar_base}"
 echo "Built Qt SDK archive: ${archive}"
 ls -lh "${archive}"
 

@@ -26,14 +26,22 @@ usage() {
     cat <<EOF
 Usage: $(basename "$0") --qtbase-source-archive /path/to/qtbase.tar.xz --target macos-x86_64 [--archive] [--upload] [--set-secret]
 
-Build a reusable Qt 5.9.6 macOS SDK from qtbase source. Run this on the
-matching macOS host:
+Build a reusable Qt 5 macOS SDK from qtbase source. Run this on the matching
+macOS host:
   macos-x86_64   on Intel macOS runner/host
   macos-aarch64  on Apple Silicon macOS runner/host
 
+Use a Qt 5 source tree that supports the requested CPU architecture. The
+project can use Qt 5.9.6 for Intel macOS, but Apple Silicon requires a newer
+Qt 5 SDK/source with arm64 support.
+
 Examples:
   scripts/build-qt5-macos-sdk.sh --target macos-x86_64 --qtbase-source-archive ~/qtbase-opensource-src-5.9.6.tar.xz --archive
-  scripts/build-qt5-macos-sdk.sh --target macos-aarch64 --qtbase-source-archive ~/qtbase-opensource-src-5.9.6.tar.xz --archive --upload --set-secret
+  scripts/build-qt5-macos-sdk.sh --target macos-aarch64 --qtbase-source-archive ~/qtbase-opensource-src-5.15.x.tar.xz --archive --upload --set-secret
+
+Environment overrides:
+  REPO=${REPO}
+  RELEASE_TAG=qt-sdk-macos-x86_64
 EOF
 }
 
@@ -78,6 +86,14 @@ while (($# > 0)); do
         --upload-proxy)
             shift
             UPLOAD_PROXY="${1:?missing upload proxy}"
+            ;;
+        --repo)
+            shift
+            REPO="${1:?missing repo}"
+            ;;
+        --release-tag)
+            shift
+            RELEASE_TAG="${1:?missing release tag}"
             ;;
         -h|--help)
             usage

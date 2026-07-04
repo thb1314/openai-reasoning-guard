@@ -1,0 +1,214 @@
+name: Qt SDK Archives
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Qt SDK target to build"
+        required: true
+        default: "linux-x86_64"
+        type: choice
+        options:
+          - "linux-x86_64"
+          - "linux-x86_32"
+          - "linux-arm64"
+          - "linux-arm32"
+          - "windows-x86_64"
+          - "windows-x86_32"
+          - "macos-x86_64"
+          - "macos-aarch64"
+          - "all"
+      qtbase_url:
+        description: "Download URL for qtbase source archive; use Qt 5.15.x or newer Qt 5 for macos-aarch64"
+        required: true
+        type: string
+      openssl_url:
+        description: "Download URL for OpenSSL source archive; required for Linux and Windows MinGW SDKs"
+        required: false
+        type: string
+      release_tag:
+        description: "Optional override; default is qt-sdk-<target>. Avoid overriding when target=all"
+        required: false
+        type: string
+      clean:
+        description: "Clean SDK build directories before building"
+        required: false
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    name: Qt SDK ${{ matrix.target }}
+    if: inputs.target == 'all' || startsWith(inputs.target, 'linux-')
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x86_64
+          - target: linux-x86_32
+          - target: linux-arm64
+          - target: linux-arm32
+    env:
+      BUILD_TARGET: ${{ inputs.target }}
+      DOWNLOAD_PROXY: ${{ secrets.DOWNLOAD_PROXY }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout
+        if: env.BUILD_TARGET == 'all' || env.BUILD_TARGET == matrix.target
+        uses: actions/checkout@v4
+
+      - name: Enable QEMU
+        if: env.BUILD_TARGET == 'all' || env.BUILD_TARGET == matrix.target
+        uses: docker/setup-qemu-action@v3
+
+      - name: Download sources
+        if: env.BUILD_TARGET == 'all' || env.BUILD_TARGET == matrix.target
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${{ inputs.openssl_url }}" ]]; then
+            echo "openssl_url is required for Linux Qt SDK builds" >&2
+            exit 2
+          fi
+          curl_args=(-L --fail --connect-timeout 30)
+          if [[ -n "${DOWNLOAD_PROXY:-}" ]]; then
+            curl_args+=(--proxy "${DOWNLOAD_PROXY}")
+          fi
+          curl "${curl_args[@]}" -o "${RUNNER_TEMP}/qtbase.tar.xz" "${{ inputs.qtbase_url }}"
+          curl "${curl_args[@]}" -o "${RUNNER_TEMP}/openssl.tar.gz" "${{ inputs.openssl_url }}"
+
+      - name: Build and publish Linux Qt SDK
+        if: env.BUILD_TARGET == 'all' || env.BUILD_TARGET == matrix.target
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=(
+            --target "${{ matrix.target }}"
+            --docker
+            --qtbase-source-archive "${RUNNER_TEMP}/qtbase.tar.xz"
+            --openssl-source-archive "${RUNNER_TEMP}/openssl.tar.gz"
+            --archive
+            --upload
+            --repo "${GITHUB_REPOSITORY}"
+          )
+          if [[ "${{ inputs.clean }}" == "true" ]]; then
+            args+=(--clean)
+          fi
+          if [[ -n "${{ inputs.release_tag }}" && "${{ inputs.target }}" != "all" ]]; then
+            args+=(--release-tag "${{ inputs.release_tag }}")
+          fi
+          scripts/build-qt5-linux-sdk.sh "${args[@]}"
+
+  windows-mingw:
+    name: Qt SDK ${{ matrix.target }}
+    if: inputs.target == 'all' || startsWith(inputs.target, 'windows-')
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: windows-x86_64
+          - target: windows-x86_32
+    env:
+      BUILD_TARGET: ${{ inputs.target }}
+      DOWNLOAD_PROXY: ${{ secrets.DOWNLOAD_PROXY }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout
+        if: env.BUILD_TARGET == 'all' || env.BUILD_TARGET == matrix.target
+        uses: actions/checkout@v4
+
+      - name: Download sources
+        if: env.BUILD_TARGET == 'all' || env.BUILD_TARGET == matrix.target
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${{ inputs.openssl_url }}" ]]; then
+            echo "openssl_url is required for Windows MinGW Qt SDK builds" >&2
+            exit 2
+          fi
+          curl_args=(-L --fail --connect-timeout 30)
+          if [[ -n "${DOWNLOAD_PROXY:-}" ]]; then
+            curl_args+=(--proxy "${DOWNLOAD_PROXY}")
+          fi
+          curl "${curl_args[@]}" -o "${RUNNER_TEMP}/qtbase.tar.xz" "${{ inputs.qtbase_url }}"
+          curl "${curl_args[@]}" -o "${RUNNER_TEMP}/openssl.tar.gz" "${{ inputs.openssl_url }}"
+
+      - name: Build and publish Windows MinGW Qt SDK
+        if: env.BUILD_TARGET == 'all' || env.BUILD_TARGET == matrix.target
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=(
+            --target "${{ matrix.target }}"
+            --qtbase-source-archive "${RUNNER_TEMP}/qtbase.tar.xz"
+            --openssl-source-archive "${RUNNER_TEMP}/openssl.tar.gz"
+            --archive
+            --upload
+            --repo "${GITHUB_REPOSITORY}"
+          )
+          if [[ "${{ inputs.clean }}" == "true" ]]; then
+            args+=(--clean)
+          fi
+          if [[ -n "${{ inputs.release_tag }}" && "${{ inputs.target }}" != "all" ]]; then
+            args+=(--release-tag "${{ inputs.release_tag }}")
+          fi
+          scripts/build-qt5-windows-mingw-sdk.sh "${args[@]}"
+
+  macos:
+    name: Qt SDK ${{ matrix.target }}
+    if: inputs.target == 'all' || startsWith(inputs.target, 'macos-')
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: macos-x86_64
+            runner: macos-13
+          - target: macos-aarch64
+            runner: macos-14
+    env:
+      BUILD_TARGET: ${{ inputs.target }}
+      DOWNLOAD_PROXY: ${{ secrets.DOWNLOAD_PROXY }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout
+        if: env.BUILD_TARGET == 'all' || env.BUILD_TARGET == matrix.target
+        uses: actions/checkout@v4
+
+      - name: Download qtbase source
+        if: env.BUILD_TARGET == 'all' || env.BUILD_TARGET == matrix.target
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl_args=(-L --fail --connect-timeout 30)
+          if [[ -n "${DOWNLOAD_PROXY:-}" ]]; then
+            curl_args+=(--proxy "${DOWNLOAD_PROXY}")
+          fi
+          curl "${curl_args[@]}" -o "${RUNNER_TEMP}/qtbase.tar.xz" "${{ inputs.qtbase_url }}"
+
+      - name: Build and publish macOS Qt SDK
+        if: env.BUILD_TARGET == 'all' || env.BUILD_TARGET == matrix.target
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=(
+            --target "${{ matrix.target }}"
+            --qtbase-source-archive "${RUNNER_TEMP}/qtbase.tar.xz"
+            --archive
+            --upload
+          )
+          if [[ "${{ inputs.clean }}" == "true" ]]; then
+            args+=(--clean)
+          fi
+          if [[ -n "${{ inputs.release_tag }}" && "${{ inputs.target }}" != "all" ]]; then
+            args+=(--release-tag "${{ inputs.release_tag }}")
+          fi
+          REPO="${GITHUB_REPOSITORY}" scripts/build-qt5-macos-sdk.sh "${args[@]}"

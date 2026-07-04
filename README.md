@@ -103,7 +103,7 @@ cmake -S . -B build \
 项目提供三个本地打包入口：
 
 - Linux: [scripts/package-linux.sh](scripts/package-linux.sh)，产出 `.deb`、`.rpm`、GUI AppImage 和 CLI AppImage。
-- Windows: [scripts/package-windows.ps1](scripts/package-windows.ps1)，产出包含 GUI/CLI exe 和 Qt runtime 的 zip。
+- Windows: [scripts/package-windows-mingw.sh](scripts/package-windows-mingw.sh)，在 Linux 上用 MinGW 交叉编译并产出包含 GUI/CLI exe 和 Qt runtime 的 zip；[scripts/package-windows.ps1](scripts/package-windows.ps1) 保留给原生 Windows/MSVC 构建。
 - macOS: [scripts/package-macos.sh](scripts/package-macos.sh)，产出包含 GUI app 和 CLI 的 dmg。
 
 所有平台都按同一个原则处理 Qt：构建和打包只使用显式 Qt SDK，不自动使用系统 Qt5。本机 Linux 默认搜索 `/mnt/data/qt-2080ti-sync` 下的自编译 Qt5；CI 必须通过各架构 Qt SDK archive secret 提供 Qt。
@@ -170,19 +170,25 @@ QT_ROOT=/path/to/qt5 scripts/package-linux.sh --all --clean
 
 ### Windows
 
-Windows 打包脚本会生成一个 zip，内部包含：
+CI 默认使用 MinGW 路线：在 Linux 上安装 MinGW 编译器，配合 Windows MinGW Qt SDK 交叉编译。Qt SDK 必须同时包含 Linux 可执行的 Qt host tools 和 Windows 目标库：
+
+- `bin/moc`、`bin/rcc`、`bin/uic`：Linux host 工具，供 CMake 的 automoc/autorcc/autouic 使用。
+- `bin/Qt5Core.dll`、`bin/Qt5Network.dll`、`bin/Qt5Gui.dll`、`bin/Qt5Widgets.dll`：Windows runtime DLL。
+- `plugins/platforms/qwindows.dll`：Windows Qt platform plugin。
+- `lib/cmake/Qt5/Qt5Config.cmake` 和 `lib/libQt5Core.a` 或 `lib/libQt5Core.dll.a`：CMake package 和 MinGW import lib。
+
+打包脚本会生成一个 zip，内部包含：
 
 - `openai-reasoning-guard-gui.exe`
 - `openai-reasoning-guard-cli.exe`
 - Qt DLL、`plugins/platforms/qwindows.dll`、字体、配置示例和说明文件
 
-示例：
+Linux/MinGW 示例：
 
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/package-windows.ps1 `
-  -Arch x86_64 `
-  -QtRoot C:\Qt\5.15.2\msvc2019_64 `
-  -Clean
+```bash
+QT_ROOT=/path/to/qt-5.9.6-mingw64-posix \
+MINGW_TRIPLE=x86_64-w64-mingw32 \
+scripts/package-windows-mingw.sh --arch x86_64 --clean
 ```
 
 输出示例：
@@ -191,7 +197,16 @@ powershell -ExecutionPolicy Bypass -File scripts/package-windows.ps1 `
 dist/openai-reasoning-guard-windows-x86_64-0.1.0.zip
 ```
 
-`-Arch x86_32` 用于 32 位 Windows 包。Qt SDK 必须和当前 C++ 编译器架构一致，例如 x86_64 使用 64 位 MSVC Qt，x86_32 使用 32 位 MSVC Qt。
+原生 Windows/MSVC 路线仍可用，适合已有 MSVC Qt SDK 的机器：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/package-windows.ps1 `
+  -Arch x86_64 `
+  -QtRoot C:\Qt\5.15.2\msvc2019_64 `
+  -Clean
+```
+
+`--arch x86_32` / `-Arch x86_32` 用于 32 位 Windows 包。Qt SDK 必须和当前 C++ 编译器 ABI 一致，例如 MinGW x86_64 使用 64 位 MinGW Qt，MSVC x86_64 使用 64 位 MSVC Qt。
 
 ### macOS
 
@@ -213,7 +228,12 @@ dist/openai-reasoning-guard-macos-aarch64-0.1.0.dmg
 
 ### GitHub Actions
 
-打包流水线在 [.github/workflows/linux-packages.yml](.github/workflows/linux-packages.yml)，可手动触发，也会在 `v*` tag 上触发。手动触发时 `target` 默认只构建 `linux-x86_64`，也可以选择单个目标或 `all`。workflow 覆盖以下目标：
+项目有两条 CI 流水线：
+
+- [.github/workflows/qt-sdk.yml](.github/workflows/qt-sdk.yml)：从 Qt/OpenSSL 源码构建可复用 Qt SDK archive，并上传到标准 GitHub Release tag。
+- [.github/workflows/linux-packages.yml](.github/workflows/linux-packages.yml)：使用 Qt SDK archive 构建最终用户安装包，可手动触发，也会在 `v*` tag 上触发。
+
+打包 workflow 手动触发时 `target` 默认只构建 `linux-x86_64`，也可以选择单个目标或 `all`。workflow 覆盖以下目标：
 
 | 目标 | runner/容器 | 产物 | Qt SDK secret |
 | --- | --- | --- | --- |
@@ -221,8 +241,8 @@ dist/openai-reasoning-guard-macos-aarch64-0.1.0.dmg
 | Linux x86_32 | `linux/386` Docker | deb、rpm、GUI AppImage、CLI AppImage | `QT_LINUX_X86_32_URL` |
 | Linux arm64 | `linux/arm64` Docker | deb、rpm、GUI AppImage、CLI AppImage | `QT_LINUX_ARM64_URL` |
 | Linux arm32 | `linux/arm/v7` Docker | deb、rpm、GUI AppImage、CLI AppImage | `QT_LINUX_ARM32_URL` |
-| Windows x86_64 | `windows-2022` | zip，内含 x86_64 exe | `QT_WINDOWS_X86_64_URL` |
-| Windows x86_32 | `windows-2022` | zip，内含 x86 exe | `QT_WINDOWS_X86_32_URL` |
+| Windows x86_64 | Ubuntu runner + MinGW `x86_64-w64-mingw32` | zip，内含 x86_64 exe | `QT_WINDOWS_X86_64_URL` |
+| Windows x86_32 | Ubuntu runner + MinGW `i686-w64-mingw32` | zip，内含 x86 exe | `QT_WINDOWS_X86_32_URL` |
 | macOS x86_64 | `macos-13` | dmg | `QT_MACOS_X86_64_URL` |
 | macOS aarch64 | `macos-14` | dmg | `QT_MACOS_ARM64_URL` |
 
@@ -231,21 +251,44 @@ dist/openai-reasoning-guard-macos-aarch64-0.1.0.dmg
 - 推送 `v*` tag 时自动发布到同名 Release，例如 `v0.1.0`。
 - 手动触发时把 `publish_release` 设为 `true`，默认发布到 `nightly` prerelease，也可以填写其它 `release_tag`。
 
-每个 Qt SDK secret 的值是一个可下载 archive URL，支持 `tar`、`tar.gz`、`tar.xz`、`tgz` 或 `zip`。archive 解压后需要能找到对应平台的 Qt 工具和 runtime：
+每个 Qt SDK secret 的值是一个可下载 archive URL，支持 `tar`、`tar.gz`、`tar.xz`、`tgz` 或 `zip`。如果 secret 为空，打包 workflow 会尝试从本仓库标准 Release 读取：
+
+| 目标 | fallback Release asset |
+| --- | --- |
+| Linux x86_64 | `qt-sdk-linux-x86_64/qt5-linux-x86_64.tar.xz` |
+| Linux x86_32 | `qt-sdk-linux-x86_32/qt5-linux-x86_32.tar.xz` |
+| Linux arm64 | `qt-sdk-linux-arm64/qt5-linux-arm64.tar.xz` |
+| Linux arm32 | `qt-sdk-linux-arm32/qt5-linux-arm32.tar.xz` |
+| Windows x86_64 | `qt-sdk-windows-x86_64/qt5-windows-x86_64.tar.xz` |
+| Windows x86_32 | `qt-sdk-windows-x86_32/qt5-windows-x86_32.tar.xz` |
+| macOS x86_64 | `qt-sdk-macos-x86_64/qt5-macos-x86_64.tar.xz` |
+| macOS aarch64 | `qt-sdk-macos-aarch64/qt5-macos-aarch64.tar.xz` |
+
+archive 解压后需要能找到对应平台的 Qt 工具和 runtime：
 
 - Linux archive：包含 `bin/moc`、`lib/libQt5Core.so.5`、`plugins/platforms/libqxcb.so`，建议同时包含 `lib/cmake/Qt5`。
-- Windows archive：包含 `bin/moc.exe`、`bin/Qt5Core.dll`、`plugins/platforms/qwindows.dll` 和 `lib/cmake/Qt5`。
+- Windows MinGW archive：包含 Linux host 工具 `bin/moc`、`bin/rcc`、`bin/uic`，Windows target runtime `bin/Qt5Core.dll`、`bin/Qt5Network.dll`、`bin/Qt5Gui.dll`、`bin/Qt5Widgets.dll`，`plugins/platforms/qwindows.dll`、`lib/cmake/Qt5` 和 MinGW import lib。建议把匹配 Qt 构建器的 `libgcc_s_*.dll`、`libstdc++-6.dll`、`libwinpthread-1.dll` 放进 `runtime/mingw`。
 - macOS archive：包含 `bin/moc`、`bin/macdeployqt` 和 Qt frameworks/CMake package。
 
 可选 secret：
 
 - `DOWNLOAD_PROXY`：下载 Qt SDK 或 `appimagetool` 时使用的代理，例如 `http://127.0.0.1:7890`。
 
-CI 每个架构都会先编译并运行 QtTest，再调用对应平台打包脚本。Linux 任务默认在 Ubuntu 24.04 目标架构容器内运行，并通过 QEMU 覆盖 arm64/arm32；Windows 和 macOS 使用 GitHub 托管 runner 的原生编译器。workflow 不会安装或使用系统 Qt5。Linux 容器版本需要不低于 Qt SDK 构建时使用的 glibc 版本；如果要兼容更老发行版，应先在更老的目标容器里重新构建 Qt SDK。
+CI 的 Linux 架构会先编译并运行 QtTest，再调用对应打包脚本。Linux 任务默认在 Ubuntu 24.04 目标架构容器内运行，并通过 QEMU 覆盖 arm64/arm32；Windows 任务在 Ubuntu runner 里用 MinGW 交叉编译，默认不运行 Windows exe；macOS 使用 GitHub 托管 runner 的原生编译器。workflow 不会安装或使用系统 Qt5。Linux 容器版本需要不低于 Qt SDK 构建时使用的 glibc 版本；如果要兼容更老发行版，应先在更老的目标容器里重新构建 Qt SDK。
 
 ### 准备 CI 用 Qt SDK
 
-CI 的包构建依赖“目标平台可运行”的 Qt SDK archive。推荐流程是先在对应平台构建或整理 Qt SDK，再上传到 GitHub Release，并把 asset URL 写入对应 secret。这样 Qt 只需要构建一次，后续包构建可以复用。
+CI 的包构建依赖“目标平台可运行”的 Qt SDK archive。推荐流程是先运行 `Qt SDK Archives` workflow，从源码生成标准 SDK Release，然后直接触发包构建 workflow。只有 SDK 存放在外部地址或私有地址时，才需要把 asset URL 写入 `QT_*_URL` secret。
+
+SDK workflow 输入：
+
+| 输入 | 示例 | 说明 |
+| --- | --- | --- |
+| `target` | `windows-x86_64` | 要构建的 SDK 目标；也可以选 `all`，但会非常耗时。 |
+| `qtbase_url` | `https://.../qtbase-opensource-src-5.9.6.tar.xz` | qtbase 源码 archive 下载地址。macOS aarch64 需要使用支持 Apple Silicon 的 Qt 5 源码，例如 Qt 5.15.x。 |
+| `openssl_url` | `https://.../openssl-1.0.2u.tar.gz` | Linux 和 Windows MinGW SDK 需要；macOS 使用 SecureTransport，不需要。 |
+| `release_tag` | 空 | 留空时自动使用 `qt-sdk-<target>`，这是包构建 workflow 的默认 fallback。 |
+| `clean` | `true` | 是否清理 SDK build 目录后重建。 |
 
 Linux 可以直接从本机已有 Qt 源码构建。当前机器上的源码默认路径是：
 
@@ -284,7 +327,7 @@ scripts/archive-qt-sdk.sh \
   --upload-proxy http://127.0.0.1:7890
 ```
 
-macOS 在对应架构机器上原生编译：
+macOS 在对应架构 runner/机器上原生编译。x86_64 可以使用旧 Qt 5.9.6；aarch64 需要 Qt 5.15.x 或其它支持 Apple Silicon 的 Qt 5 源码：
 
 ```bash
 scripts/build-qt5-macos-sdk.sh \
@@ -296,13 +339,54 @@ scripts/build-qt5-macos-sdk.sh \
 
 scripts/build-qt5-macos-sdk.sh \
   --target macos-aarch64 \
-  --qtbase-source-archive /path/to/qtbase-opensource-src-5.9.6.tar.xz \
+  --qtbase-source-archive /path/to/qtbase-opensource-src-5.15.x.tar.xz \
   --archive \
   --upload \
   --set-secret
 ```
 
-Windows 在对应 MSVC 开发者环境中原生编译，x86_64 用 x64 shell，x86_32 用 x86 shell：
+Windows CI 推荐使用 MinGW cross Qt SDK。2080ti 上 `qt-5.9.6-mingw64-posix` 的价值主要是参考它的结构：Linux host `moc/rcc/uic` 加 Windows target `Qt5*.dll/import libs`。正式 SDK 应优先由 `build-qt5-windows-mingw-sdk.sh` 或 `Qt SDK Archives` workflow 从源码生成，避免绑定某台机器的手工目录。
+
+已有可用 SDK 时，也可以只归档上传：
+
+```bash
+scripts/archive-qt-sdk.sh \
+  --qt-root /path/to/qt-5.9.6-mingw64-posix \
+  --target windows-x86_64 \
+  --mingw-runtime-dir /path/to/mingw-gcc-runtime \
+  --mingw-runtime-dir /path/to/mingw-sysroot/lib \
+  --upload \
+  --set-secret \
+  --upload-proxy http://127.0.0.1:7890
+```
+
+这里的 `--mingw-runtime-dir` 会把匹配 Qt 构建器的 `*.dll` 放进 archive 的 `runtime/mingw`，打包时优先复制这些 DLL。x86_32 需要单独准备 32 位 MinGW Qt SDK，并把 `--target` 改为 `windows-x86_32`。
+
+如果需要从源码重新构建 Windows MinGW Qt SDK，使用：
+
+```bash
+scripts/build-qt5-windows-mingw-sdk.sh \
+  --target windows-x86_64 \
+  --archive \
+  --upload \
+  --set-secret \
+  --upload-proxy http://127.0.0.1:7890
+```
+
+脚本默认使用本机已有源码：
+
+```text
+/mnt/data/qt-2080ti-sync/archives/qtbase-opensource-src-5.9.6.tar.xz
+/mnt/data/qt-2080ti-sync/archives/openssl-1.0.2u.tar.gz
+```
+
+它会按 Qt cross build 方式生成 Linux host `moc/rcc/uic` 和 Windows target `Qt5*.dll`，并用 `-openssl-runtime` 打开 QtNetwork HTTPS 支持。x86_32 使用：
+
+```bash
+scripts/build-qt5-windows-mingw-sdk.sh --target windows-x86_32 --archive --upload --set-secret
+```
+
+原生 Windows/MSVC SDK 也可保留作为备用路线。Windows 在对应 MSVC 开发者环境中原生编译，x86_64 用 x64 shell，x86_32 用 x86 shell：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/build-qt5-windows-sdk.ps1 `
@@ -315,7 +399,7 @@ powershell -ExecutionPolicy Bypass -File scripts/build-qt5-windows-sdk.ps1 `
   -UploadProxy http://127.0.0.1:7890
 ```
 
-Windows 如果已经有可用 Qt SDK，也可以只归档上传：
+Windows 如果已经有可用 MSVC Qt SDK，也可以只归档上传，但当前 GitHub Actions 默认 Windows job 期待的是 MinGW cross SDK，不是 MSVC SDK：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/archive-qt-sdk.ps1 `
@@ -559,9 +643,11 @@ scripts/
   archive-qt-sdk.ps1
   build-qt5-linux-sdk.sh
   build-qt5-macos-sdk.sh
+  build-qt5-windows-mingw-sdk.sh
   build-qt5-windows-sdk.ps1
   package-linux.sh
   package-macos.sh
+  package-windows-mingw.sh
   package-windows.ps1
   restart-gui.sh
 src/
