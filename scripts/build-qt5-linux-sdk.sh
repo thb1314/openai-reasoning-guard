@@ -399,6 +399,39 @@ EOF
     done
 }
 
+patch_qmake_use_pcre2_fallback() {
+    local source_dir="$1"
+    local qt_build="$2"
+    local qmake_use_prf="${source_dir}/mkspecs/features/qmake_use.prf"
+    if [[ ! -f "${qmake_use_prf}" ]]; then
+        return
+    fi
+    if grep -q 'OpenAI Reasoning Guard pcre2 fallback' "${qmake_use_prf}"; then
+        return
+    fi
+
+    local fallback_block
+    fallback_block="$(cat <<EOF
+# OpenAI Reasoning Guard pcre2 fallback for CI cross-architecture Qt builds.
+!defined(QMAKE_LIBS_PCRE2, var) {
+    contains(QMAKE_USE_PRIVATE, pcre2)|contains(QMAKE_USE, pcre2) {
+        QMAKE_INCDIR_PCRE2 = ${source_dir}/src/3rdparty/pcre2/src
+        QMAKE_DEFINES_PCRE2 = PCRE2_CODE_UNIT_WIDTH=16
+        QMAKE_LIBS_PCRE2 = ${qt_build}/lib/libqtpcre2.a
+    }
+}
+
+EOF
+)"
+    local patched_qmake_use="${qmake_use_prf}.patched"
+    {
+        printf '%s' "${fallback_block}"
+        cat "${qmake_use_prf}"
+    } > "${patched_qmake_use}"
+    mv "${patched_qmake_use}" "${qmake_use_prf}"
+    echo "patched qmake_use.prf pcre2 fallback: ${qmake_use_prf}"
+}
+
 normalize_installed_bootstrap_private_pri() {
     local source_dir="$1"
     local prefix="$2"
@@ -495,6 +528,7 @@ build_qtbase() {
             -openssl-runtime \
             -I "${PREFIX}/include" \
             -L "${PREFIX}/lib"
+        patch_qmake_use_pcre2_fallback "${source_dir}" "${qt_build}"
         write_bootstrap_private_module_pri "${source_dir}" "${qt_build}" "${PREFIX}"
         make -j"${JOBS}"
         make install
