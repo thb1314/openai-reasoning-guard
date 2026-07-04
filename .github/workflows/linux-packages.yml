@@ -70,7 +70,7 @@ jobs:
           linux_arm32='{"arch":"arm32","platform":"linux/arm/v7","image":"arm32v7/debian:bookworm","qt_secret":"QT_LINUX_ARM32_URL","sdk_release_tag":"qt-sdk-linux-arm32","sdk_asset":"qt5-linux-arm32.tar.xz"}'
           windows_x86_64='{"arch":"x86_64","mingw_triple":"x86_64-w64-mingw32","apt_package":"g++-mingw-w64-x86-64-posix","qt_secret":"QT_WINDOWS_X86_64_URL","sdk_release_tag":"qt-sdk-windows-x86_64","sdk_asset":"qt5-windows-x86_64.tar.xz"}'
           windows_x86_32='{"arch":"x86_32","mingw_triple":"i686-w64-mingw32","apt_package":"g++-mingw-w64-i686-posix","qt_secret":"QT_WINDOWS_X86_32_URL","sdk_release_tag":"qt-sdk-windows-x86_32","sdk_asset":"qt5-windows-x86_32.tar.xz"}'
-          macos_x86_64='{"arch":"x86_64","runner":"macos-13","cmake_arch":"x86_64","deployment_target":"10.13","qt_secret":"QT_MACOS_X86_64_URL","sdk_release_tag":"qt-sdk-macos-x86_64","sdk_asset":"qt5-macos-x86_64.tar.xz"}'
+          macos_x86_64='{"arch":"x86_64","runner":"macos-15-intel","cmake_arch":"x86_64","deployment_target":"10.13","qt_secret":"QT_MACOS_X86_64_URL","sdk_release_tag":"qt-sdk-macos-x86_64","sdk_asset":"qt5-macos-x86_64.tar.xz"}'
           macos_aarch64='{"arch":"aarch64","runner":"macos-14","cmake_arch":"arm64","deployment_target":"11.0","qt_secret":"QT_MACOS_ARM64_URL","sdk_release_tag":"qt-sdk-macos-aarch64","sdk_asset":"qt5-macos-aarch64.tar.xz"}'
 
           linux='[]'

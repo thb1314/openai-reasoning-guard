@@ -75,7 +75,7 @@ jobs:
             all)
               linux='[{"target":"linux-x86_64","image":"debian:bookworm"},{"target":"linux-x86_32","image":"i386/debian:bookworm"},{"target":"linux-arm64","image":"arm64v8/debian:bookworm"},{"target":"linux-arm32","image":"arm32v7/debian:bookworm"}]'
               windows='[{"target":"windows-x86_64"},{"target":"windows-x86_32"}]'
-              macos='[{"target":"macos-x86_64","runner":"macos-13"},{"target":"macos-aarch64","runner":"macos-14"}]'
+              macos='[{"target":"macos-x86_64","runner":"macos-15-intel"},{"target":"macos-aarch64","runner":"macos-14"}]'
               ;;
             linux-x86_64)
               linux='[{"target":"linux-x86_64","image":"debian:bookworm"}]'
@@ -96,7 +96,7 @@ jobs:
               windows='[{"target":"windows-x86_32"}]'
               ;;
             macos-x86_64)
-              macos='[{"target":"macos-x86_64","runner":"macos-13"}]'
+              macos='[{"target":"macos-x86_64","runner":"macos-15-intel"}]'
               ;;
             macos-aarch64)
               macos='[{"target":"macos-aarch64","runner":"macos-14"}]'
