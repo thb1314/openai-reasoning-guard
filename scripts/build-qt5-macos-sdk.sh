@@ -249,7 +249,8 @@ mac_arch="$(mac_arch_for_target "${TARGET}")"
     export QMAKE_APPLE_DEVICE_ARCHS="${mac_arch}"
     "${PREFIX}/bin/qmake" "${qttools_source_dir}/src/macdeployqt/macdeployqt/macdeployqt.pro" \
         QMAKE_MACOSX_DEPLOYMENT_TARGET="${deployment_target}" \
-        QMAKE_APPLE_DEVICE_ARCHS="${mac_arch}"
+        QMAKE_APPLE_DEVICE_ARCHS="${mac_arch}" \
+        DESTDIR="${qttools_build}/bin"
     make -j"${JOBS}"
     make install || true
     if [[ ! -x "${PREFIX}/bin/macdeployqt" ]]; then
