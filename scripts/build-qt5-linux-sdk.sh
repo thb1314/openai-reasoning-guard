@@ -269,9 +269,19 @@ extract_one() {
 
 patch_qtbase_for_modern_cpp() {
     local source_dir="$1"
+    local qglobal_header="${source_dir}/src/corelib/global/qglobal.h"
+    if [[ -f "${qglobal_header}" ]] && ! grep -q '#include <limits>' "${qglobal_header}"; then
+        sed -i '/#include <algorithm>/a #include <limits>' "${qglobal_header}"
+    fi
+
     local qfloat16_header="${source_dir}/src/corelib/global/qfloat16.h"
     if [[ -f "${qfloat16_header}" ]] && ! grep -q '#include <limits>' "${qfloat16_header}"; then
         sed -i '/#include <QtCore\/qglobal.h>/a #include <limits>' "${qfloat16_header}"
+    fi
+
+    local qbytearraymatcher_header="${source_dir}/src/corelib/text/qbytearraymatcher.h"
+    if [[ -f "${qbytearraymatcher_header}" ]] && ! grep -q '#include <limits>' "${qbytearraymatcher_header}"; then
+        sed -i '/#include <QtCore\/qbytearray.h>/a #include <limits>' "${qbytearraymatcher_header}"
     fi
 }
 
@@ -280,7 +290,14 @@ build_openssl() {
     extract_one "${OPENSSL_SOURCE_ARCHIVE}" "${source_dir}"
     (
         cd "${source_dir}"
-        if [[ "${TARGET}" == "linux-arm32" ]]; then
+        if [[ "${TARGET}" == "linux-x86_32" ]]; then
+            ./Configure linux-elf no-asm \
+                --prefix="${PREFIX}" \
+                --openssldir="${PREFIX}/ssl" \
+                shared \
+                no-ssl3 \
+                no-comp
+        elif [[ "${TARGET}" == "linux-arm32" ]]; then
             ./Configure linux-generic32 no-asm \
                 --prefix="${PREFIX}" \
                 --openssldir="${PREFIX}/ssl" \

@@ -147,12 +147,37 @@ extract_one() {
     tar -xf "${archive}" -C "${dest}" --strip-components=1
 }
 
+patch_qtbase_for_modern_cpp() {
+    local source_dir="$1"
+    local qglobal_header="${source_dir}/src/corelib/global/qglobal.h"
+    if [[ -f "${qglobal_header}" ]] && ! grep -q '#include <limits>' "${qglobal_header}"; then
+        sed -i '' '/#include <algorithm>/a\
+#include <limits>
+' "${qglobal_header}"
+    fi
+
+    local qfloat16_header="${source_dir}/src/corelib/global/qfloat16.h"
+    if [[ -f "${qfloat16_header}" ]] && ! grep -q '#include <limits>' "${qfloat16_header}"; then
+        sed -i '' '/#include <QtCore\/qglobal.h>/a\
+#include <limits>
+' "${qfloat16_header}"
+    fi
+
+    local qbytearraymatcher_header="${source_dir}/src/corelib/text/qbytearraymatcher.h"
+    if [[ -f "${qbytearraymatcher_header}" ]] && ! grep -q '#include <limits>' "${qbytearraymatcher_header}"; then
+        sed -i '' '/#include <QtCore\/qbytearray.h>/a\
+#include <limits>
+' "${qbytearraymatcher_header}"
+    fi
+}
+
 source_dir="${BUILD_DIR}/qtbase-src"
 qttools_source_dir="${BUILD_DIR}/qttools-src"
 qt_build="${BUILD_DIR}/qtbase-build"
 qttools_build="${BUILD_DIR}/qttools-macdeployqt-build"
 extract_one "${QTBASE_SOURCE_ARCHIVE}" "${source_dir}"
 extract_one "${QTTOOLS_SOURCE_ARCHIVE}" "${qttools_source_dir}"
+patch_qtbase_for_modern_cpp "${source_dir}"
 rm -rf "${qt_build}" "${qttools_build}"
 mkdir -p "${qt_build}" "${qttools_build}"
 
