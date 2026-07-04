@@ -196,9 +196,13 @@ copy_glob_optional() {
     local pattern
     shopt -s nullglob
     for pattern in "$@"; do
-        local files=(${pattern})
-        if ((${#files[@]} > 0)); then
-            cp -f "${files[@]}" "${destination}/"
+        if [[ "${pattern}" == *[\*\?\[]* ]]; then
+            local files=(${pattern})
+            if ((${#files[@]} > 0)); then
+                cp -f "${files[@]}" "${destination}/"
+            fi
+        elif [[ -f "${pattern}" ]]; then
+            cp -f "${pattern}" "${destination}/"
         fi
     done
     shopt -u nullglob
