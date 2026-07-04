@@ -23,18 +23,20 @@ INSTALL_PREFIX="${INSTALL_PREFIX:-/opt/${PACKAGE_ID}}"
 QT_ROOT="${QT_ROOT:-}"
 LOCAL_QT_BASE="${LOCAL_QT_BASE:-/mnt/data/qt-2080ti-sync}"
 OPENSSL_ROOT="${OPENSSL_ROOT:-}"
+RPM_RELEASE="${RPM_RELEASE:-1}"
 JOBS="${JOBS:-$(nproc 2>/dev/null || echo 2)}"
 SKIP_BUILD="${SKIP_BUILD:-0}"
 BUILD_TESTS="${BUILD_TESTS:-OFF}"
 
 usage() {
     cat <<EOF
-Usage: $(basename "$0") [--deb] [--appimage] [--all] [--skip-build] [--clean]
+Usage: $(basename "$0") [--deb] [--rpm] [--appimage] [--all] [--skip-build] [--clean]
 
 Build Linux packages for ${PACKAGE_ID}.
 
 Outputs:
   ${DIST_DIR}/${PACKAGE_ID}_${VERSION}_<arch>.deb
+  ${DIST_DIR}/${PACKAGE_ID}-${VERSION}-${RPM_RELEASE}.<arch>.rpm
   ${DIST_DIR}/${PACKAGE_ID}-gui-${VERSION}-<appimage-arch>.AppImage
   ${DIST_DIR}/${PACKAGE_ID}-cli-${VERSION}-<appimage-arch>.AppImage
 
@@ -50,6 +52,10 @@ Environment overrides:
   WORK_DIR=${WORK_DIR}
   TOOL_DIR=${TOOL_DIR}
   QT_ROOT=/path/to/qt5
+  DEB_ARCH=amd64
+  RPM_ARCH=x86_64
+  RPM_RELEASE=${RPM_RELEASE}
+  APPIMAGE_ARCH=x86_64
   APPIMAGETOOL=/path/to/appimagetool
   LOCAL_QT_BASE=${LOCAL_QT_BASE}
   OPENSSL_ROOT=/path/to/openssl
@@ -60,11 +66,13 @@ EOF
 }
 
 BUILD_DEB=0
+BUILD_RPM=0
 BUILD_APPIMAGE=0
 CLEAN=0
 
 if (($# == 0)); then
     BUILD_DEB=1
+    BUILD_RPM=1
     BUILD_APPIMAGE=1
 fi
 
@@ -73,11 +81,15 @@ while (($# > 0)); do
         --deb)
             BUILD_DEB=1
             ;;
+        --rpm)
+            BUILD_RPM=1
+            ;;
         --appimage)
             BUILD_APPIMAGE=1
             ;;
         --all)
             BUILD_DEB=1
+            BUILD_RPM=1
             BUILD_APPIMAGE=1
             ;;
         --skip-build)
@@ -99,8 +111,9 @@ while (($# > 0)); do
     shift
 done
 
-if ((BUILD_DEB == 0 && BUILD_APPIMAGE == 0)); then
+if ((BUILD_DEB == 0 && BUILD_RPM == 0 && BUILD_APPIMAGE == 0)); then
     BUILD_DEB=1
+    BUILD_RPM=1
     BUILD_APPIMAGE=1
 fi
 
@@ -145,16 +158,31 @@ dpkg_arch() {
     else
         case "$(uname -m)" in
             x86_64) echo amd64 ;;
+            i386|i486|i586|i686) echo i386 ;;
             aarch64|arm64) echo arm64 ;;
+            armv7l|armv7*) echo armhf ;;
             *) uname -m ;;
         esac
     fi
 }
 
+rpm_arch_for() {
+    case "$1" in
+        amd64|x86_64) echo x86_64 ;;
+        i386|i486|i586|i686) echo i686 ;;
+        arm64|aarch64) echo aarch64 ;;
+        armhf|armv7l|armv7*) echo armv7hl ;;
+        armel|armv6l|armv6*) echo armv6hl ;;
+        *) echo "$1" ;;
+    esac
+}
+
 appimage_arch_for() {
     case "$1" in
         amd64|x86_64) echo x86_64 ;;
+        i386|i486|i586|i686) echo i686 ;;
         arm64|aarch64) echo aarch64 ;;
+        armhf|armv7l|armv7*) echo armhf ;;
         *) echo "$1" ;;
     esac
 }
@@ -445,6 +473,71 @@ EOF
     echo "Built deb: ${out}"
 }
 
+build_rpm() {
+    require_tool rpmbuild
+    local root="${WORK_DIR}/rpmroot"
+    local rpm_top="${WORK_DIR}/rpmbuild"
+    local spec="${WORK_DIR}/${PACKAGE_ID}.spec"
+    local out="${DIST_DIR}/${PACKAGE_ID}-${VERSION}-${RPM_RELEASE}.${RPM_ARCH}.rpm"
+
+    stage_common_root "${root}" "${QT_ROOT_RESOLVED}"
+
+    rm -rf "${rpm_top}"
+    mkdir -p "${rpm_top}/BUILD" \
+             "${rpm_top}/BUILDROOT" \
+             "${rpm_top}/RPMS" \
+             "${rpm_top}/SOURCES" \
+             "${rpm_top}/SPECS" \
+             "${rpm_top}/SRPMS"
+
+    cat > "${spec}" <<EOF
+Name: ${PACKAGE_ID}
+Version: ${VERSION}
+Release: ${RPM_RELEASE}
+Summary: OpenAI-compatible reasoning degradation guard proxy
+License: MIT
+URL: https://github.com/thb1314/openai-reasoning-guard
+Requires: glibc, libstdc++
+
+%description
+A local Qt/C++ OpenAI-compatible proxy that guards against suspected degraded
+reasoning responses by inspecting usage reasoning token signals and retrying
+upstream requests.
+
+%prep
+
+%build
+
+%install
+mkdir -p "%{buildroot}"
+cp -a "%{_rpm_staging_root}/." "%{buildroot}/"
+
+%files
+%defattr(-,root,root,-)
+${INSTALL_PREFIX}
+/usr/bin/${GUI_COMMAND}
+/usr/bin/${CLI_COMMAND}
+/usr/bin/net-tunnel-gui
+/usr/bin/net-tunnel-cli
+/usr/share/applications/${DESKTOP_ID}.desktop
+/usr/share/icons/hicolor/*/apps/${DESKTOP_ID}.*
+EOF
+
+    rpmbuild -bb "${spec}" \
+        --target "${RPM_ARCH}" \
+        --define "_topdir ${rpm_top}" \
+        --define "_rpm_staging_root ${root}"
+
+    local built
+    built="$(find "${rpm_top}/RPMS" -type f -name '*.rpm' -print -quit)"
+    if [[ -z "${built}" ]]; then
+        echo "rpmbuild completed but no rpm was produced" >&2
+        exit 2
+    fi
+    cp -a "${built}" "${out}"
+    echo "Built rpm: ${out}"
+}
+
 write_appimage_desktop_file() {
     local path="$1"
     local name="$2"
@@ -519,12 +612,14 @@ fi
 mkdir -p "${DIST_DIR}" "${WORK_DIR}"
 
 QT_ROOT_RESOLVED="$(detect_qt_root)"
-DEB_ARCH="$(dpkg_arch)"
-APPIMAGE_ARCH="$(appimage_arch_for "${DEB_ARCH}")"
+DEB_ARCH="${DEB_ARCH:-$(dpkg_arch)}"
+RPM_ARCH="${RPM_ARCH:-$(rpm_arch_for "${DEB_ARCH}")}"
+APPIMAGE_ARCH="${APPIMAGE_ARCH:-$(appimage_arch_for "${DEB_ARCH}")}"
 
 echo "Package: ${PACKAGE_ID}"
 echo "Version: ${VERSION}"
 echo "Deb arch: ${DEB_ARCH}"
+echo "RPM arch: ${RPM_ARCH}"
 echo "AppImage arch: ${APPIMAGE_ARCH}"
 echo "Qt root: ${QT_ROOT_RESOLVED}"
 echo "Build dir: ${BUILD_DIR}"
@@ -534,6 +629,9 @@ build_project
 
 if ((BUILD_DEB == 1)); then
     build_deb
+fi
+if ((BUILD_RPM == 1)); then
+    build_rpm
 fi
 if ((BUILD_APPIMAGE == 1)); then
     build_appimage

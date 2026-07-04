@@ -1,12 +1,8 @@
-name: OpenAI Reasoning Guard Linux Packages
+name: OpenAI Reasoning Guard Packages
 
 on:
   workflow_dispatch:
     inputs:
-      qt_root:
-        description: "Qt root on the runner, containing bin/moc and lib/libQt5Core.so.5"
-        required: false
-        default: ""
       clean:
         description: "Clean package work/dist directories before building"
         required: false
@@ -19,90 +15,322 @@ on:
     tags:
       - "v*"
 
+permissions:
+  contents: read
+
 jobs:
   linux:
-    name: Build deb and AppImage
+    name: Linux ${{ matrix.arch }} deb/rpm/AppImage
     runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            platform: linux/amd64
+            qt_secret: QT_LINUX_X86_64_URL
+          - arch: x86_32
+            platform: linux/386
+            qt_secret: QT_LINUX_X86_32_URL
+          - arch: arm64
+            platform: linux/arm64
+            qt_secret: QT_LINUX_ARM64_URL
+          - arch: arm32
+            platform: linux/arm/v7
+            qt_secret: QT_LINUX_ARM32_URL
     env:
-      NET_TUNNEL_QT_ARCHIVE_URL: ${{ secrets.NET_TUNNEL_QT_ARCHIVE_URL }}
+      QT_ARCHIVE_URL: ${{ secrets[matrix.qt_secret] }}
       DOWNLOAD_PROXY: ${{ secrets.DOWNLOAD_PROXY }}
+      CLEAN_PACKAGES: ${{ github.event_name != 'workflow_dispatch' || inputs.clean != 'false' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install packaging tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential \
-            ca-certificates \
-            cmake \
-            curl \
-            dpkg-dev
+      - name: Enable QEMU
+        uses: docker/setup-qemu-action@v3
 
-      - name: Resolve Qt root
+      - name: Build Linux packages
         shell: bash
         run: |
           set -euo pipefail
-
-          qt_root_input="${{ inputs.qt_root }}"
-          if [[ -n "${qt_root_input}" ]]; then
-            qt_root="${qt_root_input}"
-          elif [[ -n "${NET_TUNNEL_QT_ARCHIVE_URL:-}" ]]; then
-            mkdir -p "${RUNNER_TEMP}/qt"
-            archive="${RUNNER_TEMP}/qt-sdk"
-            curl -L --fail --connect-timeout 30 -o "${archive}" "${NET_TUNNEL_QT_ARCHIVE_URL}"
-            if tar -tf "${archive}" >/dev/null 2>&1; then
-              tar -xf "${archive}" -C "${RUNNER_TEMP}/qt"
-            else
-              echo "Qt archive must be a tar/tar.gz/tar.xz/tgz file" >&2
-              exit 2
-            fi
-            moc_path="$(find "${RUNNER_TEMP}/qt" -type f -path '*/bin/moc' -print -quit)"
-            if [[ -z "${moc_path}" ]]; then
-              echo "Unable to locate bin/moc inside downloaded Qt archive" >&2
-              exit 2
-            fi
-            qt_root="$(cd -- "$(dirname -- "${moc_path}")/.." && pwd)"
-          elif [[ -x "/mnt/data/qt-2080ti-sync/qt5-openssl/bin/moc" ]]; then
-            qt_root="/mnt/data/qt-2080ti-sync/qt5-openssl"
-          else
-            echo "No Qt SDK found. Provide workflow input qt_root, configure NET_TUNNEL_QT_ARCHIVE_URL, or use a self-hosted runner with /mnt/data/qt-2080ti-sync/qt5-openssl." >&2
+          if [[ -z "${QT_ARCHIVE_URL:-}" ]]; then
+            echo "Missing repository secret: ${{ matrix.qt_secret }}" >&2
             exit 2
           fi
 
-          test -x "${qt_root}/bin/moc"
-          test -f "${qt_root}/lib/libQt5Core.so.5"
-          echo "QT_ROOT=${qt_root}" >> "${GITHUB_ENV}"
-          echo "Using Qt root: ${qt_root}"
+          docker run --rm \
+            --platform "${{ matrix.platform }}" \
+            -v "${PWD}:/workspace" \
+            -w /workspace \
+            -e QT_ARCHIVE_URL="${QT_ARCHIVE_URL}" \
+            -e DOWNLOAD_PROXY="${DOWNLOAD_PROXY:-}" \
+            -e PACKAGE_ARCH="${{ matrix.arch }}" \
+            -e CLEAN_PACKAGES="${CLEAN_PACKAGES}" \
+            debian:bookworm \
+            bash -lc '
+              set -euo pipefail
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update
+              apt-get install -y --no-install-recommends \
+                bash \
+                build-essential \
+                ca-certificates \
+                cmake \
+                curl \
+                dpkg-dev \
+                fakeroot \
+                file \
+                patchelf \
+                rpm \
+                unzip \
+                zlib1g
 
-      - name: Build and run QtTest
+              qt_dir=/opt/qt-sdk
+              archive=/tmp/qt-sdk.archive
+              mkdir -p "${qt_dir}"
+              curl_args=(-L --fail --connect-timeout 30 -o "${archive}")
+              if [[ -n "${DOWNLOAD_PROXY:-}" ]]; then
+                curl_args+=(--proxy "${DOWNLOAD_PROXY}")
+              fi
+              curl "${curl_args[@]}" "${QT_ARCHIVE_URL}"
+
+              if tar -tf "${archive}" >/dev/null 2>&1; then
+                tar -xf "${archive}" -C "${qt_dir}"
+              elif unzip -tq "${archive}" >/dev/null 2>&1; then
+                unzip -q "${archive}" -d "${qt_dir}"
+              else
+                echo "Qt archive must be a tar/tar.gz/tar.xz/tgz or zip file" >&2
+                exit 2
+              fi
+
+              moc_path="$(find "${qt_dir}" -type f -path "*/bin/moc" -print -quit)"
+              if [[ -z "${moc_path}" ]]; then
+                echo "Unable to locate bin/moc inside downloaded Qt archive" >&2
+                exit 2
+              fi
+              chmod +x "${moc_path}" || true
+              qt_root="$(cd -- "$(dirname -- "${moc_path}")/.." && pwd)"
+              test -f "${qt_root}/lib/libQt5Core.so.5"
+              echo "Using Qt root: ${qt_root}"
+
+              build_dir="/workspace/build-ci-${PACKAGE_ARCH}"
+              cmake -S /workspace -B "${build_dir}" \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DNET_TUNNEL_QT_SDK_ROOT="${qt_root}" \
+                -DNET_TUNNEL_BUILD_TESTS=ON
+              cmake --build "${build_dir}" -j"$(nproc)"
+              ctest --test-dir "${build_dir}" --output-on-failure
+
+              package_args=(--all --skip-build)
+              if [[ "${CLEAN_PACKAGES:-true}" == "true" ]]; then
+                package_args+=(--clean)
+              fi
+              QT_ROOT="${qt_root}" \
+              BUILD_DIR="${build_dir}" \
+              DIST_DIR="/workspace/dist/${PACKAGE_ARCH}" \
+              WORK_DIR="/workspace/.package-work/${PACKAGE_ARCH}" \
+              scripts/package-linux.sh "${package_args[@]}"
+            '
+          sudo chown -R "$(id -u):$(id -g)" \
+            "build-ci-${{ matrix.arch }}" \
+            "dist/${{ matrix.arch }}" \
+            ".package-work/${{ matrix.arch }}" || true
+
+      - name: Upload Linux packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: openai-reasoning-guard-linux-${{ matrix.arch }}
+          path: |
+            dist/${{ matrix.arch }}/*.deb
+            dist/${{ matrix.arch }}/*.rpm
+            dist/${{ matrix.arch }}/*.AppImage
+          if-no-files-found: error
+
+  windows:
+    name: Windows ${{ matrix.arch }} exe
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            msvc_arch: x64
+            qt_secret: QT_WINDOWS_X86_64_URL
+          - arch: x86_32
+            msvc_arch: x86
+            qt_secret: QT_WINDOWS_X86_32_URL
+    env:
+      QT_ARCHIVE_URL: ${{ secrets[matrix.qt_secret] }}
+      DOWNLOAD_PROXY: ${{ secrets.DOWNLOAD_PROXY }}
+      CLEAN_PACKAGES: ${{ github.event_name != 'workflow_dispatch' || inputs.clean != 'false' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.msvc_arch }}
+
+      - name: Install Ninja
+        shell: powershell
+        run: |
+          if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) {
+            choco install ninja --no-progress -y
+          }
+
+      - name: Resolve Qt SDK
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          if (-not $env:QT_ARCHIVE_URL) {
+            throw "Missing repository secret: ${{ matrix.qt_secret }}"
+          }
+          $qtDir = Join-Path $env:RUNNER_TEMP "qt-sdk"
+          $archive = Join-Path $env:RUNNER_TEMP "qt-sdk.archive"
+          New-Item -ItemType Directory -Force -Path $qtDir | Out-Null
+          $curlArgs = @("-L", "--fail", "--connect-timeout", "30", "-o", $archive)
+          if ($env:DOWNLOAD_PROXY) {
+            $curlArgs += @("--proxy", $env:DOWNLOAD_PROXY)
+          }
+          $curlArgs += $env:QT_ARCHIVE_URL
+          curl.exe @curlArgs
+          tar -xf $archive -C $qtDir
+          if ($LASTEXITCODE -ne 0) {
+            Expand-Archive -Path $archive -DestinationPath $qtDir -Force
+          }
+          $moc = Get-ChildItem -Path $qtDir -Recurse -Filter moc.exe | Select-Object -First 1
+          if (-not $moc) {
+            throw "Unable to locate bin/moc.exe inside downloaded Qt archive"
+          }
+          $qtRoot = Split-Path -Parent (Split-Path -Parent $moc.FullName)
+          if (-not (Test-Path (Join-Path $qtRoot "bin/Qt5Core.dll"))) {
+            throw "Qt5Core.dll not found under $qtRoot"
+          }
+          "QT_ROOT=$qtRoot" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "Using Qt root: $qtRoot"
+
+      - name: Build and test
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $buildDir = "build-ci-${{ matrix.arch }}"
+          cmake -S . -B $buildDir -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DNET_TUNNEL_QT_SDK_ROOT="$env:QT_ROOT" `
+            -DNET_TUNNEL_BUILD_TESTS=ON
+          cmake --build $buildDir --parallel
+          ctest --test-dir $buildDir --output-on-failure
+
+      - name: Build Windows package
+        shell: powershell
+        run: |
+          $clean = @()
+          if ($env:CLEAN_PACKAGES -eq "true") {
+            $clean += "-Clean"
+          }
+          scripts/package-windows.ps1 `
+            -Arch "${{ matrix.arch }}" `
+            -QtRoot "$env:QT_ROOT" `
+            -BuildDir "build-ci-${{ matrix.arch }}" `
+            -SkipBuild `
+            @clean
+
+      - name: Upload Windows package
+        uses: actions/upload-artifact@v4
+        with:
+          name: openai-reasoning-guard-windows-${{ matrix.arch }}
+          path: dist/*windows-${{ matrix.arch }}*.zip
+          if-no-files-found: error
+
+  macos:
+    name: macOS ${{ matrix.arch }} dmg
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: macos-13
+            cmake_arch: x86_64
+            qt_secret: QT_MACOS_X86_64_URL
+          - arch: aarch64
+            runner: macos-14
+            cmake_arch: arm64
+            qt_secret: QT_MACOS_ARM64_URL
+    env:
+      QT_ARCHIVE_URL: ${{ secrets[matrix.qt_secret] }}
+      DOWNLOAD_PROXY: ${{ secrets.DOWNLOAD_PROXY }}
+      CLEAN_PACKAGES: ${{ github.event_name != 'workflow_dispatch' || inputs.clean != 'false' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve Qt SDK
         shell: bash
         run: |
           set -euo pipefail
-          cmake -S . -B build-ci \
+          if [[ -z "${QT_ARCHIVE_URL:-}" ]]; then
+            echo "Missing repository secret: ${{ matrix.qt_secret }}" >&2
+            exit 2
+          fi
+          qt_dir="${RUNNER_TEMP}/qt-sdk"
+          archive="${RUNNER_TEMP}/qt-sdk.archive"
+          mkdir -p "${qt_dir}"
+          curl_args=(-L --fail --connect-timeout 30 -o "${archive}")
+          if [[ -n "${DOWNLOAD_PROXY:-}" ]]; then
+            curl_args+=(--proxy "${DOWNLOAD_PROXY}")
+          fi
+          curl "${curl_args[@]}" "${QT_ARCHIVE_URL}"
+          if tar -tf "${archive}" >/dev/null 2>&1; then
+            tar -xf "${archive}" -C "${qt_dir}"
+          elif unzip -tq "${archive}" >/dev/null 2>&1; then
+            unzip -q "${archive}" -d "${qt_dir}"
+          else
+            echo "Qt archive must be a tar/tar.gz/tar.xz/tgz or zip file" >&2
+            exit 2
+          fi
+          moc_path="$(find "${qt_dir}" -type f -path '*/bin/moc' -print -quit)"
+          if [[ -z "${moc_path}" ]]; then
+            echo "Unable to locate bin/moc inside downloaded Qt archive" >&2
+            exit 2
+          fi
+          qt_root="$(cd -- "$(dirname -- "${moc_path}")/.." && pwd)"
+          test -x "${qt_root}/bin/macdeployqt"
+          echo "QT_ROOT=${qt_root}" >> "${GITHUB_ENV}"
+          echo "Using Qt root: ${qt_root}"
+
+      - name: Build and test
+        shell: bash
+        run: |
+          set -euo pipefail
+          build_dir="build-ci-${{ matrix.arch }}"
+          cmake -S . -B "${build_dir}" \
             -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES="${{ matrix.cmake_arch }}" \
             -DNET_TUNNEL_QT_SDK_ROOT="${QT_ROOT}" \
             -DNET_TUNNEL_BUILD_TESTS=ON
-          cmake --build build-ci -j"$(nproc)"
-          ctest --test-dir build-ci --output-on-failure
+          cmake --build "${build_dir}" -j"$(sysctl -n hw.ncpu)"
+          ctest --test-dir "${build_dir}" --output-on-failure
 
-      - name: Build packages
+      - name: Build macOS dmg
         shell: bash
         run: |
           set -euo pipefail
           clean_arg=()
-          if [[ "${{ inputs.clean }}" != "false" ]]; then
+          if [[ "${CLEAN_PACKAGES}" == "true" ]]; then
             clean_arg+=(--clean)
           fi
-          QT_ROOT="${QT_ROOT}" BUILD_DIR="${PWD}/build-ci" \
-            scripts/package-linux.sh --all --skip-build "${clean_arg[@]}"
+          QT_ROOT="${QT_ROOT}" \
+          BUILD_DIR="${PWD}/build-ci-${{ matrix.arch }}" \
+          scripts/package-macos.sh \
+            --arch "${{ matrix.arch }}" \
+            --skip-build \
+            "${clean_arg[@]}"
 
-      - name: Upload packages
+      - name: Upload macOS dmg
         uses: actions/upload-artifact@v4
         with:
-          name: openai-reasoning-guard-linux-packages
-          path: |
-            dist/*.deb
-            dist/*.AppImage
+          name: openai-reasoning-guard-macos-${{ matrix.arch }}
+          path: dist/*macos-${{ matrix.arch }}*.dmg
           if-no-files-found: error

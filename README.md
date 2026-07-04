@@ -98,11 +98,19 @@ cmake -S . -B build \
 
 本机开发构建默认使用 `/mnt/data/qt-2080ti-sync` 下的自编译 Qt5，不使用系统 Qt5。
 
-## Linux 打包
+## 打包
 
-Linux 出包脚本在 [scripts/package-linux.sh](scripts/package-linux.sh)。流程参考 RustDesk 的 Linux 打包思路：先构建二进制并组织 `.deb` staging root，再复用同一份 staging 内容生成 AppDir 和 AppImage。
+项目提供三个本地打包入口：
 
-本机一键构建 `.deb`、GUI AppImage 和 CLI AppImage：
+- Linux: [scripts/package-linux.sh](scripts/package-linux.sh)，产出 `.deb`、`.rpm`、GUI AppImage 和 CLI AppImage。
+- Windows: [scripts/package-windows.ps1](scripts/package-windows.ps1)，产出包含 GUI/CLI exe 和 Qt runtime 的 zip。
+- macOS: [scripts/package-macos.sh](scripts/package-macos.sh)，产出包含 GUI app 和 CLI 的 dmg。
+
+所有平台都按同一个原则处理 Qt：构建和打包只使用显式 Qt SDK，不自动使用系统 Qt5。本机 Linux 默认搜索 `/mnt/data/qt-2080ti-sync` 下的自编译 Qt5；CI 必须通过各架构 Qt SDK archive secret 提供 Qt。
+
+### Linux
+
+本机一键构建 `.deb`、`.rpm`、GUI AppImage 和 CLI AppImage：
 
 ```bash
 scripts/package-linux.sh --all --clean
@@ -112,6 +120,7 @@ scripts/package-linux.sh --all --clean
 
 ```bash
 scripts/package-linux.sh --deb --clean
+scripts/package-linux.sh --rpm --clean
 scripts/package-linux.sh --appimage --clean
 ```
 
@@ -119,6 +128,7 @@ scripts/package-linux.sh --appimage --clean
 
 ```text
 dist/openai-reasoning-guard_<version>_amd64.deb
+dist/openai-reasoning-guard-<version>-1.x86_64.rpm
 dist/openai-reasoning-guard-gui-<version>-x86_64.AppImage
 dist/openai-reasoning-guard-cli-<version>-x86_64.AppImage
 ```
@@ -133,7 +143,7 @@ QT_ROOT=/path/to/qt5 scripts/package-linux.sh --all --clean
 
 | 变量 | 示例 | 说明 |
 | --- | --- | --- |
-| `PACKAGE_ID` | `openai-reasoning-guard` | Debian package 名、安装目录名和 AppImage 文件名前缀。 |
+| `PACKAGE_ID` | `openai-reasoning-guard` | Linux package 名、安装目录名、AppImage 文件名前缀，以及 Windows/macOS 默认包名前缀。 |
 | `APP_NAME` | `"OpenAI Reasoning Guard"` | desktop 文件里的应用显示名。 |
 | `GUI_COMMAND` | `openai-reasoning-guard-gui` | 安装后的 GUI 命令名。 |
 | `CLI_COMMAND` | `openai-reasoning-guard-cli` | 安装后的 CLI 命令名。 |
@@ -141,9 +151,13 @@ QT_ROOT=/path/to/qt5 scripts/package-linux.sh --all --clean
 | `QT_ROOT` | `/mnt/data/qt-2080ti-sync/qt5-openssl` | Qt SDK 根目录，必须包含 `bin/moc`、`lib/libQt5Core.so.5` 和 `plugins/platforms/libqxcb.so`。 |
 | `LOCAL_QT_BASE` | `/mnt/data/qt-2080ti-sync` | 本机默认 Qt 搜索根目录；只有 `QT_ROOT` 为空时使用。 |
 | `OPENSSL_ROOT` | `/path/to/openssl` | 可选 OpenSSL runtime 根目录；未设置时优先从 Qt 的 `lib` 目录拷贝。 |
+| `DEB_ARCH` | `amd64` | 覆盖 deb 架构名。自动值通常是 `amd64`、`i386`、`arm64` 或 `armhf`。 |
+| `RPM_ARCH` | `x86_64` | 覆盖 rpm 架构名。自动值通常是 `x86_64`、`i686`、`aarch64` 或 `armv7hl`。 |
+| `RPM_RELEASE` | `1` | rpm release 字段，也会出现在 rpm 文件名中。 |
+| `APPIMAGE_ARCH` | `x86_64` | 覆盖 AppImage 架构名。自动值通常是 `x86_64`、`i686`、`aarch64` 或 `armhf`。 |
 | `VERSION` | `0.1.0` | 覆盖包版本号。默认读取 CMake project version。 |
 | `BUILD_DIR` | `build-package` | Release 构建目录。 |
-| `DIST_DIR` | `dist` | `.deb` 和 `AppImage` 输出目录。 |
+| `DIST_DIR` | `dist` | 包产物输出目录。 |
 | `WORK_DIR` | `.package-work` | 打包 staging 临时目录。 |
 | `TOOL_DIR` | `$HOME/.cache/openai-reasoning-guard/package-tools` | `appimagetool` 缓存目录；`--clean` 不会删除这里。 |
 | `APPIMAGETOOL` | `/path/to/appimagetool` | 显式指定本机已有的 `appimagetool`，可完全跳过下载。 |
@@ -154,13 +168,75 @@ QT_ROOT=/path/to/qt5 scripts/package-linux.sh --all --clean
 
 运行时 Qt 库会被打进 `/opt/openai-reasoning-guard/qt`。安装后的正式入口是 `/usr/bin/openai-reasoning-guard-gui` 和 `/usr/bin/openai-reasoning-guard-cli`，同时保留 `/usr/bin/net-tunnel-gui` 和 `/usr/bin/net-tunnel-cli` 兼容 symlink。包内 wrapper 会把配置文件放到 `${XDG_CONFIG_HOME:-$HOME/.config}/openai-reasoning-guard/config.json`，旧版 `${XDG_CONFIG_HOME:-$HOME/.config}/net-tunnel-cpp-client/config.json` 存在时会自动复制一次，避免写入 `/opt`。
 
-Linux 打包流水线在 [.github/workflows/linux-packages.yml](.github/workflows/linux-packages.yml)，可手动触发，也会在 `v*` tag 上触发。workflow 不安装系统 Qt5，只接受自编译 Qt SDK：
+### Windows
 
-- 自托管 runner：把 Qt 放在 `/mnt/data/qt-2080ti-sync/qt5-openssl`，直接运行 workflow。
-- GitHub-hosted runner：把自编译 Qt SDK 打成 tar/tar.gz/tar.xz/tgz，并配置仓库 secret `NET_TUNNEL_QT_ARCHIVE_URL`。压缩包内需要能找到 `bin/moc` 和 `lib/libQt5Core.so.5`。
-- 手动触发时也可以填 `qt_root`，指向 runner 上已有的 Qt SDK。
+Windows 打包脚本会生成一个 zip，内部包含：
 
-CI 会先用 QtTest 验证，再调用同一个 `package-linux.sh --all --skip-build` 出 `.deb`、GUI AppImage 和 CLI AppImage，最后上传 `openai-reasoning-guard-linux-packages` artifact。Windows x86_64 exe 和 macOS dmg 后续可以按同样原则新增独立 workflow，但当前优先支持 Linux。
+- `openai-reasoning-guard-gui.exe`
+- `openai-reasoning-guard-cli.exe`
+- Qt DLL、`plugins/platforms/qwindows.dll`、字体、配置示例和说明文件
+
+示例：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/package-windows.ps1 `
+  -Arch x86_64 `
+  -QtRoot C:\Qt\5.15.2\msvc2019_64 `
+  -Clean
+```
+
+输出示例：
+
+```text
+dist/openai-reasoning-guard-windows-x86_64-0.1.0.zip
+```
+
+`-Arch x86_32` 用于 32 位 Windows 包。Qt SDK 必须和当前 C++ 编译器架构一致，例如 x86_64 使用 64 位 MSVC Qt，x86_32 使用 32 位 MSVC Qt。
+
+### macOS
+
+macOS 打包脚本会创建 `.app` bundle，使用 `macdeployqt` 收集 Qt frameworks，并生成 dmg。CLI 二进制会放在 app 的 `Contents/Resources/bin` 中，dmg 根目录也会提供一个 `bin/openai-reasoning-guard-cli` 启动脚本。
+
+示例：
+
+```bash
+QT_ROOT=/path/to/Qt/5.15.2/clang_64 scripts/package-macos.sh --arch x86_64 --clean
+QT_ROOT=/path/to/Qt/5.15.2/macos scripts/package-macos.sh --arch aarch64 --clean
+```
+
+输出示例：
+
+```text
+dist/openai-reasoning-guard-macos-x86_64-0.1.0.dmg
+dist/openai-reasoning-guard-macos-aarch64-0.1.0.dmg
+```
+
+### GitHub Actions
+
+打包流水线在 [.github/workflows/linux-packages.yml](.github/workflows/linux-packages.yml)，可手动触发，也会在 `v*` tag 上触发。workflow 覆盖以下目标：
+
+| 目标 | runner/容器 | 产物 | Qt SDK secret |
+| --- | --- | --- | --- |
+| Linux x86_64 | `linux/amd64` Docker | deb、rpm、GUI AppImage、CLI AppImage | `QT_LINUX_X86_64_URL` |
+| Linux x86_32 | `linux/386` Docker | deb、rpm、GUI AppImage、CLI AppImage | `QT_LINUX_X86_32_URL` |
+| Linux arm64 | `linux/arm64` Docker | deb、rpm、GUI AppImage、CLI AppImage | `QT_LINUX_ARM64_URL` |
+| Linux arm32 | `linux/arm/v7` Docker | deb、rpm、GUI AppImage、CLI AppImage | `QT_LINUX_ARM32_URL` |
+| Windows x86_64 | `windows-2022` | zip，内含 x86_64 exe | `QT_WINDOWS_X86_64_URL` |
+| Windows x86_32 | `windows-2022` | zip，内含 x86 exe | `QT_WINDOWS_X86_32_URL` |
+| macOS x86_64 | `macos-13` | dmg | `QT_MACOS_X86_64_URL` |
+| macOS aarch64 | `macos-14` | dmg | `QT_MACOS_ARM64_URL` |
+
+每个 Qt SDK secret 的值是一个可下载 archive URL，支持 `tar`、`tar.gz`、`tar.xz`、`tgz` 或 `zip`。archive 解压后需要能找到对应平台的 Qt 工具和 runtime：
+
+- Linux archive：包含 `bin/moc`、`lib/libQt5Core.so.5`、`plugins/platforms/libqxcb.so`，建议同时包含 `lib/cmake/Qt5`。
+- Windows archive：包含 `bin/moc.exe`、`bin/Qt5Core.dll`、`plugins/platforms/qwindows.dll` 和 `lib/cmake/Qt5`。
+- macOS archive：包含 `bin/moc`、`bin/macdeployqt` 和 Qt frameworks/CMake package。
+
+可选 secret：
+
+- `DOWNLOAD_PROXY`：下载 Qt SDK 或 `appimagetool` 时使用的代理，例如 `http://127.0.0.1:7890`。
+
+CI 每个架构都会先编译并运行 QtTest，再调用对应平台打包脚本。Linux 任务在 Debian bookworm 容器内运行，并通过 QEMU 覆盖 arm64/arm32；Windows 和 macOS 使用 GitHub 托管 runner 的原生编译器。workflow 不会安装或使用系统 Qt5。
 
 ## CLI
 
@@ -391,6 +467,8 @@ CMakeLists.txt
 config.example.json
 scripts/
   package-linux.sh
+  package-macos.sh
+  package-windows.ps1
   restart-gui.sh
 src/
   core/   # 业务核心：配置、HTTP 代理、拦截策略、统计
