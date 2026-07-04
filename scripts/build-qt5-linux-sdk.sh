@@ -318,6 +318,89 @@ patch_qtbase_for_modern_cpp() {
     fi
 }
 
+qtbase_version() {
+    local source_dir="$1"
+    sed -n 's/^MODULE_VERSION[[:space:]]*=[[:space:]]*//p' "${source_dir}/.qmake.conf" | head -n 1
+}
+
+write_bootstrap_private_module_pri() {
+    local source_dir="$1"
+    local qt_build="$2"
+    local prefix="$3"
+    local qt_version
+    qt_version="$(qtbase_version "${source_dir}")"
+    qt_version="${qt_version:-5.15.2}"
+    local major="${qt_version%%.*}"
+    local rest="${qt_version#*.}"
+    local minor="${rest%%.*}"
+    local patch="${qt_version##*.}"
+
+    local modules_inst="${qt_build}/mkspecs/modules-inst"
+    mkdir -p "${modules_inst}"
+    cat > "${modules_inst}/qt_lib_bootstrap_private.pri" <<EOF
+QT.bootstrap_private.VERSION = ${qt_version}
+QT.bootstrap_private.name = QtBootstrap
+QT.bootstrap_private.module = Qt5Bootstrap
+QT.bootstrap_private.libs = \$\$QT_MODULE_HOST_LIB_BASE
+QT.bootstrap_private.includes = \$\$QT_MODULE_INCLUDE_BASE \$\$QT_MODULE_INCLUDE_BASE/QtCore \$\$QT_MODULE_INCLUDE_BASE/QtCore/${qt_version} \$\$QT_MODULE_INCLUDE_BASE/QtCore/${qt_version}/QtCore \$\$QT_MODULE_INCLUDE_BASE/QtXml \$\$QT_MODULE_INCLUDE_BASE/QtXml/${qt_version} \$\$QT_MODULE_INCLUDE_BASE/QtXml/${qt_version}/QtXml
+QT.bootstrap_private.frameworks =
+QT.bootstrap_private.depends =
+QT.bootstrap_private.uses =
+QT.bootstrap_private.module_config = v2 staticlib internal_module
+QT.bootstrap_private.CONFIG = gc_binaries
+QT.bootstrap_private.DEFINES = QT_BOOTSTRAP_LIB QT_VERSION_STR=\\'\\"${qt_version}\\"\\' QT_VERSION_MAJOR=${major} QT_VERSION_MINOR=${minor} QT_VERSION_PATCH=${patch} QT_BOOTSTRAPPED QT_NO_CAST_TO_ASCII
+QT.bootstrap_private.enabled_features =
+QT.bootstrap_private.disabled_features =
+QT_CONFIG +=
+QT_MODULES += bootstrap
+EOF
+
+    local module_dir
+    for module_dir in "${qt_build}/mkspecs/modules" "${prefix}/mkspecs/modules"; do
+        mkdir -p "${module_dir}"
+        cat > "${module_dir}/qt_lib_bootstrap_private.pri" <<EOF
+QT_MODULE_BIN_BASE = ${qt_build}/bin
+QT_MODULE_INCLUDE_BASE = ${source_dir}/include
+QT_MODULE_LIB_BASE = ${qt_build}/lib
+QT_MODULE_HOST_LIB_BASE = ${qt_build}/lib
+include(${modules_inst}/qt_lib_bootstrap_private.pri)
+QT.bootstrap_private.priority = 1
+EOF
+    done
+}
+
+normalize_installed_bootstrap_private_pri() {
+    local source_dir="$1"
+    local prefix="$2"
+    local qt_version
+    qt_version="$(qtbase_version "${source_dir}")"
+    qt_version="${qt_version:-5.15.2}"
+    local major="${qt_version%%.*}"
+    local rest="${qt_version#*.}"
+    local minor="${rest%%.*}"
+    local patch="${qt_version##*.}"
+
+    local module_dir="${prefix}/mkspecs/modules"
+    mkdir -p "${module_dir}"
+    cat > "${module_dir}/qt_lib_bootstrap_private.pri" <<EOF
+QT.bootstrap_private.VERSION = ${qt_version}
+QT.bootstrap_private.name = QtBootstrap
+QT.bootstrap_private.module = Qt5Bootstrap
+QT.bootstrap_private.libs = \$\$QT_MODULE_HOST_LIB_BASE
+QT.bootstrap_private.includes = \$\$QT_MODULE_INCLUDE_BASE \$\$QT_MODULE_INCLUDE_BASE/QtCore \$\$QT_MODULE_INCLUDE_BASE/QtCore/${qt_version} \$\$QT_MODULE_INCLUDE_BASE/QtCore/${qt_version}/QtCore \$\$QT_MODULE_INCLUDE_BASE/QtXml \$\$QT_MODULE_INCLUDE_BASE/QtXml/${qt_version} \$\$QT_MODULE_INCLUDE_BASE/QtXml/${qt_version}/QtXml
+QT.bootstrap_private.frameworks =
+QT.bootstrap_private.depends =
+QT.bootstrap_private.uses =
+QT.bootstrap_private.module_config = v2 staticlib internal_module
+QT.bootstrap_private.CONFIG = gc_binaries
+QT.bootstrap_private.DEFINES = QT_BOOTSTRAP_LIB QT_VERSION_STR=\\'\\"${qt_version}\\"\\' QT_VERSION_MAJOR=${major} QT_VERSION_MINOR=${minor} QT_VERSION_PATCH=${patch} QT_BOOTSTRAPPED QT_NO_CAST_TO_ASCII
+QT.bootstrap_private.enabled_features =
+QT.bootstrap_private.disabled_features =
+QT_CONFIG +=
+QT_MODULES += bootstrap
+EOF
+}
+
 build_openssl() {
     local source_dir="${BUILD_DIR}/openssl-src"
     extract_one "${OPENSSL_SOURCE_ARCHIVE}" "${source_dir}"
@@ -382,8 +465,10 @@ build_qtbase() {
             -openssl-runtime \
             -I "${PREFIX}/include" \
             -L "${PREFIX}/lib"
+        write_bootstrap_private_module_pri "${source_dir}" "${qt_build}" "${PREFIX}"
         make -j"${JOBS}"
         make install
+        normalize_installed_bootstrap_private_pri "${source_dir}" "${PREFIX}"
     )
 }
 
