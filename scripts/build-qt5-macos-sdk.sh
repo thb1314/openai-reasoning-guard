@@ -187,6 +187,9 @@ patch_qtbase_for_modern_cpp() {
         if ! grep -q 'CoreGraphics/CGColorSpace.h' "${qiosurface_header}"; then
             perl -0pi -e 's/(#pragma once\n)/$1#include <CoreGraphics\/CGColorSpace.h>\n/' "${qiosurface_header}"
         fi
+        if ! grep -q 'CoreGraphics/CGColorSpace.h' "${qiosurface_header}"; then
+            perl -0pi -e 's/\A/#include <CoreGraphics\/CGColorSpace.h>\n/' "${qiosurface_header}"
+        fi
     fi
 }
 
