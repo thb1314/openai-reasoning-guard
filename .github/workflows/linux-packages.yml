@@ -104,6 +104,16 @@ jobs:
                 dpkg-dev \
                 fakeroot \
                 file \
+                libfontconfig1-dev \
+                libfreetype6-dev \
+                libglib2.0-dev \
+                libice-dev \
+                libsm-dev \
+                libx11-dev \
+                libxau-dev \
+                libxcb1-dev \
+                libxdmcp-dev \
+                uuid-dev \
                 patchelf \
                 rpm \
                 unzip \
