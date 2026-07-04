@@ -213,7 +213,7 @@ dist/openai-reasoning-guard-macos-aarch64-0.1.0.dmg
 
 ### GitHub Actions
 
-打包流水线在 [.github/workflows/linux-packages.yml](.github/workflows/linux-packages.yml)，可手动触发，也会在 `v*` tag 上触发。workflow 覆盖以下目标：
+打包流水线在 [.github/workflows/linux-packages.yml](.github/workflows/linux-packages.yml)，可手动触发，也会在 `v*` tag 上触发。手动触发时 `target` 默认只构建 `linux-x86_64`，也可以选择单个目标或 `all`。workflow 覆盖以下目标：
 
 | 目标 | runner/容器 | 产物 | Qt SDK secret |
 | --- | --- | --- | --- |
