@@ -226,6 +226,11 @@ dist/openai-reasoning-guard-macos-aarch64-0.1.0.dmg
 | macOS x86_64 | `macos-13` | dmg | `QT_MACOS_X86_64_URL` |
 | macOS aarch64 | `macos-14` | dmg | `QT_MACOS_ARM64_URL` |
 
+默认每个成功 job 都会先上传 Actions artifact，artifact 适合检查构建结果但会过期。要把产物放进 GitHub Release：
+
+- 推送 `v*` tag 时自动发布到同名 Release，例如 `v0.1.0`。
+- 手动触发时把 `publish_release` 设为 `true`，默认发布到 `nightly` prerelease，也可以填写其它 `release_tag`。
+
 每个 Qt SDK secret 的值是一个可下载 archive URL，支持 `tar`、`tar.gz`、`tar.xz`、`tgz` 或 `zip`。archive 解压后需要能找到对应平台的 Qt 工具和 runtime：
 
 - Linux archive：包含 `bin/moc`、`lib/libQt5Core.so.5`、`plugins/platforms/libqxcb.so`，建议同时包含 `lib/cmake/Qt5`。

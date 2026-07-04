@@ -26,12 +26,24 @@ on:
         options:
           - "true"
           - "false"
+      publish_release:
+        description: "Upload built packages to a GitHub Release"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+      release_tag:
+        description: "Release tag used when publish_release=true"
+        required: false
+        default: "nightly"
   push:
     tags:
       - "v*"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   linux:
@@ -181,6 +193,36 @@ jobs:
             dist/${{ matrix.arch }}/*.AppImage
           if-no-files-found: error
 
+      - name: Publish Linux packages to GitHub Release
+        if: (env.BUILD_TARGET == 'all' || env.BUILD_TARGET == format('linux-{0}', matrix.arch)) && (github.event_name == 'push' || inputs.publish_release == 'true')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.release_tag }}
+          RELEASE_PRERELEASE: ${{ github.event_name == 'workflow_dispatch' && 'true' || 'false' }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(dist/${{ matrix.arch }}/*.deb dist/${{ matrix.arch }}/*.rpm dist/${{ matrix.arch }}/*.AppImage)
+          shopt -u nullglob
+          if ((${#files[@]} == 0)); then
+            echo "No Linux package files found for release upload" >&2
+            exit 2
+          fi
+          if ! gh release view "${RELEASE_TAG}" -R "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            create_args=(
+              "${RELEASE_TAG}"
+              --repo "${GITHUB_REPOSITORY}"
+              --title "${RELEASE_TAG}"
+              --notes "OpenAI Reasoning Guard package build ${GITHUB_SHA}."
+            )
+            if [[ "${RELEASE_PRERELEASE}" == "true" ]]; then
+              create_args+=(--prerelease)
+            fi
+            gh release create "${create_args[@]}" || gh release view "${RELEASE_TAG}" -R "${GITHUB_REPOSITORY}" >/dev/null
+          fi
+          gh release upload "${RELEASE_TAG}" "${files[@]}" -R "${GITHUB_REPOSITORY}" --clobber
+
   windows:
     name: Windows ${{ matrix.arch }} exe
     if: github.event_name != 'workflow_dispatch' || inputs.target == 'all' || startsWith(inputs.target, 'windows-')
@@ -287,6 +329,43 @@ jobs:
           path: dist/*windows-${{ matrix.arch }}*.zip
           if-no-files-found: error
 
+      - name: Publish Windows package to GitHub Release
+        if: (env.BUILD_TARGET == 'all' || env.BUILD_TARGET == format('windows-{0}', matrix.arch)) && (github.event_name == 'push' || inputs.publish_release == 'true')
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.release_tag }}
+          RELEASE_PRERELEASE: ${{ github.event_name == 'workflow_dispatch' && 'true' || 'false' }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $files = Get-ChildItem -Path dist -Filter "*windows-${{ matrix.arch }}*.zip" -File
+          if (-not $files) {
+            throw "No Windows package files found for release upload"
+          }
+          gh release view $env:RELEASE_TAG -R $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -ne 0) {
+            $createArgs = @(
+              $env:RELEASE_TAG,
+              "--repo", $env:GITHUB_REPOSITORY,
+              "--title", $env:RELEASE_TAG,
+              "--notes", "OpenAI Reasoning Guard package build $env:GITHUB_SHA."
+            )
+            if ($env:RELEASE_PRERELEASE -eq "true") {
+              $createArgs += "--prerelease"
+            }
+            gh release create @createArgs
+            if ($LASTEXITCODE -ne 0) {
+              gh release view $env:RELEASE_TAG -R $env:GITHUB_REPOSITORY
+            }
+          }
+          $uploadArgs = @($env:RELEASE_TAG)
+          $uploadArgs += $files.FullName
+          $uploadArgs += @("-R", $env:GITHUB_REPOSITORY, "--clobber")
+          gh release upload @uploadArgs
+          if ($LASTEXITCODE -ne 0) {
+            throw "gh release upload failed"
+          }
+
   macos:
     name: macOS ${{ matrix.arch }} dmg
     if: github.event_name != 'workflow_dispatch' || inputs.target == 'all' || startsWith(inputs.target, 'macos-')
@@ -385,3 +464,33 @@ jobs:
           name: openai-reasoning-guard-macos-${{ matrix.arch }}
           path: dist/*macos-${{ matrix.arch }}*.dmg
           if-no-files-found: error
+
+      - name: Publish macOS dmg to GitHub Release
+        if: (env.BUILD_TARGET == 'all' || env.BUILD_TARGET == format('macos-{0}', matrix.arch)) && (github.event_name == 'push' || inputs.publish_release == 'true')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.release_tag }}
+          RELEASE_PRERELEASE: ${{ github.event_name == 'workflow_dispatch' && 'true' || 'false' }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(dist/*macos-${{ matrix.arch }}*.dmg)
+          shopt -u nullglob
+          if ((${#files[@]} == 0)); then
+            echo "No macOS dmg files found for release upload" >&2
+            exit 2
+          fi
+          if ! gh release view "${RELEASE_TAG}" -R "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            create_args=(
+              "${RELEASE_TAG}"
+              --repo "${GITHUB_REPOSITORY}"
+              --title "${RELEASE_TAG}"
+              --notes "OpenAI Reasoning Guard package build ${GITHUB_SHA}."
+            )
+            if [[ "${RELEASE_PRERELEASE}" == "true" ]]; then
+              create_args+=(--prerelease)
+            fi
+            gh release create "${create_args[@]}" || gh release view "${RELEASE_TAG}" -R "${GITHUB_REPOSITORY}" >/dev/null
+          fi
+          gh release upload "${RELEASE_TAG}" "${files[@]}" -R "${GITHUB_REPOSITORY}" --clobber
