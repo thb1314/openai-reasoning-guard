@@ -335,6 +335,35 @@ write_bootstrap_private_module_pri() {
     local minor="${rest%%.*}"
     local patch="${qt_version##*.}"
 
+    local qt_prf="${source_dir}/mkspecs/features/qt.prf"
+    if [[ -f "${qt_prf}" ]] && ! grep -q 'OpenAI Reasoning Guard bootstrap-private fallback' "${qt_prf}"; then
+        local fallback_block
+        fallback_block="$(cat <<EOF
+# OpenAI Reasoning Guard bootstrap-private fallback for CI cross-architecture Qt builds.
+contains(CLEAN_QT, bootstrap_private):isEmpty(QT.bootstrap_private.name) {
+    QT.bootstrap_private.VERSION = ${qt_version}
+    QT.bootstrap_private.name = QtBootstrap
+    QT.bootstrap_private.module = Qt5Bootstrap
+    QT.bootstrap_private.libs = ${qt_build}/lib
+    QT.bootstrap_private.includes = ${source_dir}/include ${source_dir}/include/QtCore ${source_dir}/include/QtCore/${qt_version} ${source_dir}/include/QtCore/${qt_version}/QtCore ${source_dir}/include/QtXml ${source_dir}/include/QtXml/${qt_version} ${source_dir}/include/QtXml/${qt_version}/QtXml ${qt_build}/include ${qt_build}/include/QtCore ${qt_build}/include/QtXml
+    QT.bootstrap_private.frameworks =
+    QT.bootstrap_private.depends =
+    QT.bootstrap_private.uses =
+    QT.bootstrap_private.module_config = v2 staticlib internal_module
+    QT.bootstrap_private.CONFIG = gc_binaries
+    QT.bootstrap_private.DEFINES = QT_BOOTSTRAP_LIB QT_VERSION_STR=\\'\\\"${qt_version}\\\"\\' QT_VERSION_MAJOR=${major} QT_VERSION_MINOR=${minor} QT_VERSION_PATCH=${patch} QT_BOOTSTRAPPED QT_NO_CAST_TO_ASCII
+}
+EOF
+)"
+        local patched_qt_prf="${qt_prf}.patched"
+        awk -v block="${fallback_block}" '
+            { print }
+            $0 == "qt_module_deps = $$CLEAN_QT $$CLEAN_QT_PRIVATE" { print block }
+        ' "${qt_prf}" > "${patched_qt_prf}"
+        mv "${patched_qt_prf}" "${qt_prf}"
+        echo "patched qt.prf bootstrap-private fallback: ${qt_prf}"
+    fi
+
     local modules_inst="${qt_build}/mkspecs/modules-inst"
     mkdir -p "${modules_inst}"
     cat > "${modules_inst}/qt_lib_bootstrap_private.pri" <<EOF
