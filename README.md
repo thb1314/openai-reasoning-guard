@@ -238,6 +238,90 @@ dist/openai-reasoning-guard-macos-aarch64-0.1.0.dmg
 
 CI 每个架构都会先编译并运行 QtTest，再调用对应平台打包脚本。Linux 任务在 Debian bookworm 容器内运行，并通过 QEMU 覆盖 arm64/arm32；Windows 和 macOS 使用 GitHub 托管 runner 的原生编译器。workflow 不会安装或使用系统 Qt5。
 
+### 准备 CI 用 Qt SDK
+
+CI 的包构建依赖“目标平台可运行”的 Qt SDK archive。推荐流程是先在对应平台构建或整理 Qt SDK，再上传到 GitHub Release，并把 asset URL 写入对应 secret。这样 Qt 只需要构建一次，后续包构建可以复用。
+
+Linux 可以直接从本机已有 Qt 源码构建。当前机器上的源码默认路径是：
+
+```text
+/mnt/data/qt-2080ti-sync/archives/qtbase-opensource-src-5.9.6.tar.xz
+/mnt/data/qt-2080ti-sync/archives/openssl-1.0.2u.tar.gz
+```
+
+本机 x86_64 Linux 构建并上传：
+
+```bash
+scripts/build-qt5-linux-sdk.sh \
+  --target linux-x86_64 \
+  --archive \
+  --upload \
+  --set-secret \
+  --upload-proxy http://127.0.0.1:7890
+```
+
+Linux 其它架构通过 Docker/QEMU 在目标架构 Debian 容器里编译同一份源码：
+
+```bash
+scripts/build-qt5-linux-sdk.sh --target linux-x86_32 --docker --archive --upload --set-secret
+scripts/build-qt5-linux-sdk.sh --target linux-arm64 --docker --archive --upload --set-secret
+scripts/build-qt5-linux-sdk.sh --target linux-arm32 --docker --archive --upload --set-secret
+```
+
+如果只是已有 Qt SDK，需要归档并设置 secret，不重新编译：
+
+```bash
+scripts/archive-qt-sdk.sh \
+  --qt-root /path/to/qt5 \
+  --target linux-x86_64 \
+  --upload \
+  --set-secret \
+  --upload-proxy http://127.0.0.1:7890
+```
+
+macOS 在对应架构机器上原生编译：
+
+```bash
+scripts/build-qt5-macos-sdk.sh \
+  --target macos-x86_64 \
+  --qtbase-source-archive /path/to/qtbase-opensource-src-5.9.6.tar.xz \
+  --archive \
+  --upload \
+  --set-secret
+
+scripts/build-qt5-macos-sdk.sh \
+  --target macos-aarch64 \
+  --qtbase-source-archive /path/to/qtbase-opensource-src-5.9.6.tar.xz \
+  --archive \
+  --upload \
+  --set-secret
+```
+
+Windows 在对应 MSVC 开发者环境中原生编译，x86_64 用 x64 shell，x86_32 用 x86 shell：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/build-qt5-windows-sdk.ps1 `
+  -Target windows-x86_64 `
+  -QtBaseSourceArchive C:\src\qtbase-opensource-src-5.9.6.tar.xz `
+  -OpenSslRoot C:\OpenSSL-Win64 `
+  -Archive `
+  -Upload `
+  -SetSecret `
+  -UploadProxy http://127.0.0.1:7890
+```
+
+Windows 如果已经有可用 Qt SDK，也可以只归档上传：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/archive-qt-sdk.ps1 `
+  -QtRoot C:\Qt\5.15.2\msvc2019_64 `
+  -Target windows-x86_64 `
+  -Upload `
+  -SetSecret
+```
+
+`--upload-proxy` / `-UploadProxy` 只用于执行上传命令的本机。不要把 GitHub Actions 的 `DOWNLOAD_PROXY` 配成 `127.0.0.1:7890`，因为 GitHub runner 上的 `127.0.0.1` 不是你的机器。
+
 ## CLI
 
 启动智能代理：
@@ -466,6 +550,11 @@ build/net-tunnel-cli --config config.example.json --api-proxy
 CMakeLists.txt
 config.example.json
 scripts/
+  archive-qt-sdk.sh
+  archive-qt-sdk.ps1
+  build-qt5-linux-sdk.sh
+  build-qt5-macos-sdk.sh
+  build-qt5-windows-sdk.ps1
   package-linux.sh
   package-macos.sh
   package-windows.ps1
