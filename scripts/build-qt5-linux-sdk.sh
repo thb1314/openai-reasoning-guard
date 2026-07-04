@@ -181,6 +181,25 @@ require_file() {
     fi
 }
 
+restore_output_ownership() {
+    if [[ ! -d "${OUTPUT_ROOT}" ]]; then
+        return
+    fi
+
+    local owner
+    owner="$(id -u):$(id -g)"
+    if chown -R "${owner}" "${OUTPUT_ROOT}" 2>/dev/null; then
+        return
+    fi
+    if command -v sudo >/dev/null 2>&1; then
+        sudo chown -R "${owner}" "${OUTPUT_ROOT}"
+        return
+    fi
+
+    echo "unable to restore ownership for ${OUTPUT_ROOT}; run chown or use sudo" >&2
+    exit 2
+}
+
 install_linux_deps() {
     if ((SKIP_DEPS == 1)); then
         return
@@ -257,6 +276,8 @@ run_in_docker() {
         -w /workspace \
         "${image}" \
         bash -lc "set -euo pipefail; /workspace/scripts/build-qt5-linux-sdk.sh --target '${TARGET}' --qtbase-source-archive /qt-sources/qtbase.tar.xz --openssl-source-archive /qt-sources/openssl.tar.gz --output-root /qt-output --build-dir /qt-output/build-${TARGET} --prefix /qt-output/qt5-${TARGET} --jobs '${JOBS}' --archive"
+
+    restore_output_ownership
 
     if ((UPLOAD == 1 || SET_SECRET == 1)); then
         ARCHIVE=1

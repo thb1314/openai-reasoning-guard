@@ -139,6 +139,17 @@ if ((CLEAN == 1)); then
 fi
 mkdir -p "${BUILD_DIR}" "$(dirname -- "${PREFIX}")"
 
+mac_arch_for_target() {
+    case "$1" in
+        macos-x86_64) echo x86_64 ;;
+        macos-aarch64) echo arm64 ;;
+        *)
+            echo "unknown macOS target: $1" >&2
+            exit 2
+            ;;
+    esac
+}
+
 extract_one() {
     local archive="$1"
     local dest="$2"
@@ -169,6 +180,14 @@ patch_qtbase_for_modern_cpp() {
 #include <limits>
 ' "${qbytearraymatcher_header}"
     fi
+
+    local qiosurface_header="${source_dir}/src/plugins/platforms/cocoa/qiosurfacegraphicsbuffer.h"
+    if [[ -f "${qiosurface_header}" ]] && ! grep -q 'CoreGraphics/CGColorSpace.h' "${qiosurface_header}"; then
+        perl -0pi -e 's/(#include <QtCore\/qglobal.h>\n)/$1#include <CoreGraphics\/CGColorSpace.h>\n/' "${qiosurface_header}"
+        if ! grep -q 'CoreGraphics/CGColorSpace.h' "${qiosurface_header}"; then
+            perl -0pi -e 's/(#pragma once\n)/$1#include <CoreGraphics\/CGColorSpace.h>\n/' "${qiosurface_header}"
+        fi
+    fi
 }
 
 source_dir="${BUILD_DIR}/qtbase-src"
@@ -185,10 +204,13 @@ deployment_target="${MACOSX_DEPLOYMENT_TARGET:-10.13}"
 if [[ "${TARGET}" == "macos-aarch64" && -z "${MACOSX_DEPLOYMENT_TARGET:-}" ]]; then
     deployment_target="11.0"
 fi
+mac_arch="$(mac_arch_for_target "${TARGET}")"
 
 (
     cd "${qt_build}"
-    QMAKE_MACOSX_DEPLOYMENT_TARGET="${deployment_target}" \
+    export MACOSX_DEPLOYMENT_TARGET="${deployment_target}"
+    export QMAKE_MACOSX_DEPLOYMENT_TARGET="${deployment_target}"
+    export QMAKE_APPLE_DEVICE_ARCHS="${mac_arch}"
     "${source_dir}/configure" \
         -prefix "${PREFIX}" \
         -opensource \
@@ -201,17 +223,25 @@ fi
         -nomake tests \
         -make libs \
         -make tools \
+        -no-opengl \
         -no-dbus \
         -no-cups \
         -no-icu \
-        -securetransport
+        -securetransport \
+        QMAKE_MACOSX_DEPLOYMENT_TARGET="${deployment_target}" \
+        QMAKE_APPLE_DEVICE_ARCHS="${mac_arch}"
     make -j"${JOBS}"
     make install
 )
 
 (
     cd "${qttools_build}"
-    "${PREFIX}/bin/qmake" "${qttools_source_dir}/src/macdeployqt/macdeployqt.pro"
+    export MACOSX_DEPLOYMENT_TARGET="${deployment_target}"
+    export QMAKE_MACOSX_DEPLOYMENT_TARGET="${deployment_target}"
+    export QMAKE_APPLE_DEVICE_ARCHS="${mac_arch}"
+    "${PREFIX}/bin/qmake" "${qttools_source_dir}/src/macdeployqt/macdeployqt.pro" \
+        QMAKE_MACOSX_DEPLOYMENT_TARGET="${deployment_target}" \
+        QMAKE_APPLE_DEVICE_ARCHS="${mac_arch}"
     make -j"${JOBS}"
     make install || true
     if [[ ! -x "${PREFIX}/bin/macdeployqt" ]]; then
