@@ -1736,8 +1736,9 @@ private:
 
         const bool shouldIntercept = settings.interceptStreaming;
         const bool disconnectMode = normalizeStreamAction(settings.streamAction) == streamActionDisconnect();
-        const bool canReturnBlockedStatus = !disconnectMode || (!upstreamPassThrough_ && !streamingWroteAnyBody_);
-        const bool canGuardRetry = shouldIntercept && canReturnBlockedStatus && retryAttempt_ < settings.guardRetryAttempts;
+        const bool clientResponseStarted = upstreamPassThrough_ || streamingWroteAnyBody_;
+        const bool canGuardRetry = shouldIntercept && !clientResponseStarted && retryAttempt_ < settings.guardRetryAttempts;
+        const bool canReturnBlockedStatus = shouldIntercept && !disconnectMode && !clientResponseStarted;
         const QString action = !shouldIntercept
             ? QString("observe_only")
             : (canGuardRetry
@@ -1760,14 +1761,13 @@ private:
         }
 
         abortCurrentReply(reply);
+        if (canGuardRetry) {
+            ++retryAttempt_;
+            server_->recordReasoningGuardRetry(method_, path_, retryAttempt_, settings.guardRetryAttempts, reasoningTokens);
+            startUpstreamRequest();
+            return true;
+        }
         if (canReturnBlockedStatus) {
-            if (canGuardRetry) {
-                ++retryAttempt_;
-                server_->recordReasoningGuardRetry(method_, path_, retryAttempt_, settings.guardRetryAttempts, reasoningTokens);
-                startUpstreamRequest();
-                return true;
-            }
-
             server_->recordBlockedResponse("stream");
             const int responseStatus = settings.nonStreamStatusCode;
             const QString errorMessage = QString("response matched suspicious reasoning_tokens=%1 after %2 retries")
