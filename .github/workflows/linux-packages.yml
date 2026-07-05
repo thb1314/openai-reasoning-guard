@@ -140,8 +140,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          qt_archive_url="${QT_ARCHIVE_URL:-${QT_ARCHIVE_FALLBACK_URL:-}}"
-          if [[ -z "${qt_archive_url}" ]]; then
+          if [[ -z "${QT_ARCHIVE_URL:-}" && -z "${QT_ARCHIVE_FALLBACK_URL:-}" ]]; then
             echo "Missing repository secret ${{ matrix.qt_secret }} and no fallback Qt SDK URL is configured" >&2
             exit 2
           fi
@@ -150,7 +149,8 @@ jobs:
             --platform "${{ matrix.platform }}" \
             -v "${PWD}:/workspace" \
             -w /workspace \
-            -e QT_ARCHIVE_URL="${qt_archive_url}" \
+            -e QT_ARCHIVE_URL="${QT_ARCHIVE_URL:-}" \
+            -e QT_ARCHIVE_FALLBACK_URL="${QT_ARCHIVE_FALLBACK_URL:-}" \
             -e DOWNLOAD_PROXY="${DOWNLOAD_PROXY:-}" \
             -e PACKAGE_ARCH="${{ matrix.arch }}" \
             -e CLEAN_PACKAGES="${CLEAN_PACKAGES}" \
@@ -206,11 +206,29 @@ jobs:
               qt_dir=/opt/qt-sdk
               archive=/tmp/qt-sdk.archive
               mkdir -p "${qt_dir}"
-              curl_args=(-L --fail --connect-timeout 30 -o "${archive}")
-              if [[ -n "${DOWNLOAD_PROXY:-}" ]]; then
-                curl_args+=(--proxy "${DOWNLOAD_PROXY}")
+              qt_urls=()
+              if [[ -n "${QT_ARCHIVE_URL:-}" ]]; then
+                qt_urls+=("${QT_ARCHIVE_URL}")
               fi
-              curl "${curl_args[@]}" "${QT_ARCHIVE_URL}"
+              if [[ -n "${QT_ARCHIVE_FALLBACK_URL:-}" && "${QT_ARCHIVE_FALLBACK_URL:-}" != "${QT_ARCHIVE_URL:-}" ]]; then
+                qt_urls+=("${QT_ARCHIVE_FALLBACK_URL}")
+              fi
+              downloaded=0
+              for qt_url in "${qt_urls[@]}"; do
+                curl_args=(-L --fail --connect-timeout 30 -o "${archive}")
+                if [[ -n "${DOWNLOAD_PROXY:-}" ]]; then
+                  curl_args+=(--proxy "${DOWNLOAD_PROXY}")
+                fi
+                if curl "${curl_args[@]}" "${qt_url}"; then
+                  downloaded=1
+                  break
+                fi
+                echo "warning: failed to download Qt SDK from ${qt_url}; trying next candidate" >&2
+              done
+              if ((downloaded == 0)); then
+                echo "Unable to download Qt SDK archive" >&2
+                exit 2
+              fi
 
               if tar -tf "${archive}" >/dev/null 2>&1; then
                 tar -xf "${archive}" -C "${qt_dir}"
@@ -360,19 +378,36 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          qt_archive_url="${QT_ARCHIVE_URL:-${QT_ARCHIVE_FALLBACK_URL:-}}"
-          if [[ -z "${qt_archive_url}" ]]; then
+          if [[ -z "${QT_ARCHIVE_URL:-}" && -z "${QT_ARCHIVE_FALLBACK_URL:-}" ]]; then
             echo "Missing repository secret ${{ matrix.qt_secret }} and no fallback Qt SDK URL is configured" >&2
             exit 2
           fi
           qt_dir="${RUNNER_TEMP}/qt-sdk"
           archive="${RUNNER_TEMP}/qt-sdk.archive"
           mkdir -p "${qt_dir}"
-          curl_args=(-L --fail --connect-timeout 30 -o "${archive}")
-          if [[ -n "${DOWNLOAD_PROXY:-}" ]]; then
-            curl_args+=(--proxy "${DOWNLOAD_PROXY}")
+          qt_urls=()
+          if [[ -n "${QT_ARCHIVE_URL:-}" ]]; then
+            qt_urls+=("${QT_ARCHIVE_URL}")
           fi
-          curl "${curl_args[@]}" "${qt_archive_url}"
+          if [[ -n "${QT_ARCHIVE_FALLBACK_URL:-}" && "${QT_ARCHIVE_FALLBACK_URL:-}" != "${QT_ARCHIVE_URL:-}" ]]; then
+            qt_urls+=("${QT_ARCHIVE_FALLBACK_URL}")
+          fi
+          downloaded=0
+          for qt_url in "${qt_urls[@]}"; do
+            curl_args=(-L --fail --connect-timeout 30 -o "${archive}")
+            if [[ -n "${DOWNLOAD_PROXY:-}" ]]; then
+              curl_args+=(--proxy "${DOWNLOAD_PROXY}")
+            fi
+            if curl "${curl_args[@]}" "${qt_url}"; then
+              downloaded=1
+              break
+            fi
+            echo "warning: failed to download Qt SDK from ${qt_url}; trying next candidate" >&2
+          done
+          if ((downloaded == 0)); then
+            echo "Unable to download Qt SDK archive" >&2
+            exit 2
+          fi
           if tar -tf "${archive}" >/dev/null 2>&1; then
             tar -xf "${archive}" -C "${qt_dir}"
           elif unzip -tq "${archive}" >/dev/null 2>&1; then
@@ -473,19 +508,36 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          qt_archive_url="${QT_ARCHIVE_URL:-${QT_ARCHIVE_FALLBACK_URL:-}}"
-          if [[ -z "${qt_archive_url}" ]]; then
+          if [[ -z "${QT_ARCHIVE_URL:-}" && -z "${QT_ARCHIVE_FALLBACK_URL:-}" ]]; then
             echo "Missing repository secret ${{ matrix.qt_secret }} and no fallback Qt SDK URL is configured" >&2
             exit 2
           fi
           qt_dir="${RUNNER_TEMP}/qt-sdk"
           archive="${RUNNER_TEMP}/qt-sdk.archive"
           mkdir -p "${qt_dir}"
-          curl_args=(-L --fail --connect-timeout 30 -o "${archive}")
-          if [[ -n "${DOWNLOAD_PROXY:-}" ]]; then
-            curl_args+=(--proxy "${DOWNLOAD_PROXY}")
+          qt_urls=()
+          if [[ -n "${QT_ARCHIVE_URL:-}" ]]; then
+            qt_urls+=("${QT_ARCHIVE_URL}")
           fi
-          curl "${curl_args[@]}" "${qt_archive_url}"
+          if [[ -n "${QT_ARCHIVE_FALLBACK_URL:-}" && "${QT_ARCHIVE_FALLBACK_URL:-}" != "${QT_ARCHIVE_URL:-}" ]]; then
+            qt_urls+=("${QT_ARCHIVE_FALLBACK_URL}")
+          fi
+          downloaded=0
+          for qt_url in "${qt_urls[@]}"; do
+            curl_args=(-L --fail --connect-timeout 30 -o "${archive}")
+            if [[ -n "${DOWNLOAD_PROXY:-}" ]]; then
+              curl_args+=(--proxy "${DOWNLOAD_PROXY}")
+            fi
+            if curl "${curl_args[@]}" "${qt_url}"; then
+              downloaded=1
+              break
+            fi
+            echo "warning: failed to download Qt SDK from ${qt_url}; trying next candidate" >&2
+          done
+          if ((downloaded == 0)); then
+            echo "Unable to download Qt SDK archive" >&2
+            exit 2
+          fi
           if tar -tf "${archive}" >/dev/null 2>&1; then
             tar -xf "${archive}" -C "${qt_dir}"
           elif unzip -tq "${archive}" >/dev/null 2>&1; then
