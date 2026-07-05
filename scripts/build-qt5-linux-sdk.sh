@@ -432,6 +432,34 @@ EOF
     echo "patched qmake_use.prf pcre2 fallback: ${qmake_use_prf}"
 }
 
+patch_qt_config_prefix_build_fallback() {
+    local source_dir="$1"
+    local qt_build="$2"
+    local qt_config_prf="${source_dir}/mkspecs/features/qt_config.prf"
+    if [[ ! -f "${qt_config_prf}" ]]; then
+        return
+    fi
+    if grep -q 'OpenAI Reasoning Guard prefix-build qconfig fallback' "${qt_config_prf}"; then
+        return
+    fi
+
+    local patched_qt_config="${qt_config_prf}.patched"
+    awk -v qt_build="${qt_build}" '
+        {
+            print
+            if ($0 == "QMAKE_QT_CONFIG = $$[QT_HOST_DATA/get]/mkspecs/qconfig.pri") {
+                print "# OpenAI Reasoning Guard prefix-build qconfig fallback for CI Qt SDK builds."
+                print "!exists($$QMAKE_QT_CONFIG):exists(" qt_build "/mkspecs/qconfig.pri): QMAKE_QT_CONFIG = " qt_build "/mkspecs/qconfig.pri"
+            }
+            if ($0 == "   QMAKE_MODULE_PATH = $$unique(QMAKE_MODULE_PATH)") {
+                print "   QMAKE_MODULE_PATH += " qt_build "/mkspecs/modules"
+            }
+        }
+    ' "${qt_config_prf}" > "${patched_qt_config}"
+    mv "${patched_qt_config}" "${qt_config_prf}"
+    echo "patched qt_config.prf prefix-build fallback: ${qt_config_prf}"
+}
+
 write_prefix_tool_wrappers() {
     local qt_build="$1"
     local prefix="$2"
@@ -559,6 +587,7 @@ build_qtbase() {
             -openssl-runtime \
             -I "${PREFIX}/include" \
             -L "${PREFIX}/lib"
+        patch_qt_config_prefix_build_fallback "${source_dir}" "${qt_build}"
         patch_qmake_use_pcre2_fallback "${source_dir}" "${qt_build}"
         write_bootstrap_private_module_pri "${source_dir}" "${qt_build}" "${PREFIX}"
         write_prefix_tool_wrappers "${qt_build}" "${PREFIX}"
