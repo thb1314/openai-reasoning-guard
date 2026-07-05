@@ -399,6 +399,99 @@ EOF
     done
 }
 
+write_core_module_pri_fallback() {
+    local source_dir="$1"
+    local qt_build="$2"
+    local prefix="$3"
+    local qt_version
+    local major
+    local rest
+    local minor
+    local patch
+    local modules_inst
+    local module_dir
+    local glib_incdirs=""
+    local glib_libs=""
+
+    if [[ "${TARGET}" != "linux-arm32" ]]; then
+        return
+    fi
+
+    qt_version="$(qtbase_version "${source_dir}")"
+    qt_version="${qt_version:-5.15.2}"
+    major="${qt_version%%.*}"
+    rest="${qt_version#*.}"
+    minor="${rest%%.*}"
+    patch="${qt_version##*.}"
+    modules_inst="${qt_build}/mkspecs/modules-inst"
+    mkdir -p "${modules_inst}"
+
+    if command -v pkg-config >/dev/null 2>&1; then
+        glib_incdirs="$(pkg-config --cflags-only-I glib-2.0 gthread-2.0 2>/dev/null | sed 's/-I//g' | xargs echo || true)"
+        glib_libs="$(pkg-config --libs-only-l glib-2.0 gthread-2.0 2>/dev/null | xargs echo || true)"
+    fi
+    glib_incdirs="${glib_incdirs:-/usr/include/glib-2.0 /usr/lib/arm-linux-gnueabihf/glib-2.0/include}"
+    glib_libs="${glib_libs:--lgthread-2.0 -lglib-2.0}"
+
+    cat > "${modules_inst}/qt_lib_core.pri" <<EOF
+QT.core.VERSION = ${qt_version}
+QT.core.name = QtCore
+QT.core.module = Qt5Core
+QT.core.libs = \$\$QT_MODULE_LIB_BASE
+QT.core.includes = \$\$QT_MODULE_INCLUDE_BASE \$\$QT_MODULE_INCLUDE_BASE/QtCore
+QT.core.frameworks =
+QT.core.bins = \$\$QT_MODULE_BIN_BASE
+QT.core.depends =
+QT.core.uses = libatomic
+QT.core.module_config = v2
+QT.core.CONFIG = moc resources
+QT.core.DEFINES = QT_CORE_LIB
+QT.core.enabled_features = properties easingcurve animation textcodec big_codecs binaryjson cborstreamreader cborstreamwriter codecs commandlineparser itemmodel proxymodel concatenatetablesproxymodel cxx11_future textdate datestring filesystemiterator filesystemwatcher gestures identityproxymodel islamiccivilcalendar jalalicalendar library mimetype processenvironment process statemachine qeventtransition regularexpression settings sharedmemory sortfilterproxymodel std-atomic64 stringlistmodel systemsemaphore temporaryfile timezone topleveldomain translation transposeproxymodel xmlstream xmlstreamreader xmlstreamwriter
+QT.core.disabled_features =
+QT_CONFIG += properties animation textcodec big_codecs clock-monotonic codecs itemmodel proxymodel concatenatetablesproxymodel textdate datestring doubleconversion eventfd filesystemiterator filesystemwatcher gestures glib identityproxymodel inotify library mimetype process statemachine regularexpression settings sharedmemory sortfilterproxymodel stringlistmodel systemsemaphore temporaryfile threadsafe-cloexec translation transposeproxymodel xmlstream xmlstreamreader xmlstreamwriter
+QT_MODULES += core
+EOF
+
+    cat > "${modules_inst}/qt_lib_core_private.pri" <<EOF
+QT.core_private.VERSION = ${qt_version}
+QT.core_private.name = QtCore
+QT.core_private.module =
+QT.core_private.libs = \$\$QT_MODULE_LIB_BASE
+QT.core_private.includes = \$\$QT_MODULE_INCLUDE_BASE/QtCore/${qt_version} \$\$QT_MODULE_INCLUDE_BASE/QtCore/${qt_version}/QtCore
+QT.core_private.frameworks =
+QT.core_private.depends = core
+QT.core_private.uses =
+QT.core_private.module_config = v2 internal_module
+QT.core_private.enabled_features = clock-gettime datetimeparser doubleconversion futimens getauxval getentropy glib glibc posix-libiconv hijricalendar inotify linkat system-pcre2 poll_ppoll renameat2 sha3-fast statx system-doubleconversion
+QT.core_private.disabled_features = etw futimes gnu-libiconv iconv journald lttng mimetype-database poll_poll poll_pollts poll_select slog2 syslog
+QMAKE_INCDIR_GLIB = ${glib_incdirs}
+QMAKE_LIBS_GLIB = ${glib_libs}
+QMAKE_LIBS_PCRE2 = ${qt_build}/lib/libqtpcre2.a
+QMAKE_LIBS_LIBATOMIC =
+QMAKE_LIBS_DOUBLECONVERSION =
+EOF
+
+    for module_dir in "${source_dir}/mkspecs/modules" "${qt_build}/mkspecs/modules" "${prefix}/mkspecs/modules"; do
+        mkdir -p "${module_dir}"
+        cat > "${module_dir}/qt_lib_core.pri" <<EOF
+QT_MODULE_BIN_BASE = ${qt_build}/bin
+QT_MODULE_INCLUDE_BASE = ${source_dir}/include
+QT_MODULE_LIB_BASE = ${qt_build}/lib
+include(${modules_inst}/qt_lib_core.pri)
+QT.core.priority = 1
+EOF
+        cat > "${module_dir}/qt_lib_core_private.pri" <<EOF
+QT_MODULE_BIN_BASE = ${qt_build}/bin
+QT_MODULE_INCLUDE_BASE = ${source_dir}/include
+QT_MODULE_LIB_BASE = ${qt_build}/lib
+include(${modules_inst}/qt_lib_core_private.pri)
+QT.core_private.priority = 1
+EOF
+        echo "wrote core module fallback metadata: ${module_dir}/qt_lib_core.pri"
+        echo "wrote core-private module fallback metadata: ${module_dir}/qt_lib_core_private.pri"
+    done
+}
+
 patch_qmake_use_pcre2_fallback() {
     local source_dir="$1"
     local qt_build="$2"
@@ -731,6 +824,7 @@ build_qtbase() {
         patch_qt_config_prefix_build_fallback "${source_dir}" "${qt_build}"
         patch_qmake_use_pcre2_fallback "${source_dir}" "${qt_build}"
         write_bootstrap_private_module_pri "${source_dir}" "${qt_build}" "${PREFIX}"
+        write_core_module_pri_fallback "${source_dir}" "${qt_build}" "${PREFIX}"
         sync_prefix_qmake_metadata "${source_dir}" "${qt_build}" "${PREFIX}"
         configure_qmake_search_env "${source_dir}" "${qt_build}" "${PREFIX}"
         write_build_qmake_wrapper "${source_dir}" "${qt_build}" "${PREFIX}"
