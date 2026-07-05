@@ -338,6 +338,13 @@ patch_qtbase_for_modern_mingw() {
         sed -i 's/#if defined(Q_CC_MINGW) || !defined(TOUCHEVENTF_MOVE)/#if !defined(TOUCHEVENTF_MOVE)/' "${qt_mouse_src}"
         sed -i 's/#endif \/\/ if defined(Q_CC_MINGW) || !defined(TOUCHEVENTF_MOVE)/#endif \/\/ !defined(TOUCHEVENTF_MOVE)/' "${qt_mouse_src}"
     fi
+
+    if [[ "${TARGET}" == "windows-arm64" ]]; then
+        local win32_gpp_conf="${source_dir}/mkspecs/win32-g++/qmake.conf"
+        if [[ -f "${win32_gpp_conf}" ]]; then
+            sed -i 's/[[:space:]]*-fno-keep-inline-dllexport//g' "${win32_gpp_conf}"
+        fi
+    fi
 }
 
 build_openssl() {
