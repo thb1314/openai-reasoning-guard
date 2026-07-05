@@ -460,6 +460,33 @@ patch_qt_config_prefix_build_fallback() {
     echo "patched qt_config.prf prefix-build fallback: ${qt_config_prf}"
 }
 
+sync_prefix_qmake_metadata() {
+    local source_dir="$1"
+    local qt_build="$2"
+    local prefix="$3"
+    local name
+    local src
+    local dest
+    for name in qconfig.pri qmodule.pri; do
+        src=""
+        for dest in "${qt_build}/mkspecs" "${source_dir}/mkspecs" "${prefix}/mkspecs"; do
+            if [[ -f "${dest}/${name}" ]]; then
+                src="${dest}/${name}"
+                break
+            fi
+        done
+        if [[ -z "${src}" ]]; then
+            echo "warning: unable to locate generated ${name} for qmake metadata sync" >&2
+            continue
+        fi
+        for dest in "${qt_build}/mkspecs" "${source_dir}/mkspecs" "${prefix}/mkspecs"; do
+            mkdir -p "${dest}"
+            cp -f "${src}" "${dest}/${name}"
+            echo "synced ${name}: ${dest}/${name}"
+        done
+    done
+}
+
 write_prefix_tool_wrappers() {
     local qt_build="$1"
     local prefix="$2"
@@ -590,7 +617,10 @@ build_qtbase() {
         patch_qt_config_prefix_build_fallback "${source_dir}" "${qt_build}"
         patch_qmake_use_pcre2_fallback "${source_dir}" "${qt_build}"
         write_bootstrap_private_module_pri "${source_dir}" "${qt_build}" "${PREFIX}"
+        sync_prefix_qmake_metadata "${source_dir}" "${qt_build}" "${PREFIX}"
         write_prefix_tool_wrappers "${qt_build}" "${PREFIX}"
+        export QMAKEMODULES="${qt_build}/mkspecs/modules${QMAKEMODULES:+:${QMAKEMODULES}}"
+        echo "QMAKEMODULES=${QMAKEMODULES}"
         make -j"${JOBS}"
         make install
         replace_prefix_tool_wrappers "${qt_build}" "${PREFIX}"
