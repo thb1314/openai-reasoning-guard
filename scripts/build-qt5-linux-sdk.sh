@@ -565,6 +565,52 @@ EOF
     done
 }
 
+write_build_qmake_wrapper() {
+    local source_dir="$1"
+    local qt_build="$2"
+    local prefix="$3"
+    local qmake="${qt_build}/bin/qmake"
+    local real_qmake="${qt_build}/bin/qmake.real"
+    local qmakepath="${qt_build}:${source_dir}:${prefix}"
+    local qmakefeatures="${qt_build}/mkspecs/features:${source_dir}/mkspecs/features:${prefix}/mkspecs/features"
+    local qmakemodules="${qt_build}/mkspecs/modules"
+
+    if [[ ! -x "${qmake}" ]]; then
+        echo "expected qmake binary is missing: ${qmake}" >&2
+        exit 2
+    fi
+    if [[ -x "${real_qmake}" ]]; then
+        return
+    fi
+
+    mv "${qmake}" "${real_qmake}"
+    cat > "${qmake}" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+# OpenAI Reasoning Guard temporary qmake wrapper for CI cross-architecture Qt builds.
+export QMAKEPATH="${qmakepath}\${QMAKEPATH:+:\${QMAKEPATH}}"
+export QMAKEFEATURES="${qmakefeatures}\${QMAKEFEATURES:+:\${QMAKEFEATURES}}"
+export QMAKEMODULES="${qmakemodules}\${QMAKEMODULES:+:\${QMAKEMODULES}}"
+exec "${real_qmake}" "\$@"
+EOF
+    chmod +x "${qmake}"
+    echo "wrapped build qmake: ${qmake}"
+}
+
+restore_build_qmake_wrapper() {
+    local qt_build="$1"
+    local qmake="${qt_build}/bin/qmake"
+    local real_qmake="${qt_build}/bin/qmake.real"
+
+    if [[ -x "${real_qmake}" ]] \
+        && [[ -f "${qmake}" ]] \
+        && grep -q 'temporary qmake wrapper for CI cross-architecture Qt builds' "${qmake}"; then
+        mv "${real_qmake}" "${qmake}"
+        chmod +x "${qmake}"
+        echo "restored build qmake binary: ${qmake}"
+    fi
+}
+
 replace_prefix_tool_wrappers() {
     local qt_build="$1"
     local prefix="$2"
@@ -681,10 +727,12 @@ build_qtbase() {
         write_bootstrap_private_module_pri "${source_dir}" "${qt_build}" "${PREFIX}"
         sync_prefix_qmake_metadata "${source_dir}" "${qt_build}" "${PREFIX}"
         configure_qmake_search_env "${source_dir}" "${qt_build}" "${PREFIX}"
+        write_build_qmake_wrapper "${source_dir}" "${qt_build}" "${PREFIX}"
         write_prefix_tool_wrappers "${qt_build}" "${PREFIX}"
         export QMAKEMODULES="${qt_build}/mkspecs/modules${QMAKEMODULES:+:${QMAKEMODULES}}"
         echo "QMAKEMODULES=${QMAKEMODULES}"
         make -j"${JOBS}"
+        restore_build_qmake_wrapper "${qt_build}"
         make install
         replace_prefix_tool_wrappers "${qt_build}" "${PREFIX}"
         normalize_installed_bootstrap_private_pri "${source_dir}" "${PREFIX}"
