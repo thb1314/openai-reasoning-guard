@@ -102,6 +102,28 @@ require_tool() {
     fi
 }
 
+validate_rootfs_bootstrap() {
+    local rootfs="$1"
+    local missing=0
+
+    if [[ ! -s "${rootfs}/etc/passwd" ]]; then
+        echo "bootstrap validation failed: missing ${rootfs}/etc/passwd" >&2
+        missing=1
+    fi
+    if [[ ! -s "${rootfs}/etc/group" ]]; then
+        echo "bootstrap validation failed: missing ${rootfs}/etc/group" >&2
+        missing=1
+    fi
+    if [[ ! -s "${rootfs}/var/lib/dpkg/status" ]]; then
+        echo "bootstrap validation failed: missing ${rootfs}/var/lib/dpkg/status" >&2
+        missing=1
+    fi
+
+    if ((missing == 1)); then
+        exit 2
+    fi
+}
+
 require_tool debootstrap
 require_tool docker
 
@@ -124,10 +146,12 @@ ${SUDO} rm -rf "${ROOTFS_DIR}" "${TAR_PATH}"
 if [[ "${BOOTSTRAP_MODE}" == "foreign" ]]; then
     ${SUDO} debootstrap --foreign --arch "${DEB_ARCH}" "${SUITE}" "${ROOTFS_DIR}" "${MIRROR}"
     ${SUDO} install -m 0755 "/usr/bin/${QEMU_BIN}" "${ROOTFS_DIR}/usr/bin/${QEMU_BIN}"
-    ${SUDO} chroot "${ROOTFS_DIR}" "/usr/bin/${QEMU_BIN}" /debootstrap/debootstrap --second-stage
+    ${SUDO} chroot "${ROOTFS_DIR}" "/usr/bin/${QEMU_BIN}" /bin/sh /debootstrap/debootstrap --second-stage
 else
     ${SUDO} debootstrap --arch "${DEB_ARCH}" "${SUITE}" "${ROOTFS_DIR}" "${MIRROR}"
 fi
+
+validate_rootfs_bootstrap "${ROOTFS_DIR}"
 
 ${SUDO} tee "${ROOTFS_DIR}/etc/apt/sources.list" >/dev/null <<EOF
 deb ${MIRROR} ${SUITE} main
