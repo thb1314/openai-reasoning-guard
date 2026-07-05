@@ -373,7 +373,7 @@ my %targets = (
         dso_scheme       => "win32",
         shared_target    => "mingw-shared",
         shared_cppflags  => add("_WINDLL"),
-        shared_rcflag    => "--target=pe-arm64 --include-dir=${rc_include} --preprocessor=${rc_preprocessor}",
+        shared_rcflag    => "--target=${MINGW_TRIPLE} --include-dir=${rc_include} --preprocessor=${rc_preprocessor} --preprocessor-arg=-E --preprocessor-arg=-xc --preprocessor-arg=-DRC_INVOKED",
         shared_extension => ".dll",
         multilib         => "arm64",
         apps_aux_src     => add("win32_init.c"),
