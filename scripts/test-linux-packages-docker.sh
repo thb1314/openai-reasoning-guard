@@ -10,6 +10,7 @@ JOBS="${JOBS:-1}"
 TEST_DOCKER_IMAGE="${TEST_DOCKER_IMAGE:-debian:bookworm}"
 TEST_DOCKER_ENTRYPOINT="${TEST_DOCKER_ENTRYPOINT:-}"
 TEST_DOCKER_PLATFORM="${TEST_DOCKER_PLATFORM:-}"
+PREPARED_TEST_IMAGE=""
 
 usage() {
     cat <<EOF
@@ -181,6 +182,40 @@ run_in_container() {
     echo "[pass] ${name}"
 }
 
+cleanup_prepared_image() {
+    if [[ -n "${PREPARED_TEST_IMAGE}" ]]; then
+        docker image rm -f "${PREPARED_TEST_IMAGE}" >/dev/null 2>&1 || true
+    fi
+}
+
+prepare_runtime_image() {
+    local setup_script="$1"
+    local container_name="openai-reasoning-guard-testdeps-${ARCH}-$$"
+    local image_tag="openai-reasoning-guard-testdeps:${ARCH}-$$"
+    local -a create_args=(
+        create
+        --platform "${PLATFORM}"
+        --name "${container_name}"
+    )
+
+    trap cleanup_prepared_image EXIT
+
+    if [[ -n "${TEST_DOCKER_ENTRYPOINT}" ]]; then
+        create_args+=(--entrypoint "${TEST_DOCKER_ENTRYPOINT}")
+        create_args+=("${TEST_DOCKER_IMAGE}" -lc "${setup_script}")
+    else
+        create_args+=("${TEST_DOCKER_IMAGE}" bash -lc "${setup_script}")
+    fi
+
+    docker "${create_args[@]}" >/dev/null
+    docker start -a "${container_name}" >/dev/null
+    docker commit "${container_name}" "${image_tag}" >/dev/null
+    docker rm -f "${container_name}" >/dev/null 2>&1 || true
+    PREPARED_TEST_IMAGE="${image_tag}"
+    TEST_DOCKER_IMAGE="${PREPARED_TEST_IMAGE}"
+    TEST_DOCKER_ENTRYPOINT=""
+}
+
 runtime_apt_install=$'set -euo pipefail\nexport DEBIAN_FRONTEND=noninteractive\n'
 
 if [[ "${ARCH}" == "x86_32" && "${PLATFORM}" != "linux/386" ]]; then
@@ -197,7 +232,11 @@ fi
 
 runtime_apt_install+=$'  patchelf \\\n  xz-utils\n'
 
-deb_test_script="${runtime_apt_install}
+prepare_runtime_image "${runtime_apt_install}"
+
+script_prefix=$'set -euo pipefail\n'
+
+deb_test_script="${script_prefix}
 dpkg -i /packages/$(basename "${DEB_PATH}")
 command -v openai-reasoning-guard-cli
 command -v openai-reasoning-guard-gui
@@ -210,7 +249,7 @@ fi
 test -s /tmp/cli-help.txt
 "
 
-rpm_test_script="${runtime_apt_install}
+rpm_test_script="${script_prefix}
 rpm -i --nodeps /packages/$(basename "${RPM_PATH}")
 test -x /usr/bin/openai-reasoning-guard-cli
 test -x /usr/bin/openai-reasoning-guard-gui
@@ -224,28 +263,28 @@ test -s /tmp/cli-help.txt
 "
 
 if [[ "${ARCH}" == "arm64" || "${ARCH}" == "arm32" ]]; then
-cli_appimage_test_script="${runtime_apt_install}
+cli_appimage_test_script="${script_prefix}
 cp /packages/$(basename "${CLI_APPIMAGE}") /tmp/cli-appimage
 chmod +x /tmp/cli-appimage
 file /tmp/cli-appimage >/tmp/cli-appimage-file.txt
 grep -q '${APPIMAGE_FILE_PATTERN}' /tmp/cli-appimage-file.txt
 "
 
-gui_appimage_test_script="${runtime_apt_install}
+gui_appimage_test_script="${script_prefix}
 cp /packages/$(basename "${GUI_APPIMAGE}") /tmp/gui-appimage
 chmod +x /tmp/gui-appimage
 file /tmp/gui-appimage >/tmp/gui-appimage-file.txt
 grep -q '${APPIMAGE_FILE_PATTERN}' /tmp/gui-appimage-file.txt
 "
 else
-cli_appimage_test_script="${runtime_apt_install}
+cli_appimage_test_script="${script_prefix}
 cp /packages/$(basename "${CLI_APPIMAGE}") /tmp/cli-appimage
 chmod +x /tmp/cli-appimage
 APPIMAGE_EXTRACT_AND_RUN=1 /tmp/cli-appimage --help >/tmp/cli-appimage-help.txt
 test -s /tmp/cli-appimage-help.txt
 "
 
-gui_appimage_test_script="${runtime_apt_install}
+gui_appimage_test_script="${script_prefix}
 cp /packages/$(basename "${GUI_APPIMAGE}") /tmp/gui-appimage
 chmod +x /tmp/gui-appimage
 timeout 5 env APPIMAGE_EXTRACT_AND_RUN=1 xvfb-run -a /tmp/gui-appimage >/tmp/gui-appimage.log 2>&1 || code=\$?
