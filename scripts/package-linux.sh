@@ -27,6 +27,7 @@ RPM_RELEASE="${RPM_RELEASE:-1}"
 JOBS="${JOBS:-$(nproc 2>/dev/null || echo 2)}"
 SKIP_BUILD="${SKIP_BUILD:-0}"
 BUILD_TESTS="${BUILD_TESTS:-OFF}"
+APPIMAGE_STAGE_ONLY="${APPIMAGE_STAGE_ONLY:-0}"
 
 usage() {
     cat <<EOF
@@ -61,6 +62,7 @@ Environment overrides:
   OPENSSL_ROOT=/path/to/openssl
   JOBS=${JOBS}
   SKIP_BUILD=1
+  APPIMAGE_STAGE_ONLY=1
   DOWNLOAD_PROXY=http://127.0.0.1:7890
 EOF
 }
@@ -583,6 +585,11 @@ EOF
     sed -i "s#__INSTALL_PREFIX__#${INSTALL_PREFIX}#g" "${appdir}/AppRun"
     sed -i "s#__APPIMAGE_COMMAND__#${command}#g" "${appdir}/AppRun"
     chmod +x "${appdir}/AppRun"
+
+    if [[ "${APPIMAGE_STAGE_ONLY}" == "1" ]]; then
+        echo "Prepared AppDir: ${appdir}"
+        return
+    fi
 
     if command -v appimagetool >/dev/null 2>&1; then
         appimage_tool="$(command -v appimagetool)"

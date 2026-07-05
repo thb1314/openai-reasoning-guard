@@ -65,10 +65,10 @@ jobs:
         run: |
           set -euo pipefail
 
-          linux_x86_64='{"arch":"x86_64","platform":"linux/amd64","image":"debian:bookworm","qt_secret":"QT_LINUX_X86_64_URL","sdk_release_tag":"qt-sdk-linux-x86_64","sdk_asset":"qt5-linux-x86_64.tar.xz"}'
-          linux_x86_32='{"arch":"x86_32","platform":"linux/386","image":"i386/debian:bookworm","qt_secret":"QT_LINUX_X86_32_URL","sdk_release_tag":"qt-sdk-linux-x86_32","sdk_asset":"qt5-linux-x86_32.tar.xz"}'
-          linux_arm64='{"arch":"arm64","platform":"linux/arm64","image":"arm64v8/debian:bookworm","qt_secret":"QT_LINUX_ARM64_URL","sdk_release_tag":"qt-sdk-linux-arm64","sdk_asset":"qt5-linux-arm64.tar.xz"}'
-          linux_arm32='{"arch":"arm32","platform":"linux/arm/v7","image":"arm32v7/debian:bookworm","qt_secret":"QT_LINUX_ARM32_URL","sdk_release_tag":"qt-sdk-linux-arm32","sdk_asset":"qt5-linux-arm32.tar.xz"}'
+          linux_x86_64='{"arch":"x86_64","platform":"linux/amd64","image":"debian:bookworm","qt_secret":"QT_LINUX_X86_64_URL","sdk_release_tag":"qt-sdk-linux-x86_64","sdk_asset":"qt5-linux-x86_64.tar.xz","appimage_arch":"x86_64","appimage_runtime_asset":"runtime-x86_64"}'
+          linux_x86_32='{"arch":"x86_32","platform":"linux/386","image":"i386/debian:bookworm","qt_secret":"QT_LINUX_X86_32_URL","sdk_release_tag":"qt-sdk-linux-x86_32","sdk_asset":"qt5-linux-x86_32.tar.xz","appimage_arch":"i686","appimage_runtime_asset":"runtime-i686"}'
+          linux_arm64='{"arch":"arm64","platform":"linux/arm64","image":"arm64v8/debian:bookworm","qt_secret":"QT_LINUX_ARM64_URL","sdk_release_tag":"qt-sdk-linux-arm64","sdk_asset":"qt5-linux-arm64.tar.xz","appimage_arch":"aarch64","appimage_runtime_asset":"runtime-aarch64"}'
+          linux_arm32='{"arch":"arm32","platform":"linux/arm/v7","image":"arm32v7/debian:bookworm","qt_secret":"QT_LINUX_ARM32_URL","sdk_release_tag":"qt-sdk-linux-arm32","sdk_asset":"qt5-linux-arm32.tar.xz","appimage_arch":"armhf","appimage_runtime_asset":"runtime-armhf"}'
           windows_x86_64='{"arch":"x86_64","mingw_triple":"x86_64-w64-mingw32","apt_package":"g++-mingw-w64-x86-64-posix","qt_secret":"QT_WINDOWS_X86_64_URL","sdk_release_tag":"qt-sdk-windows-x86_64","sdk_asset":"qt5-windows-x86_64.tar.xz"}'
           windows_x86_32='{"arch":"x86_32","mingw_triple":"i686-w64-mingw32","apt_package":"g++-mingw-w64-i686-posix","qt_secret":"QT_WINDOWS_X86_32_URL","sdk_release_tag":"qt-sdk-windows-x86_32","sdk_asset":"qt5-windows-x86_32.tar.xz"}'
           windows_arm64='{"arch":"arm64","mingw_triple":"aarch64-w64-mingw32","apt_package":"","llvm_mingw_url":"https://github.com/mstorsjo/llvm-mingw/releases/download/20260616/llvm-mingw-20260616-ucrt-ubuntu-22.04-x86_64.tar.xz","qt_secret":"QT_WINDOWS_ARM64_URL","sdk_release_tag":"qt-sdk-windows-arm64","sdk_asset":"qt5-windows-arm64.tar.xz"}'
@@ -145,6 +145,11 @@ jobs:
             exit 2
           fi
 
+          docker_env=()
+          if [[ "${{ matrix.arch }}" == arm64 || "${{ matrix.arch }}" == arm32 ]]; then
+            docker_env+=(-e APPIMAGE_STAGE_ONLY=1)
+          fi
+
           docker run --rm \
             --platform "${{ matrix.platform }}" \
             -v "${PWD}:/workspace" \
@@ -154,6 +159,7 @@ jobs:
             -e DOWNLOAD_PROXY="${DOWNLOAD_PROXY:-}" \
             -e PACKAGE_ARCH="${{ matrix.arch }}" \
             -e CLEAN_PACKAGES="${CLEAN_PACKAGES}" \
+            "${docker_env[@]}" \
             ${{ matrix.image }} \
             bash -lc '
               set -euo pipefail
@@ -271,6 +277,45 @@ jobs:
             "build-ci-${{ matrix.arch }}" \
             "dist/${{ matrix.arch }}" \
             ".package-work/${{ matrix.arch }}" || true
+
+      - name: Build ARM AppImages on runner
+        if: (env.BUILD_TARGET == 'all' || env.BUILD_TARGET == format('linux-{0}', matrix.arch)) && (matrix.arch == 'arm64' || matrix.arch == 'arm32')
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_id="openai-reasoning-guard"
+          version="$(sed -n 's/^project([^ ]* VERSION \([^ ]*\).*/\1/p' CMakeLists.txt)"
+          version="${version:-0.1.0}"
+          dist_dir="${PWD}/dist/${{ matrix.arch }}"
+          work_dir="${PWD}/.package-work/${{ matrix.arch }}"
+          tool="${RUNNER_TEMP}/appimagetool-x86_64.AppImage"
+          runtime="${RUNNER_TEMP}/${{ matrix.appimage_runtime_asset }}"
+          curl_args=(-L --fail --connect-timeout 30)
+          if [[ -n "${DOWNLOAD_PROXY:-}" ]]; then
+            curl_args+=(--proxy "${DOWNLOAD_PROXY}")
+          fi
+          curl "${curl_args[@]}" -o "${tool}" \
+            "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage"
+          curl "${curl_args[@]}" -o "${runtime}" \
+            "https://github.com/AppImage/AppImageKit/releases/download/continuous/${{ matrix.appimage_runtime_asset }}"
+          chmod +x "${tool}" "${runtime}"
+
+          build_appimage() {
+            local variant="$1"
+            local appdir="${work_dir}/AppDir-${variant}"
+            local out="${dist_dir}/${package_id}-${variant}-${version}-${{ matrix.appimage_arch }}.AppImage"
+            test -d "${appdir}"
+            rm -f "${out}"
+            ARCH="${{ matrix.appimage_arch }}" APPIMAGE_EXTRACT_AND_RUN=1 "${tool}" \
+              --runtime-file "${runtime}" \
+              "${appdir}" \
+              "${out}"
+            chmod +x "${out}"
+            file "${out}"
+          }
+
+          build_appimage gui
+          build_appimage cli
 
       - name: Upload Linux packages
         if: env.BUILD_TARGET == 'all' || env.BUILD_TARGET == format('linux-{0}', matrix.arch)
