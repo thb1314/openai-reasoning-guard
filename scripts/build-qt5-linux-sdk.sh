@@ -464,6 +464,28 @@ sync_prefix_qmake_metadata() {
     local source_dir="$1"
     local qt_build="$2"
     local prefix="$3"
+    local prefix_mkspecs="${prefix}/mkspecs"
+    mkdir -p "${prefix_mkspecs}"
+
+    # Cross-architecture qmake resolves features from the configured install
+    # prefix before `make install` has populated it. Seed the prefix mkspecs
+    # tree up front so follow-on submodules can still load `settings.prf` and
+    # generated module metadata while qtbase is mid-build.
+    if [[ -d "${source_dir}/mkspecs" ]]; then
+        cp -a "${source_dir}/mkspecs/." "${prefix_mkspecs}/"
+        echo "seeded prefix mkspecs tree: ${prefix_mkspecs}"
+    fi
+    if [[ -d "${qt_build}/mkspecs/modules" ]]; then
+        mkdir -p "${prefix_mkspecs}/modules"
+        cp -a "${qt_build}/mkspecs/modules/." "${prefix_mkspecs}/modules/"
+        echo "seeded generated qmake modules: ${prefix_mkspecs}/modules"
+    fi
+    if [[ -d "${qt_build}/mkspecs/modules-inst" ]]; then
+        mkdir -p "${prefix_mkspecs}/modules-inst"
+        cp -a "${qt_build}/mkspecs/modules-inst/." "${prefix_mkspecs}/modules-inst/"
+        echo "seeded generated qmake modules-inst: ${prefix_mkspecs}/modules-inst"
+    fi
+
     local name
     local src
     local dest
