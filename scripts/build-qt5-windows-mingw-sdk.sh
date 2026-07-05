@@ -284,7 +284,11 @@ prepare_cross_prefix() {
     mkdir -p "${CROSS_BIN_DIR}"
 
     local tool source
-    for tool in gcc g++ cc c++ as ar ranlib windres strip nm objcopy objdump dlltool ld; do
+    local tools=(gcc g++ cc c++ as ar ranlib windres strip nm objcopy objdump dlltool ld)
+    if ((USE_LLVM_MINGW == 1)); then
+        tools+=(clang clang++)
+    fi
+    for tool in "${tools[@]}"; do
         case "${tool}" in
             gcc|cc) source="$(find_tool_any gcc-posix gcc || true)" ;;
             g++|c++) source="$(find_tool_any g++-posix g++ || true)" ;;
@@ -419,6 +423,10 @@ build_qtbase() {
     if [[ -n "${mingw_libdir}" && -f "${mingw_libdir}/libversion.a" && ! -e "${mingw_libdir}/libVersion.a" ]]; then
         ln -s libversion.a "${mingw_libdir}/libVersion.a" || true
     fi
+    local qt_xplatform="win32-g++"
+    if [[ "${TARGET}" == "windows-arm64" ]]; then
+        qt_xplatform="win32-clang-g++"
+    fi
 
     rm -rf "${qt_build}"
     mkdir -p "${qt_build}"
@@ -435,7 +443,7 @@ build_qtbase() {
             -opengl desktop \
             -prefix "${PREFIX}" \
             -platform linux-g++ \
-            -xplatform win32-g++ \
+            -xplatform "${qt_xplatform}" \
             -device-option CROSS_COMPILE="${MINGW_PREFIX}" \
             -nomake tests \
             -nomake examples \
