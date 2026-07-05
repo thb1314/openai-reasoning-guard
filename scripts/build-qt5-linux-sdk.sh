@@ -412,6 +412,8 @@ write_core_module_pri_fallback() {
     local module_dir
     local glib_incdirs=""
     local glib_libs=""
+    local build_public_includes
+    local build_private_includes
 
     if [[ "${TARGET}" != "linux-arm32" ]]; then
         return
@@ -432,6 +434,8 @@ write_core_module_pri_fallback() {
     fi
     glib_incdirs="${glib_incdirs:-/usr/include/glib-2.0 /usr/lib/arm-linux-gnueabihf/glib-2.0/include}"
     glib_libs="${glib_libs:--lgthread-2.0 -lglib-2.0}"
+    build_public_includes="${qt_build}/include ${qt_build}/include/QtCore"
+    build_private_includes="${qt_build}/include/QtCore/${qt_version} ${qt_build}/include/QtCore/${qt_version}/QtCore"
 
     cat > "${modules_inst}/qt_lib_core.pri" <<EOF
 QT.core.VERSION = ${qt_version}
@@ -477,18 +481,17 @@ EOF
 QT_MODULE_BIN_BASE = ${qt_build}/bin
 QT_MODULE_INCLUDE_BASE = ${source_dir}/include
 QT_MODULE_LIB_BASE = ${qt_build}/lib
+QT_MODULE_HOST_LIB_BASE = ${qt_build}/lib
 include(${modules_inst}/qt_lib_core.pri)
 QT.core.priority = 1
-EOF
-        cat > "${module_dir}/qt_lib_core_private.pri" <<EOF
-QT_MODULE_BIN_BASE = ${qt_build}/bin
-QT_MODULE_INCLUDE_BASE = ${source_dir}/include
-QT_MODULE_LIB_BASE = ${qt_build}/lib
 include(${modules_inst}/qt_lib_core_private.pri)
 QT.core_private.priority = 1
+QT.core.includes += ${build_public_includes}
+QT.core_private.includes += ${build_private_includes}
 EOF
+        rm -f "${module_dir}/qt_lib_core_private.pri"
         echo "wrote core module fallback metadata: ${module_dir}/qt_lib_core.pri"
-        echo "wrote core-private module fallback metadata: ${module_dir}/qt_lib_core_private.pri"
+        echo "embedded core-private fallback metadata via core forwarder: ${module_dir}/qt_lib_core.pri"
     done
 }
 
