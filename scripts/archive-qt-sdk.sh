@@ -30,6 +30,7 @@ Targets and default secrets:
   linux-arm32    QT_LINUX_ARM32_URL
   windows-x86_64 QT_WINDOWS_X86_64_URL
   windows-x86_32 QT_WINDOWS_X86_32_URL
+  windows-arm64  QT_WINDOWS_ARM64_URL
   macos-x86_64   QT_MACOS_X86_64_URL
   macos-aarch64  QT_MACOS_ARM64_URL
 
@@ -116,6 +117,7 @@ default_secret_for_target() {
         linux-arm32) echo QT_LINUX_ARM32_URL ;;
         windows-x86_64) echo QT_WINDOWS_X86_64_URL ;;
         windows-x86_32) echo QT_WINDOWS_X86_32_URL ;;
+        windows-arm64) echo QT_WINDOWS_ARM64_URL ;;
         macos-x86_64) echo QT_MACOS_X86_64_URL ;;
         macos-aarch64) echo QT_MACOS_ARM64_URL ;;
         *)

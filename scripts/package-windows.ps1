@@ -1,5 +1,5 @@
 param(
-    [ValidateSet("x86_64", "x86_32")]
+    [ValidateSet("x86_64", "x86_32", "arm64")]
     [string]$Arch = $(if ($env:PACKAGE_ARCH) { $env:PACKAGE_ARCH } else { "x86_64" }),
     [string]$QtRoot = $env:QT_ROOT,
     [string]$BuildDir = $env:BUILD_DIR,

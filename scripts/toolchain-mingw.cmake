@@ -10,6 +10,8 @@ endif()
 
 if(MINGW_TRIPLE MATCHES "^i[3-6]86-")
     set(CMAKE_SYSTEM_PROCESSOR x86)
+elseif(MINGW_TRIPLE MATCHES "^(aarch64|arm64)-")
+    set(CMAKE_SYSTEM_PROCESSOR ARM64)
 else()
     set(CMAKE_SYSTEM_PROCESSOR x86_64)
 endif()

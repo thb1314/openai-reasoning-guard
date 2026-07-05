@@ -196,6 +196,15 @@ MINGW_TRIPLE=x86_64-w64-mingw32 \
 scripts/package-windows-mingw.sh --arch x86_64 --clean
 ```
 
+Windows ARM64 使用 `llvm-mingw` 的 `aarch64-w64-mingw32` 工具链：
+
+```bash
+QT_ROOT=/path/to/qt-5.15.x-mingw-arm64 \
+MINGW_TRIPLE=aarch64-w64-mingw32 \
+MINGW_BIN_DIR=/path/to/llvm-mingw/bin \
+scripts/package-windows-mingw.sh --arch arm64 --clean
+```
+
 输出示例：
 
 ```text
@@ -212,7 +221,7 @@ powershell -ExecutionPolicy Bypass -File scripts/package-windows.ps1 `
   -Clean
 ```
 
-`--arch x86_32` / `-Arch x86_32` 用于 32 位 Windows 包。Qt SDK 必须和当前 C++ 编译器 ABI 一致，例如 MinGW x86_64 使用 64 位 MinGW Qt，MSVC x86_64 使用 64 位 MSVC Qt。
+`--arch x86_32` / `-Arch x86_32` 用于 32 位 Windows 包，`--arch arm64` / `-Arch arm64` 用于 Windows ARM64 包。Qt SDK 必须和当前 C++ 编译器 ABI 一致，例如 MinGW x86_64 使用 64 位 MinGW Qt，Windows ARM64 使用 `aarch64-w64-mingw32` Qt，MSVC x86_64 使用 64 位 MSVC Qt。
 
 ### macOS
 
@@ -249,7 +258,8 @@ dist/openai-reasoning-guard-macos-aarch64-0.1.0.dmg
 | Linux arm32 | `linux/arm/v7` Docker | deb、rpm、GUI AppImage、CLI AppImage | `QT_LINUX_ARM32_URL` |
 | Windows x86_64 | Ubuntu runner + MinGW `x86_64-w64-mingw32` | installer `.exe`、portable `.zip` | `QT_WINDOWS_X86_64_URL` |
 | Windows x86_32 | Ubuntu runner + MinGW `i686-w64-mingw32` | installer `.exe`、portable `.zip` | `QT_WINDOWS_X86_32_URL` |
-| macOS x86_64 | `macos-13` | dmg | `QT_MACOS_X86_64_URL` |
+| Windows ARM64 | Ubuntu runner + llvm-mingw `aarch64-w64-mingw32` | installer `.exe`、portable `.zip` | `QT_WINDOWS_ARM64_URL` |
+| macOS x86_64 | `macos-15-intel` | dmg | `QT_MACOS_X86_64_URL` |
 | macOS aarch64 | `macos-14` | dmg | `QT_MACOS_ARM64_URL` |
 
 默认每个成功 job 都会先上传 Actions artifact，artifact 适合检查构建结果但会过期。要把产物放进 GitHub Release：
@@ -267,13 +277,14 @@ dist/openai-reasoning-guard-macos-aarch64-0.1.0.dmg
 | Linux arm32 | `qt-sdk-linux-arm32/qt5-linux-arm32.tar.xz` |
 | Windows x86_64 | `qt-sdk-windows-x86_64/qt5-windows-x86_64.tar.xz` |
 | Windows x86_32 | `qt-sdk-windows-x86_32/qt5-windows-x86_32.tar.xz` |
+| Windows ARM64 | `qt-sdk-windows-arm64/qt5-windows-arm64.tar.xz` |
 | macOS x86_64 | `qt-sdk-macos-x86_64/qt5-macos-x86_64.tar.xz` |
 | macOS aarch64 | `qt-sdk-macos-aarch64/qt5-macos-aarch64.tar.xz` |
 
 archive 解压后需要能找到对应平台的 Qt 工具和 runtime：
 
 - Linux archive：包含 `bin/moc`、`lib/libQt5Core.so.5`、`plugins/platforms/libqxcb.so`，建议同时包含 `lib/cmake/Qt5`。
-- Windows MinGW archive：包含 Linux host 工具 `bin/moc`、`bin/rcc`、`bin/uic`，Windows target runtime `bin/Qt5Core.dll`、`bin/Qt5Network.dll`、`bin/Qt5Gui.dll`、`bin/Qt5Widgets.dll`，`plugins/platforms/qwindows.dll`、`lib/cmake/Qt5` 和 MinGW import lib。建议把匹配 Qt 构建器的 `libgcc_s_*.dll`、`libstdc++-6.dll`、`libwinpthread-1.dll` 放进 `runtime/mingw`。
+- Windows MinGW archive：包含 Linux host 工具 `bin/moc`、`bin/rcc`、`bin/uic`，Windows target runtime `bin/Qt5Core.dll`、`bin/Qt5Network.dll`、`bin/Qt5Gui.dll`、`bin/Qt5Widgets.dll`，`plugins/platforms/qwindows.dll`、`lib/cmake/Qt5` 和 MinGW import lib。建议把匹配 Qt 构建器的 runtime DLL 放进 `runtime/mingw`；GCC MinGW 通常是 `libgcc_s_*.dll`、`libstdc++-6.dll`、`libwinpthread-1.dll`，Windows ARM64 的 llvm-mingw 通常是 `libc++.dll`、`libc++abi.dll`、`libunwind.dll`、`libwinpthread-1.dll`。
 - macOS archive：包含 `bin/moc`、`bin/macdeployqt` 和 Qt frameworks/CMake package。
 
 可选 secret：
@@ -294,6 +305,7 @@ SDK workflow 输入：
 | `qtbase_url` | `https://download.qt.io/archive/qt/5.15/5.15.2/submodules/qtbase-everywhere-src-5.15.2.tar.xz` | Qt 5.15.x qtbase 源码 archive 下载地址。 |
 | `qttools_url` | `https://download.qt.io/archive/qt/5.15/5.15.2/submodules/qttools-everywhere-src-5.15.2.tar.xz` | macOS SDK 需要，用来构建 `macdeployqt`。 |
 | `openssl_url` | `https://github.com/openssl/openssl/releases/download/OpenSSL_1_1_1w/openssl-1.1.1w.tar.gz` | Linux 和 Windows MinGW SDK 需要；macOS 使用 SecureTransport，不需要。 |
+| `llvm_mingw_url` | `https://github.com/mstorsjo/llvm-mingw/releases/download/20260616/llvm-mingw-20260616-ucrt-ubuntu-22.04-x86_64.tar.xz` | Windows ARM64 SDK 需要，用来提供 `aarch64-w64-mingw32` cross toolchain。 |
 | `release_tag` | 空 | 留空时自动使用 `qt-sdk-<target>`，这是包构建 workflow 的默认 fallback。 |
 | `clean` | `true` | 是否清理 SDK build 目录后重建。 |
 
@@ -369,7 +381,7 @@ scripts/archive-qt-sdk.sh \
   --upload-proxy http://127.0.0.1:7890
 ```
 
-这里的 `--mingw-runtime-dir` 会把匹配 Qt 构建器的 `*.dll` 放进 archive 的 `runtime/mingw`，打包时优先复制这些 DLL。x86_32 需要单独准备 32 位 MinGW Qt SDK，并把 `--target` 改为 `windows-x86_32`。
+这里的 `--mingw-runtime-dir` 会把匹配 Qt 构建器的 `*.dll` 放进 archive 的 `runtime/mingw`，打包时优先复制这些 DLL。x86_32 需要单独准备 32 位 MinGW Qt SDK，并把 `--target` 改为 `windows-x86_32`；Windows ARM64 使用 `windows-arm64`。
 
 如果需要从源码重新构建 Windows MinGW Qt SDK，使用：
 
@@ -395,7 +407,13 @@ scripts/build-qt5-windows-mingw-sdk.sh \
 scripts/build-qt5-windows-mingw-sdk.sh --target windows-x86_32 --archive --upload --set-secret
 ```
 
-原生 Windows/MSVC SDK 也可保留作为备用路线。Windows 在对应 MSVC 开发者环境中原生编译，x86_64 用 x64 shell，x86_32 用 x86 shell：
+Windows ARM64 使用 llvm-mingw：
+
+```bash
+scripts/build-qt5-windows-mingw-sdk.sh --target windows-arm64 --archive --upload --set-secret
+```
+
+原生 Windows/MSVC SDK 也可保留作为备用路线。Windows 在对应 MSVC 开发者环境中原生编译，x86_64 用 x64 shell，x86_32 用 x86 shell，ARM64 用 ARM64 shell：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/build-qt5-windows-sdk.ps1 `

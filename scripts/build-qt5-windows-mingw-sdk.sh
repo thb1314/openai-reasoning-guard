@@ -12,6 +12,8 @@ BUILD_DIR="${BUILD_DIR:-}"
 PREFIX="${PREFIX:-}"
 MINGW_TRIPLE="${MINGW_TRIPLE:-}"
 MINGW_BIN_DIR="${MINGW_BIN_DIR:-}"
+LLVM_MINGW_URL="${LLVM_MINGW_URL:-https://github.com/mstorsjo/llvm-mingw/releases/download/20260616/llvm-mingw-20260616-ucrt-ubuntu-22.04-x86_64.tar.xz}"
+LLVM_MINGW_ROOT="${LLVM_MINGW_ROOT:-}"
 JOBS="${JOBS:-$(nproc 2>/dev/null || echo 2)}"
 CLEAN="${CLEAN:-0}"
 SKIP_DEPS="${SKIP_DEPS:-0}"
@@ -35,6 +37,7 @@ GitHub Actions can cross-build Windows packages from an Ubuntu runner.
 Targets:
   windows-x86_64  MinGW triple x86_64-w64-mingw32, secret QT_WINDOWS_X86_64_URL
   windows-x86_32  MinGW triple i686-w64-mingw32, secret QT_WINDOWS_X86_32_URL
+  windows-arm64   llvm-mingw triple aarch64-w64-mingw32, secret QT_WINDOWS_ARM64_URL
 
 Examples:
   scripts/build-qt5-windows-mingw-sdk.sh --target windows-x86_64 --archive
@@ -45,6 +48,8 @@ Environment overrides:
   OPENSSL_SOURCE_ARCHIVE=${OPENSSL_SOURCE_ARCHIVE}
   MINGW_BIN_DIR=/path/to/mingw/bin
   MINGW_TRIPLE=x86_64-w64-mingw32
+  LLVM_MINGW_URL=${LLVM_MINGW_URL}
+  LLVM_MINGW_ROOT=/path/to/llvm-mingw
   OUTPUT_ROOT=${OUTPUT_ROOT}
   BUILD_DIR=${BUILD_DIR}
   PREFIX=${PREFIX}
@@ -85,6 +90,14 @@ while (($# > 0)); do
         --mingw-triple)
             shift
             MINGW_TRIPLE="${1:?missing mingw triple}"
+            ;;
+        --llvm-mingw-url)
+            shift
+            LLVM_MINGW_URL="${1:?missing llvm-mingw url}"
+            ;;
+        --llvm-mingw-root)
+            shift
+            LLVM_MINGW_ROOT="${1:?missing llvm-mingw root}"
             ;;
         --jobs)
             shift
@@ -139,11 +152,19 @@ case "${TARGET}" in
         MINGW_TRIPLE="${MINGW_TRIPLE:-x86_64-w64-mingw32}"
         APT_MINGW_PACKAGE="g++-mingw-w64-x86-64-posix"
         OPENSSL_TARGET="mingw64"
+        USE_LLVM_MINGW=0
         ;;
     windows-x86_32)
         MINGW_TRIPLE="${MINGW_TRIPLE:-i686-w64-mingw32}"
         APT_MINGW_PACKAGE="g++-mingw-w64-i686-posix"
         OPENSSL_TARGET="mingw"
+        USE_LLVM_MINGW=0
+        ;;
+    windows-arm64)
+        MINGW_TRIPLE="${MINGW_TRIPLE:-aarch64-w64-mingw32}"
+        APT_MINGW_PACKAGE=""
+        OPENSSL_TARGET="mingwarm64"
+        USE_LLVM_MINGW=1
         ;;
     *)
         echo "unsupported target: ${TARGET}" >&2
@@ -178,20 +199,55 @@ install_deps() {
         sudo_cmd=(sudo)
     fi
     "${sudo_cmd[@]}" apt-get update
-    "${sudo_cmd[@]}" apt-get install -y --no-install-recommends \
-        bash \
-        build-essential \
-        ca-certificates \
-        gperf \
-        "${APT_MINGW_PACKAGE}" \
-        make \
-        patch \
-        perl \
-        python3 \
-        ruby \
-        tar \
-        xz-utils \
+    local packages=(
+        bash
+        build-essential
+        ca-certificates
+        curl
+        gperf
+        make
+        patch
+        perl
+        python3
+        ruby
+        tar
+        xz-utils
         zlib1g-dev
+    )
+    if [[ -n "${APT_MINGW_PACKAGE}" ]]; then
+        packages+=("${APT_MINGW_PACKAGE}")
+    fi
+    "${sudo_cmd[@]}" apt-get install -y --no-install-recommends "${packages[@]}"
+}
+
+prepare_llvm_mingw() {
+    if ((USE_LLVM_MINGW == 0)); then
+        return
+    fi
+    if [[ -n "${MINGW_BIN_DIR}" ]]; then
+        return
+    fi
+    if [[ -n "${LLVM_MINGW_ROOT}" ]]; then
+        LLVM_MINGW_ROOT="$(cd -- "${LLVM_MINGW_ROOT}" && pwd)"
+    else
+        local archive="${BUILD_DIR}/llvm-mingw.tar.xz"
+        local extract_dir="${BUILD_DIR}/llvm-mingw"
+        rm -rf "${extract_dir}"
+        mkdir -p "${extract_dir}"
+        local curl_args=(-L --fail --connect-timeout 30 -o "${archive}")
+        if [[ -n "${DOWNLOAD_PROXY:-}" ]]; then
+            curl_args+=(--proxy "${DOWNLOAD_PROXY}")
+        fi
+        curl "${curl_args[@]}" "${LLVM_MINGW_URL}"
+        tar -xf "${archive}" -C "${extract_dir}" --strip-components=1
+        LLVM_MINGW_ROOT="${extract_dir}"
+    fi
+    MINGW_BIN_DIR="${LLVM_MINGW_ROOT}/bin"
+    if [[ ! -x "${MINGW_BIN_DIR}/${MINGW_TRIPLE}-gcc" ]]; then
+        echo "llvm-mingw toolchain missing ${MINGW_TRIPLE}-gcc under ${MINGW_BIN_DIR}" >&2
+        exit 2
+    fi
+    export PATH="${MINGW_BIN_DIR}:${PATH}"
 }
 
 find_tool() {
@@ -275,6 +331,34 @@ patch_qtbase_for_modern_mingw() {
 build_openssl() {
     local source_dir="${BUILD_DIR}/openssl-src"
     extract_one "${OPENSSL_SOURCE_ARCHIVE}" "${source_dir}"
+    if [[ "${TARGET}" == "windows-arm64" ]]; then
+        mkdir -p "${source_dir}/Configurations"
+        cat > "${source_dir}/Configurations/99-openai-mingw-arm64.conf" <<'EOF'
+%targets = (
+    "mingwarm64" => {
+        inherit_from     => [ "BASE_unix" ],
+        CC               => "gcc",
+        CFLAGS           => picker(default => "-Wall",
+                                   debug   => "-g -O0",
+                                   release => "-O3"),
+        cppflags         => combine("-DUNICODE -D_UNICODE -DWIN32_LEAN_AND_MEAN",
+                                    threads("-D_MT")),
+        lib_cppflags     => "-DL_ENDIAN",
+        sys_id           => "MINGW64",
+        ex_libs          => add("-lws2_32 -lgdi32 -lcrypt32"),
+        bn_ops           => "SIXTY_FOUR_BIT EXPORT_VAR_AS_FN",
+        thread_scheme    => "winthreads",
+        dso_scheme       => "win32",
+        shared_target    => "mingw-shared",
+        shared_cppflags  => add("_WINDLL"),
+        shared_rcflag    => "--target=pe-arm64",
+        shared_extension => ".dll",
+        multilib         => "arm64",
+        apps_aux_src     => add("win32_init.c"),
+    },
+);
+EOF
+    fi
     (
         cd "${source_dir}"
         CROSS_COMPILE="${MINGW_PREFIX}" ./Configure "${OPENSSL_TARGET}" \
@@ -415,6 +499,7 @@ fi
 mkdir -p "${BUILD_DIR}" "$(dirname -- "${PREFIX}")"
 
 install_deps
+prepare_llvm_mingw
 prepare_cross_prefix
 build_openssl
 build_qtbase

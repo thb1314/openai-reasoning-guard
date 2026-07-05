@@ -1,7 +1,7 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$QtBaseSourceArchive,
-    [ValidateSet("windows-x86_64", "windows-x86_32")]
+    [ValidateSet("windows-x86_64", "windows-x86_32", "windows-arm64")]
     [string]$Target = $(if ($env:TARGET) { $env:TARGET } else { "windows-x86_64" }),
     [string]$OpenSslRoot = $env:OPENSSL_ROOT,
     [switch]$NoOpenSsl,

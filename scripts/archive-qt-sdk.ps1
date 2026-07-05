@@ -1,7 +1,7 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$QtRoot,
-    [ValidateSet("windows-x86_64", "windows-x86_32")]
+    [ValidateSet("windows-x86_64", "windows-x86_32", "windows-arm64")]
     [string]$Target = $(if ($env:TARGET) { $env:TARGET } else { "windows-x86_64" }),
     [string]$Repo = $(if ($env:REPO) { $env:REPO } else { "thb1314/openai-reasoning-guard" }),
     [string]$ReleaseTag = $env:RELEASE_TAG,
@@ -29,6 +29,7 @@ if (-not $SecretName) {
     switch ($Target) {
         "windows-x86_64" { $SecretName = "QT_WINDOWS_X86_64_URL" }
         "windows-x86_32" { $SecretName = "QT_WINDOWS_X86_32_URL" }
+        "windows-arm64" { $SecretName = "QT_WINDOWS_ARM64_URL" }
     }
 }
 

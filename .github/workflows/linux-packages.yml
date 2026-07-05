@@ -15,6 +15,7 @@ on:
           - "linux-arm32"
           - "windows-x86_64"
           - "windows-x86_32"
+          - "windows-arm64"
           - "macos-x86_64"
           - "macos-aarch64"
           - "all"
@@ -70,6 +71,7 @@ jobs:
           linux_arm32='{"arch":"arm32","platform":"linux/arm/v7","image":"arm32v7/debian:bookworm","qt_secret":"QT_LINUX_ARM32_URL","sdk_release_tag":"qt-sdk-linux-arm32","sdk_asset":"qt5-linux-arm32.tar.xz"}'
           windows_x86_64='{"arch":"x86_64","mingw_triple":"x86_64-w64-mingw32","apt_package":"g++-mingw-w64-x86-64-posix","qt_secret":"QT_WINDOWS_X86_64_URL","sdk_release_tag":"qt-sdk-windows-x86_64","sdk_asset":"qt5-windows-x86_64.tar.xz"}'
           windows_x86_32='{"arch":"x86_32","mingw_triple":"i686-w64-mingw32","apt_package":"g++-mingw-w64-i686-posix","qt_secret":"QT_WINDOWS_X86_32_URL","sdk_release_tag":"qt-sdk-windows-x86_32","sdk_asset":"qt5-windows-x86_32.tar.xz"}'
+          windows_arm64='{"arch":"arm64","mingw_triple":"aarch64-w64-mingw32","apt_package":"","llvm_mingw_url":"https://github.com/mstorsjo/llvm-mingw/releases/download/20260616/llvm-mingw-20260616-ucrt-ubuntu-22.04-x86_64.tar.xz","qt_secret":"QT_WINDOWS_ARM64_URL","sdk_release_tag":"qt-sdk-windows-arm64","sdk_asset":"qt5-windows-arm64.tar.xz"}'
           macos_x86_64='{"arch":"x86_64","runner":"macos-15-intel","cmake_arch":"x86_64","deployment_target":"10.13","qt_secret":"QT_MACOS_X86_64_URL","sdk_release_tag":"qt-sdk-macos-x86_64","sdk_asset":"qt5-macos-x86_64.tar.xz"}'
           macos_aarch64='{"arch":"aarch64","runner":"macos-14","cmake_arch":"arm64","deployment_target":"11.0","qt_secret":"QT_MACOS_ARM64_URL","sdk_release_tag":"qt-sdk-macos-aarch64","sdk_asset":"qt5-macos-aarch64.tar.xz"}'
 
@@ -79,7 +81,7 @@ jobs:
           case "${REQUESTED_TARGET}" in
             all)
               linux="[${linux_x86_64},${linux_x86_32},${linux_arm64},${linux_arm32}]"
-              windows="[${windows_x86_64},${windows_x86_32}]"
+              windows="[${windows_x86_64},${windows_x86_32},${windows_arm64}]"
               macos="[${macos_x86_64},${macos_aarch64}]"
               ;;
             linux-x86_64) linux="[${linux_x86_64}]" ;;
@@ -88,6 +90,7 @@ jobs:
             linux-arm32) linux="[${linux_arm32}]" ;;
             windows-x86_64) windows="[${windows_x86_64}]" ;;
             windows-x86_32) windows="[${windows_x86_32}]" ;;
+            windows-arm64) windows="[${windows_arm64}]" ;;
             macos-x86_64) macos="[${macos_x86_64}]" ;;
             macos-aarch64) macos="[${macos_aarch64}]" ;;
             *)
@@ -318,17 +321,39 @@ jobs:
           set -euo pipefail
           export DEBIAN_FRONTEND=noninteractive
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential \
-            ca-certificates \
-            cmake \
-            curl \
-            file \
-            ${{ matrix.apt_package }} \
-            nsis \
-            unzip \
-            xz-utils \
+          apt_packages=(
+            build-essential
+            ca-certificates
+            cmake
+            curl
+            file
+            nsis
+            unzip
+            xz-utils
             zip
+          )
+          if [[ -n "${{ matrix.apt_package }}" ]]; then
+            apt_packages+=("${{ matrix.apt_package }}")
+          fi
+          sudo apt-get install -y --no-install-recommends "${apt_packages[@]}"
+
+      - name: Install llvm-mingw for Windows ARM64
+        if: (env.BUILD_TARGET == 'all' || env.BUILD_TARGET == format('windows-{0}', matrix.arch)) && matrix.arch == 'arm64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="${RUNNER_TEMP}/llvm-mingw.tar.xz"
+          root="${RUNNER_TEMP}/llvm-mingw"
+          mkdir -p "${root}"
+          curl_args=(-L --fail --connect-timeout 30 -o "${archive}")
+          if [[ -n "${DOWNLOAD_PROXY:-}" ]]; then
+            curl_args+=(--proxy "${DOWNLOAD_PROXY}")
+          fi
+          curl "${curl_args[@]}" "${{ matrix.llvm_mingw_url }}"
+          tar -xf "${archive}" -C "${root}" --strip-components=1
+          test -x "${root}/bin/${{ matrix.mingw_triple }}-gcc"
+          echo "MINGW_BIN_DIR=${root}/bin" >> "${GITHUB_ENV}"
+          echo "MINGW_SYSROOT=${root}/${{ matrix.mingw_triple }}" >> "${GITHUB_ENV}"
 
       - name: Resolve Qt SDK
         if: env.BUILD_TARGET == 'all' || env.BUILD_TARGET == format('windows-{0}', matrix.arch)

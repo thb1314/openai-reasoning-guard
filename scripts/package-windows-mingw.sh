@@ -25,7 +25,7 @@ MAKENSIS="${MAKENSIS:-}"
 
 usage() {
     cat <<EOF
-Usage: $(basename "$0") [--arch x86_64|x86_32] [--qt-root /path/to/qt] [--clean] [--skip-build]
+Usage: $(basename "$0") [--arch x86_64|x86_32|arm64] [--qt-root /path/to/qt] [--clean] [--skip-build]
 
 Cross-build Windows portable zip and installer exe packages with MinGW from Linux.
 
@@ -104,6 +104,10 @@ case "${PACKAGE_ARCH}" in
     x86_32)
         MINGW_TRIPLE="${MINGW_TRIPLE:-i686-w64-mingw32}"
         MINGW_RUNTIME_DLLS=(libgcc_s_sjlj-1.dll libgcc_s_dw2-1.dll libstdc++-6.dll libwinpthread-1.dll)
+        ;;
+    arm64)
+        MINGW_TRIPLE="${MINGW_TRIPLE:-aarch64-w64-mingw32}"
+        MINGW_RUNTIME_DLLS=(libc++.dll libc++abi.dll libunwind.dll libwinpthread-1.dll libgcc_s_seh-1.dll libstdc++-6.dll)
         ;;
     *)
         echo "unsupported Windows package arch: ${PACKAGE_ARCH}" >&2
@@ -362,7 +366,7 @@ if ((BUILD_INSTALLER == 1)); then
     if makensis_path="$(find_makensis)"; then
         nsis_script="${WORK_DIR}/${PACKAGE_ID}-${PACKAGE_ARCH}.nsi"
         nsis_install_dir='$PROGRAMFILES'
-        if [[ "${PACKAGE_ARCH}" == "x86_64" ]]; then
+        if [[ "${PACKAGE_ARCH}" == "x86_64" || "${PACKAGE_ARCH}" == "arm64" ]]; then
             nsis_install_dir='$PROGRAMFILES64'
         fi
         cat > "${nsis_script}" <<EOF

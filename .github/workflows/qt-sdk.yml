@@ -15,6 +15,7 @@ on:
           - "linux-arm32"
           - "windows-x86_64"
           - "windows-x86_32"
+          - "windows-arm64"
           - "macos-x86_64"
           - "macos-aarch64"
           - "all"
@@ -32,6 +33,11 @@ on:
         description: "Download URL for OpenSSL source archive; required for Linux and Windows MinGW SDKs"
         required: false
         default: "https://github.com/openssl/openssl/releases/download/OpenSSL_1_1_1w/openssl-1.1.1w.tar.gz"
+        type: string
+      llvm_mingw_url:
+        description: "Download URL for llvm-mingw; required for Windows ARM64 SDK builds"
+        required: false
+        default: "https://github.com/mstorsjo/llvm-mingw/releases/download/20260616/llvm-mingw-20260616-ucrt-ubuntu-22.04-x86_64.tar.xz"
         type: string
       release_tag:
         description: "Optional override; default is qt-sdk-<target>. Avoid overriding when target=all"
@@ -74,7 +80,7 @@ jobs:
           case "${REQUESTED_TARGET}" in
             all)
               linux='[{"target":"linux-x86_64","image":"debian:bookworm"},{"target":"linux-x86_32","image":"i386/debian:bookworm"},{"target":"linux-arm64","image":"arm64v8/debian:bookworm"},{"target":"linux-arm32","image":"arm32v7/debian:bookworm"}]'
-              windows='[{"target":"windows-x86_64"},{"target":"windows-x86_32"}]'
+              windows='[{"target":"windows-x86_64"},{"target":"windows-x86_32"},{"target":"windows-arm64"}]'
               macos='[{"target":"macos-x86_64","runner":"macos-15-intel"},{"target":"macos-aarch64","runner":"macos-14"}]'
               ;;
             linux-x86_64)
@@ -94,6 +100,9 @@ jobs:
               ;;
             windows-x86_32)
               windows='[{"target":"windows-x86_32"}]'
+              ;;
+            windows-arm64)
+              windows='[{"target":"windows-arm64"}]'
               ;;
             macos-x86_64)
               macos='[{"target":"macos-x86_64","runner":"macos-15-intel"}]'
@@ -192,6 +201,7 @@ jobs:
       BUILD_TARGET: ${{ inputs.target }}
       DOWNLOAD_PROXY: ${{ secrets.DOWNLOAD_PROXY }}
       GH_TOKEN: ${{ github.token }}
+      LLVM_MINGW_URL: ${{ inputs.llvm_mingw_url }}
     steps:
       - name: Checkout
         if: env.BUILD_TARGET == 'all' || env.BUILD_TARGET == matrix.target
