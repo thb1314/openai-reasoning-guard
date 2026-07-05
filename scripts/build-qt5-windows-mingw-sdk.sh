@@ -334,7 +334,7 @@ build_openssl() {
     if [[ "${TARGET}" == "windows-arm64" ]]; then
         mkdir -p "${source_dir}/Configurations"
         cat > "${source_dir}/Configurations/99-openai-mingw-arm64.conf" <<'EOF'
-%targets = (
+my %targets = (
     "mingwarm64" => {
         inherit_from     => [ "BASE_unix" ],
         CC               => "gcc",
