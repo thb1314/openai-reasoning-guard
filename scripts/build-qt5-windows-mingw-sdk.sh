@@ -345,8 +345,13 @@ build_openssl() {
     extract_one "${OPENSSL_SOURCE_ARCHIVE}" "${source_dir}"
     if [[ "${TARGET}" == "windows-arm64" ]]; then
         local rc_include="${MINGW_SYSROOT}/include"
+        local rc_preprocessor="${MINGW_PREFIX}gcc"
         if [[ ! -d "${rc_include}" ]]; then
             echo "Windows ARM64 OpenSSL build requires MINGW_SYSROOT/include for windres: ${rc_include}" >&2
+            exit 2
+        fi
+        if [[ ! -x "${rc_preprocessor}" ]]; then
+            echo "Windows ARM64 OpenSSL build requires cross gcc for windres preprocessing: ${rc_preprocessor}" >&2
             exit 2
         fi
         mkdir -p "${source_dir}/Configurations"
@@ -368,7 +373,7 @@ my %targets = (
         dso_scheme       => "win32",
         shared_target    => "mingw-shared",
         shared_cppflags  => add("_WINDLL"),
-        shared_rcflag    => "--target=pe-arm64 --include-dir=${rc_include}",
+        shared_rcflag    => "--target=pe-arm64 --include-dir=${rc_include} --preprocessor=${rc_preprocessor}",
         shared_extension => ".dll",
         multilib         => "arm64",
         apps_aux_src     => add("win32_init.c"),
