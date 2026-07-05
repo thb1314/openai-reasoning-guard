@@ -513,6 +513,38 @@ sync_prefix_qmake_metadata() {
     done
 }
 
+configure_qmake_search_env() {
+    local source_dir="$1"
+    local qt_build="$2"
+    local prefix="$3"
+    local path_sep=":"
+    local entry
+    local -a qmake_paths=()
+    local -a qmake_features=()
+
+    for entry in "${qt_build}" "${source_dir}" "${prefix}"; do
+        [[ -n "${entry}" ]] && qmake_paths+=("${entry}")
+    done
+    for entry in \
+        "${qt_build}/mkspecs/features" \
+        "${source_dir}/mkspecs/features" \
+        "${prefix}/mkspecs/features"; do
+        [[ -d "${entry}" ]] && qmake_features+=("${entry}")
+    done
+
+    if ((${#qmake_paths[@]} > 0)); then
+        export QMAKEPATH
+        QMAKEPATH="$(IFS="${path_sep}"; echo "${qmake_paths[*]}")${QMAKEPATH:+${path_sep}${QMAKEPATH}}"
+        echo "QMAKEPATH=${QMAKEPATH}"
+    fi
+
+    if ((${#qmake_features[@]} > 0)); then
+        export QMAKEFEATURES
+        QMAKEFEATURES="$(IFS="${path_sep}"; echo "${qmake_features[*]}")${QMAKEFEATURES:+${path_sep}${QMAKEFEATURES}}"
+        echo "QMAKEFEATURES=${QMAKEFEATURES}"
+    fi
+}
+
 write_prefix_tool_wrappers() {
     local qt_build="$1"
     local prefix="$2"
@@ -644,6 +676,7 @@ build_qtbase() {
         patch_qmake_use_pcre2_fallback "${source_dir}" "${qt_build}"
         write_bootstrap_private_module_pri "${source_dir}" "${qt_build}" "${PREFIX}"
         sync_prefix_qmake_metadata "${source_dir}" "${qt_build}" "${PREFIX}"
+        configure_qmake_search_env "${source_dir}" "${qt_build}" "${PREFIX}"
         write_prefix_tool_wrappers "${qt_build}" "${PREFIX}"
         export QMAKEMODULES="${qt_build}/mkspecs/modules${QMAKEMODULES:+:${QMAKEMODULES}}"
         echo "QMAKEMODULES=${QMAKEMODULES}"
