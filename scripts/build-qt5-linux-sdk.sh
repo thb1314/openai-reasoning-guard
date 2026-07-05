@@ -594,7 +594,7 @@ set -euo pipefail
 export QMAKEPATH="${qmakepath}\${QMAKEPATH:+:\${QMAKEPATH}}"
 export QMAKEFEATURES="${qmakefeatures}\${QMAKEFEATURES:+:\${QMAKEFEATURES}}"
 export QMAKEMODULES="${qmakemodules}\${QMAKEMODULES:+:\${QMAKEMODULES}}"
-exec "${real_qmake}" "\$@"
+exec -a "${wrapper_target}" "${real_qmake}" "\$@"
 EOF
         chmod +x "${wrapper_target}"
         echo "wrapped build qmake entrypoint: ${wrapper_target}"
