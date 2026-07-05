@@ -100,14 +100,20 @@ case "${PACKAGE_ARCH}" in
     x86_64)
         MINGW_TRIPLE="${MINGW_TRIPLE:-x86_64-w64-mingw32}"
         MINGW_RUNTIME_DLLS=(libgcc_s_seh-1.dll libstdc++-6.dll libwinpthread-1.dll)
+        MINGW_REQUIRED_RUNTIME_DLLS=(libstdc++-6.dll libwinpthread-1.dll)
+        MINGW_REQUIRED_RUNTIME_ANY=(libgcc_s_seh-1.dll)
         ;;
     x86_32)
         MINGW_TRIPLE="${MINGW_TRIPLE:-i686-w64-mingw32}"
         MINGW_RUNTIME_DLLS=(libgcc_s_sjlj-1.dll libgcc_s_dw2-1.dll libstdc++-6.dll libwinpthread-1.dll)
+        MINGW_REQUIRED_RUNTIME_DLLS=(libstdc++-6.dll libwinpthread-1.dll)
+        MINGW_REQUIRED_RUNTIME_ANY=(libgcc_s_sjlj-1.dll libgcc_s_dw2-1.dll)
         ;;
     arm64)
         MINGW_TRIPLE="${MINGW_TRIPLE:-aarch64-w64-mingw32}"
         MINGW_RUNTIME_DLLS=(libc++.dll libc++abi.dll libunwind.dll libwinpthread-1.dll libgcc_s_seh-1.dll libstdc++-6.dll)
+        MINGW_REQUIRED_RUNTIME_DLLS=(libc++.dll libunwind.dll libwinpthread-1.dll)
+        MINGW_REQUIRED_RUNTIME_ANY=()
         ;;
     *)
         echo "unsupported Windows package arch: ${PACKAGE_ARCH}" >&2
@@ -341,8 +347,26 @@ fi
 for runtime_dll in "${MINGW_RUNTIME_DLLS[@]}"; do
     copy_first_runtime_dll "${runtime_dll}" "${stage_dir}" || true
 done
-if [[ ! -f "${stage_dir}/libstdc++-6.dll" || ! -f "${stage_dir}/libwinpthread-1.dll" ]]; then
-    echo "warning: MinGW C++ runtime DLLs were not fully found; Windows package may need external runtime DLLs" >&2
+missing_runtime=()
+for runtime_dll in "${MINGW_REQUIRED_RUNTIME_DLLS[@]}"; do
+    if [[ ! -f "${stage_dir}/${runtime_dll}" ]]; then
+        missing_runtime+=("${runtime_dll}")
+    fi
+done
+if ((${#MINGW_REQUIRED_RUNTIME_ANY[@]} > 0)); then
+    found_any_runtime=0
+    for runtime_dll in "${MINGW_REQUIRED_RUNTIME_ANY[@]}"; do
+        if [[ -f "${stage_dir}/${runtime_dll}" ]]; then
+            found_any_runtime=1
+            break
+        fi
+    done
+    if ((found_any_runtime == 0)); then
+        missing_runtime+=("one of: ${MINGW_REQUIRED_RUNTIME_ANY[*]}")
+    fi
+fi
+if ((${#missing_runtime[@]} > 0)); then
+    echo "warning: MinGW runtime DLLs were not fully found (${missing_runtime[*]}); Windows package may need external runtime DLLs" >&2
 fi
 
 font_dir="${PROJECT_DIR}/third_party/fonts"
