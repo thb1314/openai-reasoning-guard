@@ -15,10 +15,11 @@ SUDO="${SUDO:-sudo}"
 
 usage() {
     cat <<EOF
-Usage: $(basename "$0") --arch <arm64|arm32>
+Usage: $(basename "$0") --arch <x86_64|x86_32|arm64|arm32>
 
-Create a local Debian rootfs image for ARM package smoke tests when Docker Hub
-pulls are unavailable. Requires host packages:
+Create a local Debian rootfs image for Linux package smoke tests when Docker Hub
+pulls are unavailable. Cross-architecture second-stage bootstrap uses qemu-user-static
+when needed. Requires host packages:
   debootstrap qemu-user-static binfmt-support
 
 Environment overrides:
@@ -55,17 +56,33 @@ if [[ -z "${ARCH}" ]]; then
 fi
 
 case "${ARCH}" in
+    x86_64)
+        DEB_ARCH="amd64"
+        QEMU_BIN=""
+        DEFAULT_TAG="local-debian:${SUITE}-amd64"
+        DOCKER_PLATFORM="linux/amd64"
+        BOOTSTRAP_MODE="native"
+        ;;
+    x86_32)
+        DEB_ARCH="i386"
+        QEMU_BIN=""
+        DEFAULT_TAG="local-debian:${SUITE}-i386"
+        DOCKER_PLATFORM="linux/386"
+        BOOTSTRAP_MODE="native"
+        ;;
     arm64)
         DEB_ARCH="arm64"
         QEMU_BIN="qemu-aarch64-static"
         DEFAULT_TAG="local-debian:${SUITE}-arm64"
         DOCKER_PLATFORM="linux/arm64"
+        BOOTSTRAP_MODE="foreign"
         ;;
     arm32)
         DEB_ARCH="armhf"
         QEMU_BIN="qemu-arm-static"
         DEFAULT_TAG="local-debian:${SUITE}-arm32"
         DOCKER_PLATFORM="linux/arm/v7"
+        BOOTSTRAP_MODE="foreign"
         ;;
     *)
         echo "unsupported arch: ${ARCH}" >&2
@@ -88,23 +105,29 @@ require_tool() {
 require_tool debootstrap
 require_tool docker
 
-if [[ ! -x "/usr/bin/${QEMU_BIN}" ]]; then
-    echo "required emulator missing: /usr/bin/${QEMU_BIN}" >&2
-    echo "install qemu-user-static first" >&2
-    exit 2
-fi
+if [[ -n "${QEMU_BIN}" ]]; then
+    if [[ ! -x "/usr/bin/${QEMU_BIN}" ]]; then
+        echo "required emulator missing: /usr/bin/${QEMU_BIN}" >&2
+        echo "install qemu-user-static first" >&2
+        exit 2
+    fi
 
-if [[ ! -d /proc/sys/fs/binfmt_misc ]]; then
-    echo "binfmt_misc is unavailable on this host" >&2
-    exit 2
+    if [[ ! -d /proc/sys/fs/binfmt_misc ]]; then
+        echo "binfmt_misc is unavailable on this host" >&2
+        exit 2
+    fi
 fi
 
 mkdir -p "${WORK_DIR}"
 ${SUDO} rm -rf "${ROOTFS_DIR}" "${TAR_PATH}"
 
-${SUDO} debootstrap --foreign --arch "${DEB_ARCH}" "${SUITE}" "${ROOTFS_DIR}" "${MIRROR}"
-${SUDO} install -m 0755 "/usr/bin/${QEMU_BIN}" "${ROOTFS_DIR}/usr/bin/${QEMU_BIN}"
-${SUDO} chroot "${ROOTFS_DIR}" "/usr/bin/${QEMU_BIN}" /debootstrap/debootstrap --second-stage
+if [[ "${BOOTSTRAP_MODE}" == "foreign" ]]; then
+    ${SUDO} debootstrap --foreign --arch "${DEB_ARCH}" "${SUITE}" "${ROOTFS_DIR}" "${MIRROR}"
+    ${SUDO} install -m 0755 "/usr/bin/${QEMU_BIN}" "${ROOTFS_DIR}/usr/bin/${QEMU_BIN}"
+    ${SUDO} chroot "${ROOTFS_DIR}" "/usr/bin/${QEMU_BIN}" /debootstrap/debootstrap --second-stage
+else
+    ${SUDO} debootstrap --arch "${DEB_ARCH}" "${SUITE}" "${ROOTFS_DIR}" "${MIRROR}"
+fi
 
 ${SUDO} tee "${ROOTFS_DIR}/etc/apt/sources.list" >/dev/null <<EOF
 deb ${MIRROR} ${SUITE} main

@@ -570,10 +570,12 @@ write_build_qmake_wrapper() {
     local qt_build="$2"
     local prefix="$3"
     local qmake="${qt_build}/bin/qmake"
-    local real_qmake="${qt_build}/bin/qmake.real"
+    local compat_qmake="${qt_build}/bin/qmake.real"
+    local real_qmake="${qt_build}/bin/qmake.real.bin"
     local qmakepath="${qt_build}:${source_dir}:${prefix}"
     local qmakefeatures="${qt_build}/mkspecs/features:${source_dir}/mkspecs/features:${prefix}/mkspecs/features"
     local qmakemodules="${qt_build}/mkspecs/modules"
+    local wrapper_target
 
     if [[ ! -x "${qmake}" ]]; then
         echo "expected qmake binary is missing: ${qmake}" >&2
@@ -584,7 +586,8 @@ write_build_qmake_wrapper() {
     fi
 
     mv "${qmake}" "${real_qmake}"
-    cat > "${qmake}" <<EOF
+    for wrapper_target in "${qmake}" "${compat_qmake}"; do
+        cat > "${wrapper_target}" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 # OpenAI Reasoning Guard temporary qmake wrapper for CI cross-architecture Qt builds.
@@ -593,18 +596,21 @@ export QMAKEFEATURES="${qmakefeatures}\${QMAKEFEATURES:+:\${QMAKEFEATURES}}"
 export QMAKEMODULES="${qmakemodules}\${QMAKEMODULES:+:\${QMAKEMODULES}}"
 exec "${real_qmake}" "\$@"
 EOF
-    chmod +x "${qmake}"
-    echo "wrapped build qmake: ${qmake}"
+        chmod +x "${wrapper_target}"
+        echo "wrapped build qmake entrypoint: ${wrapper_target}"
+    done
 }
 
 restore_build_qmake_wrapper() {
     local qt_build="$1"
     local qmake="${qt_build}/bin/qmake"
-    local real_qmake="${qt_build}/bin/qmake.real"
+    local compat_qmake="${qt_build}/bin/qmake.real"
+    local real_qmake="${qt_build}/bin/qmake.real.bin"
 
     if [[ -x "${real_qmake}" ]] \
         && [[ -f "${qmake}" ]] \
         && grep -q 'temporary qmake wrapper for CI cross-architecture Qt builds' "${qmake}"; then
+        rm -f "${qmake}" "${compat_qmake}"
         mv "${real_qmake}" "${qmake}"
         chmod +x "${qmake}"
         echo "restored build qmake binary: ${qmake}"
