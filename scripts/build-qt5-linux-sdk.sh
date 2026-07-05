@@ -481,6 +481,10 @@ sync_prefix_qmake_metadata() {
         fi
         for dest in "${qt_build}/mkspecs" "${source_dir}/mkspecs" "${prefix}/mkspecs"; do
             mkdir -p "${dest}"
+            if [[ "$(readlink -f "${src}")" == "$(readlink -f "${dest}/${name}" 2>/dev/null || true)" ]]; then
+                echo "metadata already in place: ${dest}/${name}"
+                continue
+            fi
             cp -f "${src}" "${dest}/${name}"
             echo "synced ${name}: ${dest}/${name}"
         done
