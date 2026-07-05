@@ -17,12 +17,17 @@ Usage: $(basename "$0") --arch <x86_64|x86_32|arm64|arm32> --input-dir <dir>
 
 Smoke-test final Linux packages inside Docker/QEMU. This script installs the
 produced .deb and .rpm packages, runs the CLI, and starts the GUI/AppImage in
-offscreen mode long enough to catch missing runtime dependencies.
+offscreen mode long enough to catch missing runtime dependencies. ARM AppImages
+are validated as ELF artifacts under QEMU because AppImage runtimes are not
+reliably executable there.
 
 Environment overrides:
   TEST_DOCKER_IMAGE=<image>         Override the runtime test image.
   TEST_DOCKER_ENTRYPOINT=<path>     Override the image entrypoint.
   TEST_DOCKER_PLATFORM=<platform>   Override docker run --platform.
+
+If Docker Hub is unavailable for ARM smoke tests, create a local Debian image
+first with scripts/create-debian-test-image.sh and point TEST_DOCKER_IMAGE at it.
 EOF
 }
 
@@ -118,6 +123,19 @@ appimage_arch_for() {
     esac
 }
 
+appimage_file_pattern_for() {
+    case "$1" in
+        x86_64) echo "x86-64" ;;
+        x86_32) echo "Intel 80386" ;;
+        arm64) echo "ARM aarch64" ;;
+        arm32) echo "ARM" ;;
+        *)
+            echo "unsupported arch: $1" >&2
+            exit 2
+            ;;
+    esac
+}
+
 INPUT_DIR="$(cd -- "${INPUT_DIR}" && pwd)"
 PLATFORM="$(platform_for_arch "${ARCH}")"
 if [[ -n "${TEST_DOCKER_PLATFORM}" ]]; then
@@ -126,6 +144,7 @@ fi
 DEB_ARCH="$(deb_arch_for "${ARCH}")"
 RPM_ARCH="$(rpm_arch_for "${ARCH}")"
 APPIMAGE_ARCH="$(appimage_arch_for "${ARCH}")"
+APPIMAGE_FILE_PATTERN="$(appimage_file_pattern_for "${ARCH}")"
 
 DEB_PATH="$(find "${INPUT_DIR}" -maxdepth 1 -type f -name "*_${DEB_ARCH}.deb" -print -quit)"
 RPM_PATH="$(find "${INPUT_DIR}" -maxdepth 1 -type f -name "*.${RPM_ARCH}.rpm" -print -quit)"
@@ -204,6 +223,21 @@ fi
 test -s /tmp/cli-help.txt
 "
 
+if [[ "${ARCH}" == "arm64" || "${ARCH}" == "arm32" ]]; then
+cli_appimage_test_script="${runtime_apt_install}
+cp /packages/$(basename "${CLI_APPIMAGE}") /tmp/cli-appimage
+chmod +x /tmp/cli-appimage
+file /tmp/cli-appimage >/tmp/cli-appimage-file.txt
+grep -q '${APPIMAGE_FILE_PATTERN}' /tmp/cli-appimage-file.txt
+"
+
+gui_appimage_test_script="${runtime_apt_install}
+cp /packages/$(basename "${GUI_APPIMAGE}") /tmp/gui-appimage
+chmod +x /tmp/gui-appimage
+file /tmp/gui-appimage >/tmp/gui-appimage-file.txt
+grep -q '${APPIMAGE_FILE_PATTERN}' /tmp/gui-appimage-file.txt
+"
+else
 cli_appimage_test_script="${runtime_apt_install}
 cp /packages/$(basename "${CLI_APPIMAGE}") /tmp/cli-appimage
 chmod +x /tmp/cli-appimage
@@ -220,6 +254,7 @@ if [[ \${code:-0} -ne 0 && \${code:-0} -ne 124 ]]; then
   exit \${code}
 fi
 "
+fi
 
 run_case "deb ${ARCH}" run_in_container "deb-${ARCH}" "${deb_test_script}"
 run_case "rpm ${ARCH}" run_in_container "rpm-${ARCH}" "${rpm_test_script}"
