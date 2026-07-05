@@ -9,6 +9,7 @@ INPUT_DIR=""
 JOBS="${JOBS:-1}"
 TEST_DOCKER_IMAGE="${TEST_DOCKER_IMAGE:-debian:bookworm}"
 TEST_DOCKER_ENTRYPOINT="${TEST_DOCKER_ENTRYPOINT:-}"
+TEST_DOCKER_PLATFORM="${TEST_DOCKER_PLATFORM:-}"
 
 usage() {
     cat <<EOF
@@ -21,6 +22,7 @@ offscreen mode long enough to catch missing runtime dependencies.
 Environment overrides:
   TEST_DOCKER_IMAGE=<image>         Override the runtime test image.
   TEST_DOCKER_ENTRYPOINT=<path>     Override the image entrypoint.
+  TEST_DOCKER_PLATFORM=<platform>   Override docker run --platform.
 EOF
 }
 
@@ -118,6 +120,9 @@ appimage_arch_for() {
 
 INPUT_DIR="$(cd -- "${INPUT_DIR}" && pwd)"
 PLATFORM="$(platform_for_arch "${ARCH}")"
+if [[ -n "${TEST_DOCKER_PLATFORM}" ]]; then
+    PLATFORM="${TEST_DOCKER_PLATFORM}"
+fi
 DEB_ARCH="$(deb_arch_for "${ARCH}")"
 RPM_ARCH="$(rpm_arch_for "${ARCH}")"
 APPIMAGE_ARCH="$(appimage_arch_for "${ARCH}")"
@@ -157,48 +162,21 @@ run_in_container() {
     echo "[pass] ${name}"
 }
 
-runtime_apt_install='
-set -euo pipefail
-export DEBIAN_FRONTEND=noninteractive
-apt-get update
-apt-get install -y --no-install-recommends \
-  bash \
-  ca-certificates \
-  file \
-  rpm \
-  libfontconfig1 \
-  libfreetype6 \
-  libglib2.0-0 \
-  libice6 \
-  libsm6 \
-  libx11-6 \
-  libx11-xcb1 \
-  libxau6 \
-  libxi6 \
-  libxcb1 \
-  libxcb-glx0 \
-  libxcb-icccm4 \
-  libxcb-image0 \
-  libxcb-keysyms1 \
-  libxcb-randr0 \
-  libxcb-render0 \
-  libxcb-render-util0 \
-  libxcb-shape0 \
-  libxcb-shm0 \
-  libxcb-sync1 \
-  libxcb-util1 \
-  libxcb-xfixes0 \
-  libxcb-xinerama0 \
-  libxcb-xkb1 \
-  libxdmcp6 \
-  libxext6 \
-  libxkbcommon0 \
-  libxkbcommon-x11-0 \
-  patchelf \
-  xauth \
-  xvfb \
-  xz-utils
-'
+runtime_apt_install=$'set -euo pipefail\nexport DEBIAN_FRONTEND=noninteractive\n'
+
+if [[ "${ARCH}" == "x86_32" && "${PLATFORM}" != "linux/386" ]]; then
+runtime_apt_install+=$'dpkg --add-architecture i386\n'
+fi
+
+runtime_apt_install+=$'apt-get update\napt-get install -y --no-install-recommends \\\n  bash \\\n  ca-certificates \\\n  file \\\n  rpm \\\n  xauth \\\n  xvfb \\\n'
+
+if [[ "${ARCH}" == "x86_32" && "${PLATFORM}" != "linux/386" ]]; then
+runtime_apt_install+=$'  libc6:i386 \\\n  libstdc++6:i386 \\\n  libgcc-s1:i386 \\\n  zlib1g:i386 \\\n  libbsd0:i386 \\\n  libmd0:i386 \\\n  libuuid1:i386 \\\n  libpcre2-8-0:i386 \\\n  libfontconfig1:i386 \\\n  libfreetype6:i386 \\\n  libglib2.0-0:i386 \\\n  libice6:i386 \\\n  libsm6:i386 \\\n  libx11-6:i386 \\\n  libx11-xcb1:i386 \\\n  libxau6:i386 \\\n  libxi6:i386 \\\n  libxcb1:i386 \\\n  libxcb-glx0:i386 \\\n  libxcb-icccm4:i386 \\\n  libxcb-image0:i386 \\\n  libxcb-keysyms1:i386 \\\n  libxcb-randr0:i386 \\\n  libxcb-render0:i386 \\\n  libxcb-render-util0:i386 \\\n  libxcb-shape0:i386 \\\n  libxcb-shm0:i386 \\\n  libxcb-sync1:i386 \\\n  libxcb-util1:i386 \\\n  libxcb-xfixes0:i386 \\\n  libxcb-xinerama0:i386 \\\n  libxcb-xkb1:i386 \\\n  libxdmcp6:i386 \\\n  libxext6:i386 \\\n  libxkbcommon0:i386 \\\n  libxkbcommon-x11-0:i386 \\\n'
+else
+runtime_apt_install+=$'  libfontconfig1 \\\n  libfreetype6 \\\n  libglib2.0-0 \\\n  libice6 \\\n  libsm6 \\\n  libx11-6 \\\n  libx11-xcb1 \\\n  libxau6 \\\n  libxi6 \\\n  libxcb1 \\\n  libxcb-glx0 \\\n  libxcb-icccm4 \\\n  libxcb-image0 \\\n  libxcb-keysyms1 \\\n  libxcb-randr0 \\\n  libxcb-render0 \\\n  libxcb-render-util0 \\\n  libxcb-shape0 \\\n  libxcb-shm0 \\\n  libxcb-sync1 \\\n  libxcb-util1 \\\n  libxcb-xfixes0 \\\n  libxcb-xinerama0 \\\n  libxcb-xkb1 \\\n  libxdmcp6 \\\n  libxext6 \\\n  libxkbcommon0 \\\n  libxkbcommon-x11-0 \\\n'
+fi
+
+runtime_apt_install+=$'  patchelf \\\n  xz-utils\n'
 
 deb_test_script="${runtime_apt_install}
 dpkg -i /packages/$(basename "${DEB_PATH}")
