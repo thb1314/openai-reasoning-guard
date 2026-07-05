@@ -12,6 +12,7 @@ BUILD_DIR="${BUILD_DIR:-}"
 PREFIX="${PREFIX:-}"
 MINGW_TRIPLE="${MINGW_TRIPLE:-}"
 MINGW_BIN_DIR="${MINGW_BIN_DIR:-}"
+MINGW_SYSROOT="${MINGW_SYSROOT:-}"
 LLVM_MINGW_URL="${LLVM_MINGW_URL:-https://github.com/mstorsjo/llvm-mingw/releases/download/20260616/llvm-mingw-20260616-ucrt-ubuntu-22.04-x86_64.tar.xz}"
 LLVM_MINGW_ROOT="${LLVM_MINGW_ROOT:-}"
 JOBS="${JOBS:-$(nproc 2>/dev/null || echo 2)}"
@@ -47,6 +48,7 @@ Environment overrides:
   QTBASE_SOURCE_ARCHIVE=${QTBASE_SOURCE_ARCHIVE}
   OPENSSL_SOURCE_ARCHIVE=${OPENSSL_SOURCE_ARCHIVE}
   MINGW_BIN_DIR=/path/to/mingw/bin
+  MINGW_SYSROOT=/path/to/mingw/sysroot
   MINGW_TRIPLE=x86_64-w64-mingw32
   LLVM_MINGW_URL=${LLVM_MINGW_URL}
   LLVM_MINGW_ROOT=/path/to/llvm-mingw
@@ -247,6 +249,9 @@ prepare_llvm_mingw() {
         echo "llvm-mingw toolchain missing ${MINGW_TRIPLE}-gcc under ${MINGW_BIN_DIR}" >&2
         exit 2
     fi
+    if [[ -z "${MINGW_SYSROOT}" && -d "${LLVM_MINGW_ROOT}/${MINGW_TRIPLE}" ]]; then
+        MINGW_SYSROOT="${LLVM_MINGW_ROOT}/${MINGW_TRIPLE}"
+    fi
     export PATH="${MINGW_BIN_DIR}:${PATH}"
 }
 
@@ -294,6 +299,13 @@ prepare_cross_prefix() {
     done
     MINGW_PREFIX="${CROSS_BIN_DIR}/${MINGW_TRIPLE}-"
     export PATH="${CROSS_BIN_DIR}:${PATH}"
+    if [[ -z "${MINGW_SYSROOT}" && -n "${MINGW_BIN_DIR}" ]]; then
+        local root_candidate
+        root_candidate="$(cd -- "${MINGW_BIN_DIR}/.." && pwd)"
+        if [[ -d "${root_candidate}/${MINGW_TRIPLE}" ]]; then
+            MINGW_SYSROOT="${root_candidate}/${MINGW_TRIPLE}"
+        fi
+    fi
 }
 
 extract_one() {
@@ -332,8 +344,13 @@ build_openssl() {
     local source_dir="${BUILD_DIR}/openssl-src"
     extract_one "${OPENSSL_SOURCE_ARCHIVE}" "${source_dir}"
     if [[ "${TARGET}" == "windows-arm64" ]]; then
+        local rc_include="${MINGW_SYSROOT}/include"
+        if [[ ! -d "${rc_include}" ]]; then
+            echo "Windows ARM64 OpenSSL build requires MINGW_SYSROOT/include for windres: ${rc_include}" >&2
+            exit 2
+        fi
         mkdir -p "${source_dir}/Configurations"
-        cat > "${source_dir}/Configurations/99-openai-mingw-arm64.conf" <<'EOF'
+        cat > "${source_dir}/Configurations/99-openai-mingw-arm64.conf" <<EOF
 my %targets = (
     "mingwarm64" => {
         inherit_from     => [ "BASE_unix" ],
@@ -351,7 +368,7 @@ my %targets = (
         dso_scheme       => "win32",
         shared_target    => "mingw-shared",
         shared_cppflags  => add("_WINDLL"),
-        shared_rcflag    => "--target=pe-arm64",
+        shared_rcflag    => "--target=pe-arm64 --include-dir=${rc_include}",
         shared_extension => ".dll",
         multilib         => "arm64",
         apps_aux_src     => add("win32_init.c"),
@@ -442,6 +459,10 @@ copy_runtime_dlls() {
     fi
     if [[ -d "/usr/${MINGW_TRIPLE}/lib" ]]; then
         cp -f "/usr/${MINGW_TRIPLE}/lib"/*.dll "${PREFIX}/runtime/mingw/" 2>/dev/null || true
+    fi
+    if [[ -n "${MINGW_SYSROOT}" ]]; then
+        cp -f "${MINGW_SYSROOT}/bin"/*.dll "${PREFIX}/runtime/mingw/" 2>/dev/null || true
+        cp -f "${MINGW_SYSROOT}/lib"/*.dll "${PREFIX}/runtime/mingw/" 2>/dev/null || true
     fi
     shopt -u nullglob
 }
