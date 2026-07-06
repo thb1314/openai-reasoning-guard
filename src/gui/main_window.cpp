@@ -125,7 +125,7 @@ void MainWindow::buildUi()
 {
     setTitle(textFor("window_title"));
     setAlignment(Qt::AlignCenter);
-    setVisible(QUIWidget::BtnMenu, true);
+    setVisible(QUIWidget::BtnMenu, false);
     setBtnWidth(36);
     setTitleHeight(42);
     setWindowIcon(makeAppIcon());
