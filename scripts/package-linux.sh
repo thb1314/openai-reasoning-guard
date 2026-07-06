@@ -551,6 +551,11 @@ ${INSTALL_PREFIX}
 /usr/bin/net-tunnel-gui
 /usr/bin/net-tunnel-cli
 /usr/share/applications/${DESKTOP_ID}.desktop
+EOF
+    if [[ "${GUI_COMMAND}" != "${DESKTOP_ID}" ]]; then
+        echo "/usr/share/applications/${GUI_COMMAND}.desktop" >> "${spec}"
+    fi
+    cat >> "${spec}" <<EOF
 /usr/share/icons/hicolor/*/apps/${DESKTOP_ID}.*
 EOF
 
