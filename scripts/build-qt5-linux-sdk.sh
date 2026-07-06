@@ -867,9 +867,13 @@ for name in qconfig.pri qmodule.pri; do
         echo "[arm32-sync] warning: missing \${name}" >&2
         continue
     fi
-    cp -f "\${src}" "\${qt_build}/mkspecs/\${name}"
-    cp -f "\${src}" "\${source_dir}/mkspecs/\${name}"
-    cp -f "\${src}" "\${prefix}/mkspecs/\${name}"
+    for dest in "\${qt_build}/mkspecs/\${name}" "\${source_dir}/mkspecs/\${name}" "\${prefix}/mkspecs/\${name}"; do
+        mkdir -p "\$(dirname -- "\${dest}")"
+        if [[ "\$(readlink -f "\${src}")" == "\$(readlink -f "\${dest}" 2>/dev/null || true)" ]]; then
+            continue
+        fi
+        cp -f "\${src}" "\${dest}"
+    done
 done
 
 echo "[arm32-sync] module files after resync:"
@@ -902,20 +906,9 @@ prepare_arm32_src_makefile_sync() {
             print ""
             inserted = 1
         }
-        $0 == "sub-qlalr-make_first: sub-corelib-make_first FORCE" {
-            print "sub-qlalr-make_first: arm32-post-corelib-sync FORCE"
-            next
-        }
-        $0 == "sub-network-make_first: sub-corelib-make_first FORCE" {
-            print "sub-network-make_first: arm32-post-corelib-sync FORCE"
-            next
-        }
-        $0 == "sub-sql-make_first: sub-corelib-make_first FORCE" {
-            print "sub-sql-make_first: arm32-post-corelib-sync FORCE"
-            next
-        }
-        $0 == "sub-xml-make_first: sub-corelib-make_first FORCE" {
-            print "sub-xml-make_first: arm32-post-corelib-sync FORCE"
+        $0 ~ /^sub-.*-make_first: sub-corelib-make_first FORCE$/ {
+            sub(/sub-corelib-make_first/, "arm32-post-corelib-sync")
+            print
             next
         }
         { print }
