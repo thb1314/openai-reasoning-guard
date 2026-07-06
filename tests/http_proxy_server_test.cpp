@@ -993,6 +993,41 @@ private slots:
                  QString("stream_incomplete_response"));
     }
 
+    void terminalPassThroughKeepsTrailingDoneEvent()
+    {
+        QList<QByteArray> chunks;
+        chunks << "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n";
+        chunks << "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"output_tokens_details\":{\"reasoning_tokens\":367}}}}\n\n";
+        chunks << "data: [DONE]\n\n";
+        TestUpstream upstream;
+        QVERIFY(upstream.start(TestUpstream::StreamingSse, QByteArray(), chunks));
+
+        HttpProxyServer proxy;
+        ProxySettings settings = baseSettings(reserveFreePort(), upstream.port());
+        QString error;
+        QVERIFY2(proxy.start(settings, &error), qPrintable(error));
+
+        const QByteArray response = sendRequest(settings.listenPort, postRequest("{\"stream\":true}"), 3000);
+        QVERIFY(response.contains("200 OK"));
+        QVERIFY(response.contains("\"delta\":\"ok\""));
+        QVERIFY(response.contains("data: [DONE]"));
+
+        QVERIFY(waitUntil([&]() {
+            return runtimeOf(&proxy).value("last_transfer_diagnostics").isObject();
+        }, 1000));
+        const QJsonObject diagnostics = runtimeOf(&proxy).value("last_transfer_diagnostics").toObject();
+        QCOMPARE(diagnostics.value("path").toString(), QString("/v1/responses"));
+        QCOMPARE(diagnostics.value("status_code").toInt(), 200);
+        QVERIFY(diagnostics.value("upstream_bytes_read").toDouble() > 0.0);
+        QVERIFY(diagnostics.value("downstream_bytes_queued").toDouble() > 0.0);
+        QVERIFY(diagnostics.value("downstream_bytes_written").toDouble() > 0.0);
+        QVERIFY(diagnostics.value("upstream_tail_sha256_16").toString().size() > 0);
+        QVERIFY(diagnostics.value("downstream_tail_sha256_16").toString().size() > 0);
+        QCOMPARE(diagnostics.value("stream_completed_seen").toBool(), true);
+        QCOMPARE(diagnostics.value("stream_done_seen").toBool(), true);
+        QCOMPARE(diagnostics.value("client_closed_first").toBool(), false);
+    }
+
     void streamActionDisconnectDropsChunkContainingMatchedEvent()
     {
         QList<QByteArray> chunks;

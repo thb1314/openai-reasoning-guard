@@ -79,6 +79,7 @@ public:
     void recordBlockedResponse(const QString &streamKind);
     void recordUpstreamAttempt();
     void recordBypassedProxyRequest();
+    void recordTransferDiagnostics(const QJsonObject &diagnostics);
 
 signals:
     void logLine(const QString &line);
@@ -134,6 +135,7 @@ private:
     QJsonObject statusCodeCounts_;
     QJsonObject lastResult_;
     QJsonObject lastFailure_;
+    QJsonObject lastTransferDiagnostics_;
     double lastLatencyMs_;
     double latencyTotalMs_;
     qint64 latencySamples_;

@@ -2,6 +2,7 @@
 
 #include "core/json_utils.h"
 
+#include <QtCore/QCryptographicHash>
 #include <QtCore/QDateTime>
 #include <QtCore/QElapsedTimer>
 #include <QtCore/QJsonArray>
@@ -47,6 +48,30 @@ static QByteArray reasonPhrase(int statusCode)
     case 504: return "Gateway Timeout";
     default: return "Status";
     }
+}
+
+static void rememberTail(QByteArray *tail, const QByteArray &chunk)
+{
+    if (!tail || chunk.isEmpty()) {
+        return;
+    }
+    static const int limit = 128;
+    if (chunk.size() >= limit) {
+        *tail = chunk.right(limit);
+        return;
+    }
+    tail->append(chunk);
+    if (tail->size() > limit) {
+        *tail = tail->right(limit);
+    }
+}
+
+static QString tailHashText(const QByteArray &tail)
+{
+    if (tail.isEmpty()) {
+        return QString();
+    }
+    return QString::fromLatin1(QCryptographicHash::hash(tail, QCryptographicHash::Sha256).toHex().left(16));
 }
 
 static QString headerValue(const QMap<QString, QByteArray> &headers,
@@ -521,9 +546,12 @@ static QJsonValue parseJsonBody(const QByteArray &body)
     return QJsonValue();
 }
 
-static QList<QJsonValue> parseSsePayloads(const QByteArray &body)
+static QList<QJsonValue> parseSsePayloads(const QByteArray &body, bool *doneSeen = 0)
 {
     QList<QJsonValue> payloads;
+    if (doneSeen) {
+        *doneSeen = false;
+    }
     const QString text = QString::fromUtf8(body);
     const QStringList events = text.split(QRegExp("\\r?\\n\\r?\\n"), QString::SkipEmptyParts);
     for (int i = 0; i < events.size(); ++i) {
@@ -540,7 +568,13 @@ static QList<QJsonValue> parseSsePayloads(const QByteArray &body)
             }
         }
         const QString data = dataLines.join("\n").trimmed();
-        if (data.isEmpty() || data == "[DONE]") {
+        if (data.isEmpty()) {
+            continue;
+        }
+        if (data == "[DONE]") {
+            if (doneSeen) {
+                *doneSeen = true;
+            }
             continue;
         }
         const QJsonValue payload = parseJsonBody(data.toUtf8());
@@ -607,7 +641,9 @@ static QString guardedStreamAnomalyType(int statusCode,
     return QString();
 }
 
-static QList<QJsonValue> takeCompleteSsePayloads(QByteArray *buffer, bool *terminalSeen)
+static QList<QJsonValue> takeCompleteSsePayloads(QByteArray *buffer,
+                                                 bool *terminalSeen,
+                                                 bool *doneSeen = 0)
 {
     QList<QJsonValue> payloads;
     if (!buffer) {
@@ -615,6 +651,9 @@ static QList<QJsonValue> takeCompleteSsePayloads(QByteArray *buffer, bool *termi
     }
     if (terminalSeen) {
         *terminalSeen = false;
+    }
+    if (doneSeen) {
+        *doneSeen = false;
     }
 
     while (true) {
@@ -663,6 +702,9 @@ static QList<QJsonValue> takeCompleteSsePayloads(QByteArray *buffer, bool *termi
         if (data == "[DONE]") {
             if (terminalSeen) {
                 *terminalSeen = true;
+            }
+            if (doneSeen) {
+                *doneSeen = true;
             }
             continue;
         }
@@ -814,6 +856,7 @@ public:
           upstreamPassThrough_(false),
           streamInspectedRecorded_(false),
           streamObservedReasoning_(-1),
+          streamCompletedSeen_(false),
           streamTerminalSeen_(false),
           streamUsageSeen_(false),
           streamFailureSeen_(false),
@@ -829,10 +872,18 @@ public:
           clientCloseRecorded_(false),
           responseTimedOut_(false),
           responseLimitExceeded_(false),
-          upstreamTimedOut_(false)
+          upstreamTimedOut_(false),
+          upstreamBytesRead_(0),
+          downstreamBytesQueued_(0),
+          downstreamBytesWritten_(0),
+          streamDoneSeen_(false),
+          diagnosticsLogged_(false),
+          diagnosticClientClosedFirst_(false),
+          diagnosticStatusCode_(0)
     {
         socket_->setParent(this);
         connect(socket_, SIGNAL(readyRead()), this, SLOT(readClient()));
+        connect(socket_, SIGNAL(bytesWritten(qint64)), this, SLOT(clientBytesWritten(qint64)));
         connect(socket_, SIGNAL(disconnected()), this, SLOT(clientDisconnected()));
         connect(socket_, SIGNAL(error(QAbstractSocket::SocketError)), this, SLOT(clientSocketError(QAbstractSocket::SocketError)));
         requestBufferTimer_.setSingleShot(true);
@@ -924,7 +975,11 @@ private slots:
         }
 
         const QByteArray chunk = reply->readAll();
-        if (chunk.isEmpty() || method_.toUpper() == "HEAD") {
+        if (chunk.isEmpty()) {
+            return;
+        }
+        noteUpstreamBytes(chunk);
+        if (method_.toUpper() == "HEAD") {
             return;
         }
 
@@ -932,7 +987,7 @@ private slots:
             if (canUseStreamingEarlyDecision() && inspectStreamingChunk(reply, chunk, false)) {
                 return;
             }
-            socket_->write(chunk);
+            writeClient(chunk);
             streamingWroteAnyBody_ = true;
             socket_->flush();
             return;
@@ -1021,6 +1076,9 @@ private slots:
         }
 
         const QByteArray remainingBody = method_.toUpper() == "HEAD" ? QByteArray() : reply->readAll();
+        if (!remainingBody.isEmpty()) {
+            noteUpstreamBytes(remainingBody);
+        }
         const qint64 responseLimit = server_->settings().responseBufferLimitBytes;
         if (!upstreamPassThrough_ && responseLimit > 0 &&
             qint64(upstreamBodyBuffer_.size()) + qint64(remainingBody.size()) > responseLimit) {
@@ -1034,7 +1092,7 @@ private slots:
         }
         if (upstreamPassThrough_) {
             if (!remainingBody.isEmpty()) {
-                socket_->write(remainingBody);
+                writeClient(remainingBody);
                 streamingWroteAnyBody_ = true;
             }
             socket_->flush();
@@ -1068,10 +1126,18 @@ private slots:
             bool streamFailureSeen = false;
             if (isJson || isStream) {
                 if (isStream) {
-                    const QList<QJsonValue> payloads = parseSsePayloads(responseBody);
+                    bool doneSeen = false;
+                    const QList<QJsonValue> payloads = parseSsePayloads(responseBody, &doneSeen);
+                    if (doneSeen) {
+                        streamDoneSeen_ = true;
+                        streamTerminalSeen = true;
+                        streamTerminalSeen_ = true;
+                    }
                     for (int i = 0; i < payloads.size(); ++i) {
                         if (isTerminalSsePayload(payloads.at(i))) {
                             streamTerminalSeen = true;
+                            streamCompletedSeen_ = true;
+                            streamTerminalSeen_ = true;
                         }
                         if (payloadHasUsage(payloads.at(i))) {
                             streamUsageSeen = true;
@@ -1213,14 +1279,29 @@ private slots:
 
     void clientDisconnected()
     {
-        handleClientClosed("client disconnected before upstream response completed");
+        const QString message = responseWritten_
+            ? QString("client disconnected after response")
+            : QString("client disconnected before upstream response completed");
+        handleClientClosed(message);
+        emitTransferDiagnostics(message);
         deleteLater();
     }
 
     void clientSocketError(QAbstractSocket::SocketError)
     {
         handleClientClosed(socket_ ? socket_->errorString() : QString("client socket error"));
+        emitTransferDiagnostics(socket_ ? socket_->errorString() : QString("client socket error"));
         deleteLater();
+    }
+
+    void clientBytesWritten(qint64 bytes)
+    {
+        if (bytes > 0) {
+            downstreamBytesWritten_ += bytes;
+        }
+        if (diagnosticsLogged_) {
+            emitTransferDiagnostics();
+        }
     }
 
 private:
@@ -1552,6 +1633,7 @@ private:
         upstreamPassThrough_ = false;
         streamInspectedRecorded_ = false;
         streamObservedReasoning_ = -1;
+        streamCompletedSeen_ = false;
         streamTerminalSeen_ = false;
         streamUsageSeen_ = false;
         streamFailureSeen_ = false;
@@ -1559,6 +1641,7 @@ private:
         responseTimedOut_ = false;
         responseLimitExceeded_ = false;
         upstreamTimedOut_ = false;
+        streamDoneSeen_ = false;
         interceptExemptReason_.clear();
     }
 
@@ -1631,7 +1714,7 @@ private:
             response += headers.at(i).first + ": " + headers.at(i).second + "\r\n";
         }
         response += "Connection: close\r\n\r\n";
-        socket_->write(response);
+        writeClient(response);
     }
 
     void beginUpstreamPassThrough(QNetworkReply *reply)
@@ -1644,7 +1727,7 @@ private:
         const int statusCode = upstreamResponseStatus_ > 0 ? upstreamResponseStatus_ : 200;
         writeStreamingResponseHead(statusCode, filteredReplyHeaders(reply));
         if (!upstreamBodyBuffer_.isEmpty()) {
-            socket_->write(upstreamBodyBuffer_);
+            writeClient(upstreamBodyBuffer_);
             streamingWroteAnyBody_ = true;
             upstreamBodyBuffer_.clear();
         }
@@ -1655,10 +1738,12 @@ private:
     {
         sseScanBuffer_.append(chunk);
         bool terminalSeen = false;
-        const QList<QJsonValue> payloads = takeCompleteSsePayloads(&sseScanBuffer_, &terminalSeen);
+        bool doneSeen = false;
+        const QList<QJsonValue> payloads = takeCompleteSsePayloads(&sseScanBuffer_, &terminalSeen, &doneSeen);
         for (int i = 0; i < payloads.size(); ++i) {
             const QJsonValue payload = payloads.at(i);
             if (isTerminalSsePayload(payload)) {
+                streamCompletedSeen_ = true;
                 streamTerminalSeen_ = true;
             }
             if (payloadHasUsage(payload)) {
@@ -1678,6 +1763,9 @@ private:
         }
         if (terminalSeen) {
             streamTerminalSeen_ = true;
+        }
+        if (doneSeen) {
+            streamDoneSeen_ = true;
         }
         if (allowTerminalHandling && terminalSeen && handleStreamingTerminalObservation(reply)) {
             return true;
@@ -1713,6 +1801,7 @@ private:
         requestBufferTimer_.stop();
         responseBufferTimer_.stop();
         if (!responseWritten_ && !clientCloseRecorded_ && (currentReply_ || proxyRequestRecorded_)) {
+            diagnosticClientClosedFirst_ = true;
             clientCloseRecorded_ = true;
             record(499, "client_connection_error", message);
         }
@@ -1839,13 +1928,6 @@ private:
             .arg(path_)
             .arg(streamObservedReasoning_ >= 0 ? QString::number(streamObservedReasoning_) : QString("null")));
         beginUpstreamPassThrough(reply);
-        responseWritten_ = true;
-        socket_->disconnectFromHost();
-        record(upstreamResponseStatus_ > 0 ? upstreamResponseStatus_ : 200,
-               QString(),
-               QString(),
-               streamObservedReasoning_);
-        abortCurrentReply(reply);
         return true;
     }
 
@@ -1988,9 +2070,71 @@ private:
             response += body;
         }
         responseWritten_ = true;
-        socket_->write(response);
+        writeClient(response);
         socket_->flush();
         socket_->disconnectFromHost();
+    }
+
+    void noteUpstreamBytes(const QByteArray &chunk)
+    {
+        upstreamBytesRead_ += chunk.size();
+        rememberTail(&upstreamTail_, chunk);
+    }
+
+    qint64 writeClient(const QByteArray &chunk)
+    {
+        if (!socket_ || chunk.isEmpty()) {
+            return 0;
+        }
+        const qint64 written = socket_->write(chunk);
+        if (written > 0) {
+            downstreamBytesQueued_ += written;
+            rememberTail(&downstreamTail_, chunk.left(int(qMin(written, qint64(chunk.size())))));
+        }
+        return written;
+    }
+
+    void emitTransferDiagnostics(const QString &closeReason = QString())
+    {
+        if (!proxyRequestRecorded_) {
+            return;
+        }
+        const bool shouldLog = !diagnosticsLogged_;
+        diagnosticsLogged_ = true;
+        if (!closeReason.isEmpty()) {
+            diagnosticCloseReason_ = closeReason;
+        }
+
+        QJsonObject diagnostics;
+        diagnostics.insert("method", method_);
+        diagnostics.insert("path", path_);
+        diagnostics.insert("status_code", diagnosticStatusCode_ > 0 ? QJsonValue(diagnosticStatusCode_) : QJsonValue());
+        diagnostics.insert("request_kind", requestKind_.isEmpty() ? QJsonValue() : QJsonValue(requestKind_));
+        diagnostics.insert("intercept_exempt_reason", interceptExemptReason_.isEmpty() ? QJsonValue() : QJsonValue(interceptExemptReason_));
+        diagnostics.insert("upstream_bytes_read", double(upstreamBytesRead_));
+        diagnostics.insert("downstream_bytes_queued", double(downstreamBytesQueued_));
+        diagnostics.insert("downstream_bytes_written", double(downstreamBytesWritten_));
+        diagnostics.insert("downstream_bytes_pending", double(downstreamBytesQueued_ - downstreamBytesWritten_));
+        diagnostics.insert("upstream_tail_sha256_16", upstreamTail_.isEmpty() ? QJsonValue() : QJsonValue(tailHashText(upstreamTail_)));
+        diagnostics.insert("downstream_tail_sha256_16", downstreamTail_.isEmpty() ? QJsonValue() : QJsonValue(tailHashText(downstreamTail_)));
+        diagnostics.insert("stream_completed_seen", streamCompletedSeen_);
+        diagnostics.insert("stream_terminal_seen", streamTerminalSeen_);
+        diagnostics.insert("stream_done_seen", streamDoneSeen_);
+        diagnostics.insert("client_closed_first", diagnosticClientClosedFirst_);
+        diagnostics.insert("close_reason", diagnosticCloseReason_.isEmpty() ? QJsonValue() : QJsonValue(diagnosticCloseReason_));
+        diagnostics.insert("at", QDateTime::currentMSecsSinceEpoch() / 1000.0);
+        server_->recordTransferDiagnostics(diagnostics);
+        if (shouldLog) {
+            emit server_->logLine(QString("[transfer] path=%1 status=%2 upstream_bytes=%3 downstream_queued=%4 downstream_written=%5 stream_completed=%6 stream_done=%7 client_closed_first=%8")
+                .arg(path_)
+                .arg(diagnosticStatusCode_ > 0 ? QString::number(diagnosticStatusCode_) : QString("null"))
+                .arg(upstreamBytesRead_)
+                .arg(downstreamBytesQueued_)
+                .arg(downstreamBytesWritten_)
+                .arg(streamCompletedSeen_ ? "true" : "false")
+                .arg(streamDoneSeen_ ? "true" : "false")
+                .arg(diagnosticClientClosedFirst_ ? "true" : "false"));
+        }
     }
 
     void record(int statusCode,
@@ -1998,6 +2142,10 @@ private:
                 const QString &errorMessage,
                 int reasoningTokens = -1)
     {
+        diagnosticStatusCode_ = statusCode;
+        if (!errorType.isEmpty()) {
+            diagnosticCloseReason_ = errorType;
+        }
         server_->recordResult("proxy",
                               method_,
                               path_,
@@ -2008,6 +2156,7 @@ private:
                               reasoningTokens,
                               requestKind_,
                               interceptExemptReason_);
+        emitTransferDiagnostics();
     }
 
     HttpProxyServer *server_;
@@ -2028,6 +2177,7 @@ private:
     bool upstreamPassThrough_;
     bool streamInspectedRecorded_;
     int streamObservedReasoning_;
+    bool streamCompletedSeen_;
     bool streamTerminalSeen_;
     bool streamUsageSeen_;
     bool streamFailureSeen_;
@@ -2055,6 +2205,16 @@ private:
     bool responseTimedOut_;
     bool responseLimitExceeded_;
     bool upstreamTimedOut_;
+    qint64 upstreamBytesRead_;
+    qint64 downstreamBytesQueued_;
+    qint64 downstreamBytesWritten_;
+    QByteArray upstreamTail_;
+    QByteArray downstreamTail_;
+    bool streamDoneSeen_;
+    bool diagnosticsLogged_;
+    bool diagnosticClientClosedFirst_;
+    int diagnosticStatusCode_;
+    QString diagnosticCloseReason_;
     QTimer requestBufferTimer_;
     QTimer responseBufferTimer_;
     QElapsedTimer elapsed_;
@@ -2306,6 +2466,7 @@ QJsonObject HttpProxyServer::runtimePayload() const
     }
     runtime.insert("last_result", lastResult_.isEmpty() ? QJsonValue() : QJsonValue(lastResult_));
     runtime.insert("last_failure", lastFailure_.isEmpty() ? QJsonValue() : QJsonValue(lastFailure_));
+    runtime.insert("last_transfer_diagnostics", lastTransferDiagnostics_.isEmpty() ? QJsonValue() : QJsonValue(lastTransferDiagnostics_));
     runtime.insert("status_code_counts", statusCodeCounts_);
     return runtime;
 }
@@ -2480,6 +2641,12 @@ void HttpProxyServer::recordUpstreamAttempt()
 void HttpProxyServer::recordBypassedProxyRequest()
 {
     ++bypassedProxyRequestCount_;
+    emit statsChanged();
+}
+
+void HttpProxyServer::recordTransferDiagnostics(const QJsonObject &diagnostics)
+{
+    lastTransferDiagnostics_ = diagnostics;
     emit statsChanged();
 }
 

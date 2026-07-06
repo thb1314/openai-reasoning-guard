@@ -554,23 +554,26 @@ patch_qt_config_prefix_build_fallback() {
         if [[ ! -f "${qt_config_prf}" ]]; then
             continue
         fi
-        if grep -q 'OpenAI Reasoning Guard prefix-build qconfig fallback' "${qt_config_prf}"; then
+        if grep -q 'OpenAI Reasoning Guard qmake module enumeration fallback' "${qt_config_prf}" \
+            && grep -q 'OpenAI Reasoning Guard prefix-build qconfig fallback' "${qt_config_prf}"; then
             continue
         fi
 
         patched_qt_config="${qt_config_prf}.patched"
-        awk -v qt_build="${qt_build}" '
+        awk -v qt_build="${qt_build}" \
+            -v has_qconfig="$(grep -q 'OpenAI Reasoning Guard prefix-build qconfig fallback' "${qt_config_prf}" && echo 1 || echo 0)" \
+            -v has_module_fallback="$(grep -q 'OpenAI Reasoning Guard qmake module enumeration fallback' "${qt_config_prf}" && echo 1 || echo 0)" '
             {
                 print
-                if ($0 == "QMAKE_QT_CONFIG = $$[QT_HOST_DATA/get]/mkspecs/qconfig.pri") {
+                if (!has_qconfig && $0 == "QMAKE_QT_CONFIG = $$[QT_HOST_DATA/get]/mkspecs/qconfig.pri") {
                     print "# OpenAI Reasoning Guard prefix-build qconfig fallback for CI Qt SDK builds."
                     print "!exists($$QMAKE_QT_CONFIG):exists(" qt_build "/mkspecs/qconfig.pri): QMAKE_QT_CONFIG = " qt_build "/mkspecs/qconfig.pri"
                 }
-                if ($0 == "   mods = $$files($$dir/qt_*.pri)") {
+                if (!has_module_fallback && $0 ~ /^[[:space:]]*mods = \$\$files\(\$\$dir\/qt_\*\.pri\)$/) {
                     print "   # OpenAI Reasoning Guard qmake module enumeration fallback for Docker/QEMU builds."
                     print "   isEmpty(mods): mods = $$system(\"find \" $$system_quote($$dir) \" -maxdepth 1 -name \\047qt_*.pri\\047 -type f | sort\", lines, ec)"
                 }
-                if ($0 == "   QMAKE_MODULE_PATH = $$unique(QMAKE_MODULE_PATH)") {
+                if (!has_module_fallback && $0 ~ /^[[:space:]]*QMAKE_MODULE_PATH = \$\$unique\(QMAKE_MODULE_PATH\)$/) {
                     print "   QMAKE_MODULE_PATH += " qt_build "/mkspecs/modules"
                 }
             }
