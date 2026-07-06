@@ -498,15 +498,12 @@ EOF
 patch_qmake_use_pcre2_fallback() {
     local source_dir="$1"
     local qt_build="$2"
-    local qmake_use_prf="${source_dir}/mkspecs/features/qmake_use.prf"
-    if [[ ! -f "${qmake_use_prf}" ]]; then
-        return
-    fi
-    if grep -q 'OpenAI Reasoning Guard pcre2 fallback' "${qmake_use_prf}"; then
-        return
-    fi
-
+    local prefix="$3"
+    local tree
+    local qmake_use_prf
     local fallback_block
+    local patched_qmake_use
+
     fallback_block="$(cat <<EOF
 # OpenAI Reasoning Guard pcre2 fallback for CI cross-architecture Qt builds.
 !defined(QMAKE_LIBS_PCRE2, var) {
@@ -519,45 +516,63 @@ patch_qmake_use_pcre2_fallback() {
 
 EOF
 )"
-    local patched_qmake_use="${qmake_use_prf}.patched"
-    {
-        printf '%s' "${fallback_block}"
-        cat "${qmake_use_prf}"
-    } > "${patched_qmake_use}"
-    mv "${patched_qmake_use}" "${qmake_use_prf}"
-    echo "patched qmake_use.prf pcre2 fallback: ${qmake_use_prf}"
+
+    for tree in "${source_dir}" "${qt_build}" "${prefix}"; do
+        qmake_use_prf="${tree}/mkspecs/features/qmake_use.prf"
+        if [[ ! -f "${qmake_use_prf}" ]]; then
+            continue
+        fi
+        if grep -q 'OpenAI Reasoning Guard pcre2 fallback' "${qmake_use_prf}"; then
+            continue
+        fi
+
+        patched_qmake_use="${qmake_use_prf}.patched"
+        {
+            printf '%s' "${fallback_block}"
+            cat "${qmake_use_prf}"
+        } > "${patched_qmake_use}"
+        mv "${patched_qmake_use}" "${qmake_use_prf}"
+        echo "patched qmake_use.prf pcre2 fallback: ${qmake_use_prf}"
+    done
 }
 
 patch_qt_config_prefix_build_fallback() {
     local source_dir="$1"
     local qt_build="$2"
-    local qt_config_prf="${source_dir}/mkspecs/features/qt_config.prf"
-    if [[ ! -f "${qt_config_prf}" ]]; then
-        return
-    fi
-    if grep -q 'OpenAI Reasoning Guard prefix-build qconfig fallback' "${qt_config_prf}"; then
-        return
-    fi
+    local prefix="$3"
+    local tree
+    local qt_config_prf
+    local patched_qt_config
 
-    local patched_qt_config="${qt_config_prf}.patched"
-    awk -v qt_build="${qt_build}" '
-        {
-            print
-            if ($0 == "QMAKE_QT_CONFIG = $$[QT_HOST_DATA/get]/mkspecs/qconfig.pri") {
-                print "# OpenAI Reasoning Guard prefix-build qconfig fallback for CI Qt SDK builds."
-                print "!exists($$QMAKE_QT_CONFIG):exists(" qt_build "/mkspecs/qconfig.pri): QMAKE_QT_CONFIG = " qt_build "/mkspecs/qconfig.pri"
+    for tree in "${source_dir}" "${qt_build}" "${prefix}"; do
+        qt_config_prf="${tree}/mkspecs/features/qt_config.prf"
+        if [[ ! -f "${qt_config_prf}" ]]; then
+            continue
+        fi
+        if grep -q 'OpenAI Reasoning Guard prefix-build qconfig fallback' "${qt_config_prf}"; then
+            continue
+        fi
+
+        patched_qt_config="${qt_config_prf}.patched"
+        awk -v qt_build="${qt_build}" '
+            {
+                print
+                if ($0 == "QMAKE_QT_CONFIG = $$[QT_HOST_DATA/get]/mkspecs/qconfig.pri") {
+                    print "# OpenAI Reasoning Guard prefix-build qconfig fallback for CI Qt SDK builds."
+                    print "!exists($$QMAKE_QT_CONFIG):exists(" qt_build "/mkspecs/qconfig.pri): QMAKE_QT_CONFIG = " qt_build "/mkspecs/qconfig.pri"
+                }
+                if ($0 == "   mods = $$files($$dir/qt_*.pri)") {
+                    print "   # OpenAI Reasoning Guard qmake module enumeration fallback for Docker/QEMU builds."
+                    print "   isEmpty(mods): mods = $$system(\"find \" $$system_quote($$dir) \" -maxdepth 1 -name \\047qt_*.pri\\047 -type f | sort\", lines, ec)"
+                }
+                if ($0 == "   QMAKE_MODULE_PATH = $$unique(QMAKE_MODULE_PATH)") {
+                    print "   QMAKE_MODULE_PATH += " qt_build "/mkspecs/modules"
+                }
             }
-            if ($0 == "   mods = $$files($$dir/qt_*.pri)") {
-                print "   # OpenAI Reasoning Guard qmake module enumeration fallback for Docker/QEMU builds."
-                print "   isEmpty(mods): mods = $$system(\"find \" $$system_quote($$dir) \" -maxdepth 1 -name \\047qt_*.pri\\047 -type f | sort\", lines, ec)"
-            }
-            if ($0 == "   QMAKE_MODULE_PATH = $$unique(QMAKE_MODULE_PATH)") {
-                print "   QMAKE_MODULE_PATH += " qt_build "/mkspecs/modules"
-            }
-        }
-    ' "${qt_config_prf}" > "${patched_qt_config}"
-    mv "${patched_qt_config}" "${qt_config_prf}"
-    echo "patched qt_config.prf prefix-build fallback: ${qt_config_prf}"
+        ' "${qt_config_prf}" > "${patched_qt_config}"
+        mv "${patched_qt_config}" "${qt_config_prf}"
+        echo "patched qt_config.prf prefix-build fallback: ${qt_config_prf}"
+    done
 }
 
 sync_prefix_qmake_metadata() {
@@ -828,11 +843,11 @@ build_qtbase() {
             -openssl-runtime \
             -I "${PREFIX}/include" \
             -L "${PREFIX}/lib"
-        patch_qt_config_prefix_build_fallback "${source_dir}" "${qt_build}"
-        patch_qmake_use_pcre2_fallback "${source_dir}" "${qt_build}"
         write_bootstrap_private_module_pri "${source_dir}" "${qt_build}" "${PREFIX}"
         write_core_module_pri_fallback "${source_dir}" "${qt_build}" "${PREFIX}"
         sync_prefix_qmake_metadata "${source_dir}" "${qt_build}" "${PREFIX}"
+        patch_qt_config_prefix_build_fallback "${source_dir}" "${qt_build}" "${PREFIX}"
+        patch_qmake_use_pcre2_fallback "${source_dir}" "${qt_build}" "${PREFIX}"
         configure_qmake_search_env "${source_dir}" "${qt_build}" "${PREFIX}"
         write_build_qmake_wrapper "${source_dir}" "${qt_build}" "${PREFIX}"
         write_prefix_tool_wrappers "${qt_build}" "${PREFIX}"
