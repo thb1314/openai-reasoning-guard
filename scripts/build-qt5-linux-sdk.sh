@@ -484,19 +484,14 @@ QT_MODULE_LIB_BASE = ${qt_build}/lib
 QT_MODULE_HOST_LIB_BASE = ${qt_build}/lib
 include(${modules_inst}/qt_lib_core.pri)
 QT.core.priority = 1
-QT.core.includes += ${build_public_includes}
-EOF
-        cat > "${module_dir}/qt_lib_core_private.pri" <<EOF
-QT_MODULE_BIN_BASE = ${qt_build}/bin
-QT_MODULE_INCLUDE_BASE = ${source_dir}/include
-QT_MODULE_LIB_BASE = ${qt_build}/lib
-QT_MODULE_HOST_LIB_BASE = ${qt_build}/lib
 include(${modules_inst}/qt_lib_core_private.pri)
 QT.core_private.priority = 1
+QT.core.includes += ${build_public_includes}
 QT.core_private.includes += ${build_private_includes}
 EOF
+        rm -f "${module_dir}/qt_lib_core_private.pri"
         echo "wrote core module fallback metadata: ${module_dir}/qt_lib_core.pri"
-        echo "wrote core-private module fallback metadata: ${module_dir}/qt_lib_core_private.pri"
+        echo "embedded core-private fallback metadata via core forwarder: ${module_dir}/qt_lib_core.pri"
     done
 }
 
@@ -698,36 +693,47 @@ write_build_qmake_wrapper() {
     local qt_build="$2"
     local prefix="$3"
     local qmake="${qt_build}/bin/qmake"
+    local real_qmake="${qt_build}/bin/qmake.real.bin"
+    local compat_qmake="${qt_build}/bin/qmake.real"
     local qmakepath="${qt_build}:${source_dir}:${prefix}"
     local qmakefeatures="${qt_build}/mkspecs/features:${source_dir}/mkspecs/features:${prefix}/mkspecs/features"
     local qmakemodules="${qt_build}/mkspecs/modules"
     local wrapper_target
 
-    wrapper_target="$(qmake_wrapper_path_for "${qt_build}")"
-
     if [[ ! -x "${qmake}" ]]; then
         echo "expected qmake binary is missing: ${qmake}" >&2
         exit 2
     fi
+    if [[ ! -x "${real_qmake}" ]]; then
+        mv "${qmake}" "${real_qmake}"
+    fi
 
-    cat > "${wrapper_target}" <<EOF
+    for wrapper_target in "${qmake}" "${compat_qmake}" "$(qmake_wrapper_path_for "${qt_build}")"; do
+        cat > "${wrapper_target}" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 # OpenAI Reasoning Guard temporary qmake wrapper for CI cross-architecture Qt builds.
 export QMAKEPATH="${qmakepath}\${QMAKEPATH:+:\${QMAKEPATH}}"
 export QMAKEFEATURES="${qmakefeatures}\${QMAKEFEATURES:+:\${QMAKEFEATURES}}"
 export QMAKEMODULES="${qmakemodules}\${QMAKEMODULES:+:\${QMAKEMODULES}}"
-exec -a "${wrapper_target}" "${qmake}" "\$@"
+exec -a "${wrapper_target}" "${real_qmake}" "\$@"
 EOF
-    chmod +x "${wrapper_target}"
-    echo "wrote build qmake wrapper: ${wrapper_target}"
+        chmod +x "${wrapper_target}"
+        echo "wrote build qmake wrapper: ${wrapper_target}"
+    done
 }
 
 restore_build_qmake_wrapper() {
     local qt_build="$1"
-    local wrapper_target
-    wrapper_target="$(qmake_wrapper_path_for "${qt_build}")"
-    rm -f "${wrapper_target}"
+    local qmake="${qt_build}/bin/qmake"
+    local real_qmake="${qt_build}/bin/qmake.real.bin"
+    local compat_qmake="${qt_build}/bin/qmake.real"
+    rm -f "$(qmake_wrapper_path_for "${qt_build}")" "${compat_qmake}"
+    if [[ -x "${real_qmake}" ]]; then
+        mv -f "${real_qmake}" "${qmake}"
+        chmod +x "${qmake}"
+        echo "restored build qmake binary: ${qmake}"
+    fi
 }
 
 patch_makefiles_to_use_qmake_wrapper() {
@@ -836,17 +842,12 @@ QT_MODULE_LIB_BASE = \${qt_build}/lib
 QT_MODULE_HOST_LIB_BASE = \${qt_build}/lib
 include(\${modules_inst}/qt_lib_core.pri)
 QT.core.priority = 1
-QT.core.includes += \${build_public_includes}
-INNER_CORE_WRAPPER
-    cat > "\${module_dir}/qt_lib_core_private.pri" <<INNER_CORE_PRIVATE_WRAPPER
-QT_MODULE_BIN_BASE = \${qt_build}/bin
-QT_MODULE_INCLUDE_BASE = \${source_dir}/include
-QT_MODULE_LIB_BASE = \${qt_build}/lib
-QT_MODULE_HOST_LIB_BASE = \${qt_build}/lib
 include(\${modules_inst}/qt_lib_core_private.pri)
 QT.core_private.priority = 1
+QT.core.includes += \${build_public_includes}
 QT.core_private.includes += \${build_private_includes}
-INNER_CORE_PRIVATE_WRAPPER
+INNER_CORE_WRAPPER
+    rm -f "\${module_dir}/qt_lib_core_private.pri"
 done
 
 if [[ -d "\${qt_build}/mkspecs/modules" ]]; then
@@ -1047,9 +1048,9 @@ build_qtbase() {
         echo "QMAKEMODULES=${QMAKEMODULES}"
         make -j"${JOBS}"
         make install
+        restore_build_qmake_wrapper "${qt_build}"
         replace_prefix_tool_wrappers "${qt_build}" "${PREFIX}"
         normalize_installed_bootstrap_private_pri "${source_dir}" "${PREFIX}"
-        restore_build_qmake_wrapper "${qt_build}"
     )
 }
 
