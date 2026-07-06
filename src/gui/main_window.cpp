@@ -1,5 +1,7 @@
 #include "gui/main_window.h"
 
+#include "gui/app_icon.h"
+
 #include <QtCore/QDateTime>
 #include <QtCore/QJsonObject>
 #include <QtCore/QSize>
@@ -126,7 +128,7 @@ void MainWindow::buildUi()
     setVisible(QUIWidget::BtnMenu, true);
     setBtnWidth(36);
     setTitleHeight(42);
-    setWindowIcon(QIcon(QStringLiteral(":/app-icon.png")));
+    setWindowIcon(makeAppIcon());
     setPixmap(QUIWidget::Lab_Ico, QStringLiteral(":/app-icon.png"), QSize(22, 22));
     setMinimumSize(980, 580);
 
@@ -176,7 +178,7 @@ void MainWindow::setupTrayIcon()
         return;
     }
 
-    const QIcon appIcon(QStringLiteral(":/app-icon.png"));
+    const QIcon appIcon(makeAppIcon());
     trayMenu_ = new QMenu(this);
     trayShowAction_ = trayMenu_->addAction(appIcon, QString());
     trayShowAction_->setProperty("i18n_tooltip_key", "tray_show");

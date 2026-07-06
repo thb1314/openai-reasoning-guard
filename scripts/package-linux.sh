@@ -355,6 +355,7 @@ Icon=${DESKTOP_ID}
 Terminal=false
 Categories=Network;Qt;
 StartupNotify=true
+StartupWMClass=${GUI_COMMAND}
 EOF
 }
 
@@ -561,6 +562,7 @@ Icon=${DESKTOP_ID}
 Terminal=${terminal}
 Categories=Network;Qt;
 StartupNotify=true
+StartupWMClass=${command}
 EOF
 }
 

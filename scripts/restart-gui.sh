@@ -6,6 +6,9 @@ PROJECT_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 GUI_BIN="${GUI_BIN:-${PROJECT_DIR}/build/net-tunnel-gui}"
 LOG_FILE="${GUI_LOG:-${PROJECT_DIR}/build/net-tunnel-gui.restart.log}"
 PID_FILE="${GUI_PID_FILE:-${PROJECT_DIR}/build/net-tunnel-gui.pid}"
+DESKTOP_ID="${DESKTOP_ID:-openai-reasoning-guard}"
+APP_NAME="${APP_NAME:-OpenAI Reasoning Guard}"
+ICON_SOURCE="${ICON_SOURCE:-${PROJECT_DIR}/assets/openai-reasoning-guard-icon-1024.png}"
 
 if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
     cat <<EOF
@@ -27,6 +30,30 @@ if [[ ! -x "${GUI_BIN}" ]]; then
     echo "Build it first with: cmake --build ${PROJECT_DIR}/build -j2" >&2
     exit 1
 fi
+
+install_dev_desktop_entry() {
+    [[ -n "${HOME:-}" && -f "${ICON_SOURCE}" ]] || return 0
+
+    local data_home="${XDG_DATA_HOME:-${HOME}/.local/share}"
+    local icon_dir="${data_home}/icons/hicolor/1024x1024/apps"
+    local app_dir="${data_home}/applications"
+    mkdir -p "${icon_dir}" "${app_dir}"
+    cp -f "${ICON_SOURCE}" "${icon_dir}/${DESKTOP_ID}.png"
+    cat > "${app_dir}/${DESKTOP_ID}.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=${APP_NAME}
+Comment=Local OpenAI-compatible reasoning guard proxy
+Exec=${GUI_BIN}
+Icon=${DESKTOP_ID}
+Terminal=false
+Categories=Network;Qt;
+StartupNotify=true
+StartupWMClass=openai-reasoning-guard-gui
+EOF
+}
+
+install_dev_desktop_entry
 
 readarray -t OLD_PIDS < <(pgrep -u "$(id -u)" -x net-tunnel-gui || true)
 
