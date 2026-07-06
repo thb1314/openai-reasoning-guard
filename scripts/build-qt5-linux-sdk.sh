@@ -484,14 +484,19 @@ QT_MODULE_LIB_BASE = ${qt_build}/lib
 QT_MODULE_HOST_LIB_BASE = ${qt_build}/lib
 include(${modules_inst}/qt_lib_core.pri)
 QT.core.priority = 1
+QT.core.includes += ${build_public_includes}
+EOF
+        cat > "${module_dir}/qt_lib_core_private.pri" <<EOF
+QT_MODULE_BIN_BASE = ${qt_build}/bin
+QT_MODULE_INCLUDE_BASE = ${source_dir}/include
+QT_MODULE_LIB_BASE = ${qt_build}/lib
+QT_MODULE_HOST_LIB_BASE = ${qt_build}/lib
 include(${modules_inst}/qt_lib_core_private.pri)
 QT.core_private.priority = 1
-QT.core.includes += ${build_public_includes}
 QT.core_private.includes += ${build_private_includes}
 EOF
-        rm -f "${module_dir}/qt_lib_core_private.pri"
         echo "wrote core module fallback metadata: ${module_dir}/qt_lib_core.pri"
-        echo "embedded core-private fallback metadata via core forwarder: ${module_dir}/qt_lib_core.pri"
+        echo "wrote core-private module fallback metadata: ${module_dir}/qt_lib_core_private.pri"
     done
 }
 
@@ -736,6 +741,189 @@ patch_makefiles_to_use_qmake_wrapper() {
     done < <(find "${qt_build}" -type f -name Makefile -print0)
 }
 
+write_arm32_post_corelib_sync_script() {
+    local source_dir="$1"
+    local qt_build="$2"
+    local prefix="$3"
+    local script_path
+    local qt_version
+    local glib_incdirs=""
+    local glib_libs=""
+    local build_public_includes
+    local build_private_includes
+
+    if [[ "${TARGET}" != "linux-arm32" ]]; then
+        return
+    fi
+
+    script_path="${qt_build}/bin/arm32-post-corelib-sync.sh"
+    qt_version="$(qtbase_version "${source_dir}")"
+    qt_version="${qt_version:-5.15.2}"
+
+    if command -v pkg-config >/dev/null 2>&1; then
+        glib_incdirs="$(pkg-config --cflags-only-I glib-2.0 gthread-2.0 2>/dev/null | sed 's/-I//g' | xargs echo || true)"
+        glib_libs="$(pkg-config --libs-only-l glib-2.0 gthread-2.0 2>/dev/null | xargs echo || true)"
+    fi
+    glib_incdirs="${glib_incdirs:-/usr/include/glib-2.0 /usr/lib/arm-linux-gnueabihf/glib-2.0/include}"
+    glib_libs="${glib_libs:--lgthread-2.0 -lglib-2.0}"
+    build_public_includes="${qt_build}/include ${qt_build}/include/QtCore"
+    build_private_includes="${qt_build}/include/QtCore/${qt_version} ${qt_build}/include/QtCore/${qt_version}/QtCore"
+
+    cat > "${script_path}" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+
+source_dir="${source_dir}"
+qt_build="${qt_build}"
+prefix="${prefix}"
+qt_version="${qt_version}"
+modules_inst="\${qt_build}/mkspecs/modules-inst"
+build_public_includes="${build_public_includes}"
+build_private_includes="${build_private_includes}"
+
+echo "[arm32-sync] module files before resync:"
+find "\${qt_build}/mkspecs/modules" -maxdepth 1 -type f -name 'qt_*.pri' | sort || true
+
+mkdir -p "\${modules_inst}"
+
+cat > "\${modules_inst}/qt_lib_core.pri" <<'INNER_CORE'
+QT.core.VERSION = ${qt_version}
+QT.core.name = QtCore
+QT.core.module = Qt5Core
+QT.core.libs = \$\$QT_MODULE_LIB_BASE
+QT.core.includes = \$\$QT_MODULE_INCLUDE_BASE \$\$QT_MODULE_INCLUDE_BASE/QtCore
+QT.core.frameworks =
+QT.core.bins = \$\$QT_MODULE_BIN_BASE
+QT.core.depends =
+QT.core.uses = libatomic
+QT.core.module_config = v2
+QT.core.CONFIG = moc resources
+QT.core.DEFINES = QT_CORE_LIB
+QT.core.enabled_features = properties easingcurve animation textcodec big_codecs binaryjson cborstreamreader cborstreamwriter codecs commandlineparser itemmodel proxymodel concatenatetablesproxymodel cxx11_future textdate datestring filesystemiterator filesystemwatcher gestures identityproxymodel islamiccivilcalendar jalalicalendar library mimetype processenvironment process statemachine qeventtransition regularexpression settings sharedmemory sortfilterproxymodel std-atomic64 stringlistmodel systemsemaphore temporaryfile timezone topleveldomain translation transposeproxymodel xmlstream xmlstreamreader xmlstreamwriter
+QT.core.disabled_features =
+QT_CONFIG += properties animation textcodec big_codecs clock-monotonic codecs itemmodel proxymodel concatenatetablesproxymodel textdate datestring doubleconversion eventfd filesystemiterator filesystemwatcher gestures glib identityproxymodel inotify library mimetype process statemachine regularexpression settings sharedmemory sortfilterproxymodel stringlistmodel systemsemaphore temporaryfile threadsafe-cloexec translation transposeproxymodel xmlstream xmlstreamreader xmlstreamwriter
+QT_MODULES += core
+INNER_CORE
+
+cat > "\${modules_inst}/qt_lib_core_private.pri" <<'INNER_CORE_PRIVATE'
+QT.core_private.VERSION = ${qt_version}
+QT.core_private.name = QtCore
+QT.core_private.module =
+QT.core_private.libs = \$\$QT_MODULE_LIB_BASE
+QT.core_private.includes = \$\$QT_MODULE_INCLUDE_BASE/QtCore/${qt_version} \$\$QT_MODULE_INCLUDE_BASE/QtCore/${qt_version}/QtCore
+QT.core_private.frameworks =
+QT.core_private.depends = core
+QT.core_private.uses =
+QT.core_private.module_config = v2 internal_module
+QT.core_private.enabled_features = clock-gettime datetimeparser doubleconversion futimens getauxval getentropy glib glibc posix-libiconv hijricalendar inotify linkat system-pcre2 poll_ppoll renameat2 sha3-fast statx system-doubleconversion
+QT.core_private.disabled_features = etw futimes gnu-libiconv iconv journald lttng mimetype-database poll_poll poll_pollts poll_select slog2 syslog
+QMAKE_INCDIR_GLIB = ${glib_incdirs}
+QMAKE_LIBS_GLIB = ${glib_libs}
+QMAKE_LIBS_PCRE2 = ${qt_build}/lib/libqtpcre2.a
+QMAKE_LIBS_LIBATOMIC =
+QMAKE_LIBS_DOUBLECONVERSION =
+INNER_CORE_PRIVATE
+
+for module_dir in "\${source_dir}/mkspecs/modules" "\${qt_build}/mkspecs/modules" "\${prefix}/mkspecs/modules"; do
+    mkdir -p "\${module_dir}"
+    cat > "\${module_dir}/qt_lib_core.pri" <<INNER_CORE_WRAPPER
+QT_MODULE_BIN_BASE = \${qt_build}/bin
+QT_MODULE_INCLUDE_BASE = \${source_dir}/include
+QT_MODULE_LIB_BASE = \${qt_build}/lib
+QT_MODULE_HOST_LIB_BASE = \${qt_build}/lib
+include(\${modules_inst}/qt_lib_core.pri)
+QT.core.priority = 1
+QT.core.includes += \${build_public_includes}
+INNER_CORE_WRAPPER
+    cat > "\${module_dir}/qt_lib_core_private.pri" <<INNER_CORE_PRIVATE_WRAPPER
+QT_MODULE_BIN_BASE = \${qt_build}/bin
+QT_MODULE_INCLUDE_BASE = \${source_dir}/include
+QT_MODULE_LIB_BASE = \${qt_build}/lib
+QT_MODULE_HOST_LIB_BASE = \${qt_build}/lib
+include(\${modules_inst}/qt_lib_core_private.pri)
+QT.core_private.priority = 1
+QT.core_private.includes += \${build_private_includes}
+INNER_CORE_PRIVATE_WRAPPER
+done
+
+if [[ -d "\${qt_build}/mkspecs/modules" ]]; then
+    mkdir -p "\${prefix}/mkspecs/modules"
+    cp -a "\${qt_build}/mkspecs/modules/." "\${prefix}/mkspecs/modules/"
+fi
+if [[ -d "\${qt_build}/mkspecs/modules-inst" ]]; then
+    mkdir -p "\${prefix}/mkspecs/modules-inst"
+    cp -a "\${qt_build}/mkspecs/modules-inst/." "\${prefix}/mkspecs/modules-inst/"
+fi
+
+for name in qconfig.pri qmodule.pri; do
+    src=""
+    for candidate in "\${qt_build}/mkspecs/\${name}" "\${source_dir}/mkspecs/\${name}" "\${prefix}/mkspecs/\${name}"; do
+        if [[ -f "\${candidate}" ]]; then
+            src="\${candidate}"
+            break
+        fi
+    done
+    if [[ -z "\${src}" ]]; then
+        echo "[arm32-sync] warning: missing \${name}" >&2
+        continue
+    fi
+    cp -f "\${src}" "\${qt_build}/mkspecs/\${name}"
+    cp -f "\${src}" "\${source_dir}/mkspecs/\${name}"
+    cp -f "\${src}" "\${prefix}/mkspecs/\${name}"
+done
+
+echo "[arm32-sync] module files after resync:"
+find "\${qt_build}/mkspecs/modules" -maxdepth 1 -type f -name 'qt_*.pri' | sort || true
+EOF
+    chmod +x "${script_path}"
+    echo "wrote ARM32 post-corelib qmake metadata sync script: ${script_path}"
+}
+
+prepare_arm32_src_makefile_sync() {
+    local source_dir="$1"
+    local qt_build="$2"
+    local sync_script="$3"
+    local wrapper_target
+    local src_makefile="${qt_build}/src/Makefile"
+    local patched_makefile
+
+    if [[ "${TARGET}" != "linux-arm32" ]]; then
+        return
+    fi
+
+    wrapper_target="$(qmake_wrapper_path_for "${qt_build}")"
+    mkdir -p "${qt_build}/src"
+    "${wrapper_target}" -o "${src_makefile}" "${source_dir}/src/src.pro"
+    patched_makefile="${src_makefile}.patched"
+    awk -v sync_script="${sync_script}" '
+        !inserted && $0 ~ /^sub-qlalr-qmake_all:/ {
+            print "arm32-post-corelib-sync: sub-corelib-make_first FORCE"
+            print "\t" sync_script
+            print ""
+            inserted = 1
+        }
+        $0 == "sub-qlalr-make_first: sub-corelib-make_first FORCE" {
+            print "sub-qlalr-make_first: arm32-post-corelib-sync FORCE"
+            next
+        }
+        $0 == "sub-network-make_first: sub-corelib-make_first FORCE" {
+            print "sub-network-make_first: arm32-post-corelib-sync FORCE"
+            next
+        }
+        $0 == "sub-sql-make_first: sub-corelib-make_first FORCE" {
+            print "sub-sql-make_first: arm32-post-corelib-sync FORCE"
+            next
+        }
+        $0 == "sub-xml-make_first: sub-corelib-make_first FORCE" {
+            print "sub-xml-make_first: arm32-post-corelib-sync FORCE"
+            next
+        }
+        { print }
+    ' "${src_makefile}" > "${patched_makefile}"
+    mv "${patched_makefile}" "${src_makefile}"
+    echo "patched ARM32 src Makefile post-corelib sync hook: ${src_makefile}"
+}
+
 replace_prefix_tool_wrappers() {
     local qt_build="$1"
     local prefix="$2"
@@ -855,6 +1043,8 @@ build_qtbase() {
         configure_qmake_search_env "${source_dir}" "${qt_build}" "${PREFIX}"
         write_build_qmake_wrapper "${source_dir}" "${qt_build}" "${PREFIX}"
         write_prefix_tool_wrappers "${qt_build}" "${PREFIX}"
+        write_arm32_post_corelib_sync_script "${source_dir}" "${qt_build}" "${PREFIX}"
+        prepare_arm32_src_makefile_sync "${source_dir}" "${qt_build}" "${qt_build}/bin/arm32-post-corelib-sync.sh"
         patch_makefiles_to_use_qmake_wrapper "${qt_build}"
         export QMAKEMODULES="${qt_build}/mkspecs/modules${QMAKEMODULES:+:${QMAKEMODULES}}"
         export QMAKE="$(qmake_wrapper_path_for "${qt_build}")"
