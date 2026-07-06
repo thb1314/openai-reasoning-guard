@@ -484,14 +484,19 @@ QT_MODULE_LIB_BASE = ${qt_build}/lib
 QT_MODULE_HOST_LIB_BASE = ${qt_build}/lib
 include(${modules_inst}/qt_lib_core.pri)
 QT.core.priority = 1
+QT.core.includes += ${build_public_includes}
+EOF
+        cat > "${module_dir}/qt_lib_core_private.pri" <<EOF
+QT_MODULE_BIN_BASE = ${qt_build}/bin
+QT_MODULE_INCLUDE_BASE = ${source_dir}/include
+QT_MODULE_LIB_BASE = ${qt_build}/lib
+QT_MODULE_HOST_LIB_BASE = ${qt_build}/lib
 include(${modules_inst}/qt_lib_core_private.pri)
 QT.core_private.priority = 1
-QT.core.includes += ${build_public_includes}
 QT.core_private.includes += ${build_private_includes}
 EOF
-        rm -f "${module_dir}/qt_lib_core_private.pri"
         echo "wrote core module fallback metadata: ${module_dir}/qt_lib_core.pri"
-        echo "embedded core-private fallback metadata via core forwarder: ${module_dir}/qt_lib_core.pri"
+        echo "wrote core-private module fallback metadata: ${module_dir}/qt_lib_core_private.pri"
     done
 }
 
@@ -557,6 +562,8 @@ patch_qt_config_prefix_build_fallback() {
 
         patched_qt_config="${qt_config_prf}.patched"
         awk -v qt_build="${qt_build}" \
+            -v source_dir="${source_dir}" \
+            -v prefix="${prefix}" \
             -v has_qconfig="$(grep -q 'OpenAI Reasoning Guard prefix-build qconfig fallback' "${qt_config_prf}" && echo 1 || echo 0)" \
             -v has_module_fallback="$(grep -q 'OpenAI Reasoning Guard qmake module enumeration fallback' "${qt_config_prf}" && echo 1 || echo 0)" \
             -v has_direct_module_fallback="$(grep -q 'OpenAI Reasoning Guard direct module load fallback' "${qt_config_prf}" && echo 1 || echo 0)" '
@@ -571,14 +578,18 @@ patch_qt_config_prefix_build_fallback() {
                     print "   isEmpty(mods): mods = $$system(\"find \" $$system_quote($$dir) \" -maxdepth 1 -name \\047qt_*.pri\\047 -type f | sort\", lines, ec)"
                 }
                 if (!has_module_fallback && $0 ~ /^[[:space:]]*QMAKE_MODULE_PATH = \$\$unique\(QMAKE_MODULE_PATH\)$/) {
+                    print "   QMAKE_MODULE_PATH += " source_dir "/mkspecs/modules"
                     print "   QMAKE_MODULE_PATH += " qt_build "/mkspecs/modules"
+                    print "   QMAKE_MODULE_PATH += " prefix "/mkspecs/modules"
                 }
                 if (!has_direct_module_fallback && $0 ~ /^[[:space:]]*unset\(QT_MODULE_BIN_BASE\)$/) {
                     print "   # OpenAI Reasoning Guard direct module load fallback for CI Qt SDK builds."
-                    print "   org_modules = $$files(" qt_build "/mkspecs/modules/qt_*.pri)"
-                    print "   isEmpty(org_modules): org_modules = $$system(\"find " qt_build "/mkspecs/modules -maxdepth 1 -name \\047qt_*.pri\\047 -type f | sort\", lines, ec)"
+                    print "   org_modules = $$files(" source_dir "/mkspecs/modules/qt_*.pri)"
+                    print "   org_modules += $$files(" qt_build "/mkspecs/modules/qt_*.pri)"
+                    print "   org_modules += $$files(" prefix "/mkspecs/modules/qt_*.pri)"
+                    print "   isEmpty(org_modules): org_modules = $$system(\"find " qt_build "/mkspecs/modules " source_dir "/mkspecs/modules " prefix "/mkspecs/modules -maxdepth 1 -name \\047qt_*.pri\\047 -type f | sort\", lines, ec)"
                     print "   for(mod, org_modules) {"
-                    print "      QT_MODULE_INCLUDE_BASE = " qt_build "/include"
+                    print "      QT_MODULE_INCLUDE_BASE = " source_dir "/include"
                     print "      QT_MODULE_LIB_BASE = " qt_build "/lib"
                     print "      QT_MODULE_HOST_LIB_BASE = " qt_build "/lib"
                     print "      QT_MODULE_BIN_BASE = " qt_build "/bin"
@@ -589,6 +600,27 @@ patch_qt_config_prefix_build_fallback() {
                     print "   unset(QT_MODULE_LIB_BASE)"
                     print "   unset(QT_MODULE_HOST_LIB_BASE)"
                     print "   unset(QT_MODULE_BIN_BASE)"
+                }
+                if (!has_direct_module_fallback && $0 == "load(qt_functions)") {
+                    print "# OpenAI Reasoning Guard direct core module fallback before qt_functions."
+                    print "isEmpty(QT.core.name):exists(" qt_build "/mkspecs/modules/qt_lib_core.pri) {"
+                    print "   QT_MODULE_INCLUDE_BASE = " source_dir "/include"
+                    print "   QT_MODULE_LIB_BASE = " qt_build "/lib"
+                    print "   QT_MODULE_HOST_LIB_BASE = " qt_build "/lib"
+                    print "   QT_MODULE_BIN_BASE = " qt_build "/bin"
+                    print "   include(" qt_build "/mkspecs/modules/qt_lib_core.pri)"
+                    print "}"
+                    print "isEmpty(QT.core_private.name):exists(" qt_build "/mkspecs/modules/qt_lib_core_private.pri) {"
+                    print "   QT_MODULE_INCLUDE_BASE = " source_dir "/include"
+                    print "   QT_MODULE_LIB_BASE = " qt_build "/lib"
+                    print "   QT_MODULE_HOST_LIB_BASE = " qt_build "/lib"
+                    print "   QT_MODULE_BIN_BASE = " qt_build "/bin"
+                    print "   include(" qt_build "/mkspecs/modules/qt_lib_core_private.pri)"
+                    print "}"
+                    print "unset(QT_MODULE_INCLUDE_BASE)"
+                    print "unset(QT_MODULE_LIB_BASE)"
+                    print "unset(QT_MODULE_HOST_LIB_BASE)"
+                    print "unset(QT_MODULE_BIN_BASE)"
                 }
             }
         ' "${qt_config_prf}" > "${patched_qt_config}"
@@ -662,6 +694,7 @@ configure_qmake_search_env() {
     local entry
     local -a qmake_paths=()
     local -a qmake_features=()
+    local -a qmake_modules=()
 
     for entry in "${qt_build}" "${source_dir}" "${prefix}"; do
         [[ -n "${entry}" ]] && qmake_paths+=("${entry}")
@@ -671,6 +704,12 @@ configure_qmake_search_env() {
         "${source_dir}/mkspecs/features" \
         "${prefix}/mkspecs/features"; do
         [[ -d "${entry}" ]] && qmake_features+=("${entry}")
+    done
+    for entry in \
+        "${qt_build}/mkspecs/modules" \
+        "${source_dir}/mkspecs/modules" \
+        "${prefix}/mkspecs/modules"; do
+        [[ -d "${entry}" ]] && qmake_modules+=("${entry}")
     done
 
     if ((${#qmake_paths[@]} > 0)); then
@@ -683,6 +722,12 @@ configure_qmake_search_env() {
         export QMAKEFEATURES
         QMAKEFEATURES="$(IFS="${path_sep}"; echo "${qmake_features[*]}")${QMAKEFEATURES:+${path_sep}${QMAKEFEATURES}}"
         echo "QMAKEFEATURES=${QMAKEFEATURES}"
+    fi
+
+    if ((${#qmake_modules[@]} > 0)); then
+        export QMAKEMODULES
+        QMAKEMODULES="$(IFS="${path_sep}"; echo "${qmake_modules[*]}")${QMAKEMODULES:+${path_sep}${QMAKEMODULES}}"
+        echo "QMAKEMODULES=${QMAKEMODULES}"
     fi
 }
 
@@ -716,7 +761,7 @@ write_build_qmake_wrapper() {
     local compat_qmake="${qt_build}/bin/qmake.real"
     local qmakepath="${qt_build}:${source_dir}:${prefix}"
     local qmakefeatures="${qt_build}/mkspecs/features:${source_dir}/mkspecs/features:${prefix}/mkspecs/features"
-    local qmakemodules="${qt_build}/mkspecs/modules"
+    local qmakemodules="${qt_build}/mkspecs/modules:${source_dir}/mkspecs/modules:${prefix}/mkspecs/modules"
     local wrapper_target
 
     if [[ ! -x "${qmake}" ]]; then
@@ -861,12 +906,17 @@ QT_MODULE_LIB_BASE = \${qt_build}/lib
 QT_MODULE_HOST_LIB_BASE = \${qt_build}/lib
 include(\${modules_inst}/qt_lib_core.pri)
 QT.core.priority = 1
+QT.core.includes += \${build_public_includes}
+INNER_CORE_WRAPPER
+    cat > "\${module_dir}/qt_lib_core_private.pri" <<INNER_CORE_PRIVATE_WRAPPER
+QT_MODULE_BIN_BASE = \${qt_build}/bin
+QT_MODULE_INCLUDE_BASE = \${source_dir}/include
+QT_MODULE_LIB_BASE = \${qt_build}/lib
+QT_MODULE_HOST_LIB_BASE = \${qt_build}/lib
 include(\${modules_inst}/qt_lib_core_private.pri)
 QT.core_private.priority = 1
-QT.core.includes += \${build_public_includes}
 QT.core_private.includes += \${build_private_includes}
-INNER_CORE_WRAPPER
-    rm -f "\${module_dir}/qt_lib_core_private.pri"
+INNER_CORE_PRIVATE_WRAPPER
 done
 
 if [[ -d "\${qt_build}/mkspecs/modules" ]]; then
@@ -1062,7 +1112,7 @@ build_qtbase() {
         write_arm32_post_corelib_sync_script "${source_dir}" "${qt_build}" "${PREFIX}"
         prepare_arm32_src_makefile_sync "${source_dir}" "${qt_build}" "${qt_build}/bin/arm32-post-corelib-sync.sh"
         patch_makefiles_to_use_qmake_wrapper "${qt_build}"
-        export QMAKEMODULES="${qt_build}/mkspecs/modules${QMAKEMODULES:+:${QMAKEMODULES}}"
+        export QMAKEMODULES="${qt_build}/mkspecs/modules:${source_dir}/mkspecs/modules:${PREFIX}/mkspecs/modules${QMAKEMODULES:+:${QMAKEMODULES}}"
         export QMAKE="$(qmake_wrapper_path_for "${qt_build}")"
         echo "QMAKEMODULES=${QMAKEMODULES}"
         make -j"${JOBS}"
