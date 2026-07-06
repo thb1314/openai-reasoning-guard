@@ -680,56 +680,60 @@ EOF
     done
 }
 
+qmake_wrapper_path_for() {
+    local qt_build="$1"
+    echo "${qt_build}/bin/qmake-ci-wrapper"
+}
+
 write_build_qmake_wrapper() {
     local source_dir="$1"
     local qt_build="$2"
     local prefix="$3"
     local qmake="${qt_build}/bin/qmake"
-    local compat_qmake="${qt_build}/bin/qmake.real"
-    local real_qmake="${qt_build}/bin/qmake.real.bin"
     local qmakepath="${qt_build}:${source_dir}:${prefix}"
     local qmakefeatures="${qt_build}/mkspecs/features:${source_dir}/mkspecs/features:${prefix}/mkspecs/features"
     local qmakemodules="${qt_build}/mkspecs/modules"
     local wrapper_target
 
+    wrapper_target="$(qmake_wrapper_path_for "${qt_build}")"
+
     if [[ ! -x "${qmake}" ]]; then
         echo "expected qmake binary is missing: ${qmake}" >&2
         exit 2
     fi
-    if [[ -x "${real_qmake}" ]]; then
-        return
-    fi
 
-    mv "${qmake}" "${real_qmake}"
-    for wrapper_target in "${qmake}" "${compat_qmake}"; do
-        cat > "${wrapper_target}" <<EOF
+    cat > "${wrapper_target}" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 # OpenAI Reasoning Guard temporary qmake wrapper for CI cross-architecture Qt builds.
 export QMAKEPATH="${qmakepath}\${QMAKEPATH:+:\${QMAKEPATH}}"
 export QMAKEFEATURES="${qmakefeatures}\${QMAKEFEATURES:+:\${QMAKEFEATURES}}"
 export QMAKEMODULES="${qmakemodules}\${QMAKEMODULES:+:\${QMAKEMODULES}}"
-exec -a "${wrapper_target}" "${real_qmake}" "\$@"
+exec -a "${wrapper_target}" "${qmake}" "\$@"
 EOF
-        chmod +x "${wrapper_target}"
-        echo "wrapped build qmake entrypoint: ${wrapper_target}"
-    done
+    chmod +x "${wrapper_target}"
+    echo "wrote build qmake wrapper: ${wrapper_target}"
 }
 
 restore_build_qmake_wrapper() {
     local qt_build="$1"
-    local qmake="${qt_build}/bin/qmake"
-    local compat_qmake="${qt_build}/bin/qmake.real"
-    local real_qmake="${qt_build}/bin/qmake.real.bin"
+    local wrapper_target
+    wrapper_target="$(qmake_wrapper_path_for "${qt_build}")"
+    rm -f "${wrapper_target}"
+}
 
-    if [[ -x "${real_qmake}" ]] \
-        && [[ -f "${qmake}" ]] \
-        && grep -q 'temporary qmake wrapper for CI cross-architecture Qt builds' "${qmake}"; then
-        rm -f "${qmake}" "${compat_qmake}"
-        mv "${real_qmake}" "${qmake}"
-        chmod +x "${qmake}"
-        echo "restored build qmake binary: ${qmake}"
-    fi
+patch_makefiles_to_use_qmake_wrapper() {
+    local qt_build="$1"
+    local wrapper_target
+    local makefile
+    local escaped_wrapper
+    wrapper_target="$(qmake_wrapper_path_for "${qt_build}")"
+    escaped_wrapper="$(printf '%s\n' "${wrapper_target}" | sed 's/[&/]/\\&/g')"
+
+    while IFS= read -r -d '' makefile; do
+        sed -i "s|^QMAKE[[:space:]]*=.*$|QMAKE = ${escaped_wrapper}|" "${makefile}"
+        echo "patched Makefile qmake entrypoint: ${makefile}"
+    done < <(find "${qt_build}" -type f -name Makefile -print0)
 }
 
 replace_prefix_tool_wrappers() {
@@ -851,13 +855,15 @@ build_qtbase() {
         configure_qmake_search_env "${source_dir}" "${qt_build}" "${PREFIX}"
         write_build_qmake_wrapper "${source_dir}" "${qt_build}" "${PREFIX}"
         write_prefix_tool_wrappers "${qt_build}" "${PREFIX}"
+        patch_makefiles_to_use_qmake_wrapper "${qt_build}"
         export QMAKEMODULES="${qt_build}/mkspecs/modules${QMAKEMODULES:+:${QMAKEMODULES}}"
+        export QMAKE="$(qmake_wrapper_path_for "${qt_build}")"
         echo "QMAKEMODULES=${QMAKEMODULES}"
         make -j"${JOBS}"
-        restore_build_qmake_wrapper "${qt_build}"
         make install
         replace_prefix_tool_wrappers "${qt_build}" "${PREFIX}"
         normalize_installed_bootstrap_private_pri "${source_dir}" "${PREFIX}"
+        restore_build_qmake_wrapper "${qt_build}"
     )
 }
 
