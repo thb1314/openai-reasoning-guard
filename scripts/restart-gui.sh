@@ -7,6 +7,7 @@ GUI_BIN="${GUI_BIN:-${PROJECT_DIR}/build/net-tunnel-gui}"
 LOG_FILE="${GUI_LOG:-${PROJECT_DIR}/build/net-tunnel-gui.restart.log}"
 PID_FILE="${GUI_PID_FILE:-${PROJECT_DIR}/build/net-tunnel-gui.pid}"
 DESKTOP_ID="${DESKTOP_ID:-openai-reasoning-guard}"
+APP_WM_CLASS="${APP_WM_CLASS:-openai-reasoning-guard-gui}"
 APP_NAME="${APP_NAME:-OpenAI Reasoning Guard}"
 ICON_SOURCE="${ICON_SOURCE:-${PROJECT_DIR}/assets/openai-reasoning-guard-icon-1024.png}"
 
@@ -35,21 +36,54 @@ install_dev_desktop_entry() {
     [[ -n "${HOME:-}" && -f "${ICON_SOURCE}" ]] || return 0
 
     local data_home="${XDG_DATA_HOME:-${HOME}/.local/share}"
-    local icon_dir="${data_home}/icons/hicolor/1024x1024/apps"
     local app_dir="${data_home}/applications"
-    mkdir -p "${icon_dir}" "${app_dir}"
-    cp -f "${ICON_SOURCE}" "${icon_dir}/${DESKTOP_ID}.png"
-    cat > "${app_dir}/${DESKTOP_ID}.desktop" <<EOF
+    local icon_root="${data_home}/icons/hicolor"
+    mkdir -p "${app_dir}"
+    install_dev_icon_sizes "${icon_root}" "${DESKTOP_ID}"
+    write_dev_desktop_file "${app_dir}/${DESKTOP_ID}.desktop" "${DESKTOP_ID}"
+    if [[ "${APP_WM_CLASS}" != "${DESKTOP_ID}" ]]; then
+        write_dev_desktop_file "${app_dir}/${APP_WM_CLASS}.desktop" "${DESKTOP_ID}"
+    fi
+    gtk-update-icon-cache -q -t -f "${icon_root}" >/dev/null 2>&1 || true
+    update-desktop-database "${app_dir}" >/dev/null 2>&1 || true
+}
+
+install_dev_icon_sizes() {
+    local icon_root="$1"
+    local icon_id="$2"
+    local size
+    for size in 16 24 32 48 64 128 256 512 1024; do
+        local icon_dir="${icon_root}/${size}x${size}/apps"
+        mkdir -p "${icon_dir}"
+        if ! python3 - "${ICON_SOURCE}" "${icon_dir}/${icon_id}.png" "${size}" <<'PY'
+import sys
+try:
+    from PIL import Image
+except Exception:
+    sys.exit(2)
+src, dst, size = sys.argv[1], sys.argv[2], int(sys.argv[3])
+Image.open(src).convert("RGBA").resize((size, size), Image.LANCZOS).save(dst)
+PY
+        then
+            cp -f "${ICON_SOURCE}" "${icon_dir}/${icon_id}.png"
+        fi
+    done
+}
+
+write_dev_desktop_file() {
+    local path="$1"
+    local icon_id="$2"
+    cat > "${path}" <<EOF
 [Desktop Entry]
 Type=Application
 Name=${APP_NAME}
 Comment=Local OpenAI-compatible reasoning guard proxy
 Exec=${GUI_BIN}
-Icon=${DESKTOP_ID}
+Icon=${icon_id}
 Terminal=false
 Categories=Network;Qt;
 StartupNotify=true
-StartupWMClass=openai-reasoning-guard-gui
+StartupWMClass=${APP_WM_CLASS}
 EOF
 }
 

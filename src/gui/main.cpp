@@ -44,7 +44,7 @@ int main(int argc, char **argv)
     QApplication::setApplicationName("openai-reasoning-guard-gui");
     QApplication::setApplicationVersion("0.1.0");
 #if defined(Q_OS_LINUX)
-    QGuiApplication::setDesktopFileName(QStringLiteral("openai-reasoning-guard"));
+    QGuiApplication::setDesktopFileName(QStringLiteral("openai-reasoning-guard-gui"));
 #endif
     QApplication::setWindowIcon(makeAppIcon());
     loadApplicationFonts();

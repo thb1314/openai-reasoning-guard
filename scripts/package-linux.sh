@@ -314,6 +314,26 @@ write_fallback_svg_icon() {
 EOF
 }
 
+write_png_icon_size() {
+    local source="$1"
+    local target="$2"
+    local size="$3"
+    mkdir -p "$(dirname -- "${target}")"
+    if python3 - "${source}" "${target}" "${size}" <<'PY'
+import sys
+try:
+    from PIL import Image
+except Exception:
+    sys.exit(2)
+src, dst, size = sys.argv[1], sys.argv[2], int(sys.argv[3])
+Image.open(src).convert("RGBA").resize((size, size), Image.LANCZOS).save(dst)
+PY
+    then
+        return
+    fi
+    cp -a "${source}" "${target}"
+}
+
 write_icon_assets() {
     local root="$1"
     local svg_dir="${root}/usr/share/icons/hicolor/scalable/apps"
@@ -322,8 +342,7 @@ write_icon_assets() {
     if [[ -f "${ICON_SOURCE}" ]]; then
         for size in 16 24 32 48 64 128 256 512 1024; do
             local png_dir="${root}/usr/share/icons/hicolor/${size}x${size}/apps"
-            mkdir -p "${png_dir}"
-            cp -a "${ICON_SOURCE}" "${png_dir}/${DESKTOP_ID}.png"
+            write_png_icon_size "${ICON_SOURCE}" "${png_dir}/${DESKTOP_ID}.png" "${size}"
         done
     else
         write_fallback_svg_icon "${svg_dir}/${DESKTOP_ID}.svg"
@@ -436,6 +455,9 @@ stage_common_root() {
     write_wrappers "${root}"
     write_icon_assets "${root}"
     write_desktop_file "${root}/usr/share/applications/${DESKTOP_ID}.desktop" "${GUI_COMMAND}"
+    if [[ "${GUI_COMMAND}" != "${DESKTOP_ID}" ]]; then
+        write_desktop_file "${root}/usr/share/applications/${GUI_COMMAND}.desktop" "${GUI_COMMAND}"
+    fi
 
     if command -v patchelf >/dev/null 2>&1; then
         patchelf --set-rpath '$ORIGIN/../qt/lib:$ORIGIN' "${root}${INSTALL_PREFIX}/bin/${GUI_COMMAND}.real"
