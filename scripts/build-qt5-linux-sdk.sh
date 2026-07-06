@@ -550,6 +550,7 @@ patch_qt_config_prefix_build_fallback() {
             continue
         fi
         if grep -q 'OpenAI Reasoning Guard qmake module enumeration fallback' "${qt_config_prf}" \
+            && grep -q 'OpenAI Reasoning Guard direct module load fallback' "${qt_config_prf}" \
             && grep -q 'OpenAI Reasoning Guard prefix-build qconfig fallback' "${qt_config_prf}"; then
             continue
         fi
@@ -557,7 +558,8 @@ patch_qt_config_prefix_build_fallback() {
         patched_qt_config="${qt_config_prf}.patched"
         awk -v qt_build="${qt_build}" \
             -v has_qconfig="$(grep -q 'OpenAI Reasoning Guard prefix-build qconfig fallback' "${qt_config_prf}" && echo 1 || echo 0)" \
-            -v has_module_fallback="$(grep -q 'OpenAI Reasoning Guard qmake module enumeration fallback' "${qt_config_prf}" && echo 1 || echo 0)" '
+            -v has_module_fallback="$(grep -q 'OpenAI Reasoning Guard qmake module enumeration fallback' "${qt_config_prf}" && echo 1 || echo 0)" \
+            -v has_direct_module_fallback="$(grep -q 'OpenAI Reasoning Guard direct module load fallback' "${qt_config_prf}" && echo 1 || echo 0)" '
             {
                 print
                 if (!has_qconfig && $0 == "QMAKE_QT_CONFIG = $$[QT_HOST_DATA/get]/mkspecs/qconfig.pri") {
@@ -570,6 +572,23 @@ patch_qt_config_prefix_build_fallback() {
                 }
                 if (!has_module_fallback && $0 ~ /^[[:space:]]*QMAKE_MODULE_PATH = \$\$unique\(QMAKE_MODULE_PATH\)$/) {
                     print "   QMAKE_MODULE_PATH += " qt_build "/mkspecs/modules"
+                }
+                if (!has_direct_module_fallback && $0 ~ /^[[:space:]]*unset\(QT_MODULE_BIN_BASE\)$/) {
+                    print "   # OpenAI Reasoning Guard direct module load fallback for CI Qt SDK builds."
+                    print "   org_modules = $$files(" qt_build "/mkspecs/modules/qt_*.pri)"
+                    print "   isEmpty(org_modules): org_modules = $$system(\"find " qt_build "/mkspecs/modules -maxdepth 1 -name \\047qt_*.pri\\047 -type f | sort\", lines, ec)"
+                    print "   for(mod, org_modules) {"
+                    print "      QT_MODULE_INCLUDE_BASE = " qt_build "/include"
+                    print "      QT_MODULE_LIB_BASE = " qt_build "/lib"
+                    print "      QT_MODULE_HOST_LIB_BASE = " qt_build "/lib"
+                    print "      QT_MODULE_BIN_BASE = " qt_build "/bin"
+                    print "      include($$mod)"
+                    print "   }"
+                    print "   unset(org_modules)"
+                    print "   unset(QT_MODULE_INCLUDE_BASE)"
+                    print "   unset(QT_MODULE_LIB_BASE)"
+                    print "   unset(QT_MODULE_HOST_LIB_BASE)"
+                    print "   unset(QT_MODULE_BIN_BASE)"
                 }
             }
         ' "${qt_config_prf}" > "${patched_qt_config}"
