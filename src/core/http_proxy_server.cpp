@@ -490,11 +490,13 @@ static RuleMatch buildRuleMatch(const ProxySettings &settings,
     if (match.mode == interceptRuleModeFinalAnswerOnlyHighXhigh()) {
         const QString effort = normalizeReasoningEffort(reasoningEffort);
         const bool isFinalOnly = finalAnswerOnly(structure);
-        match.matched = isFinalOnly && (effort == "high" || effort == "xhigh");
-        match.reasonForLog = QString("final_answer_only=%1 effort=%2 reasoning_tokens=%3")
+        const bool reasoningAllowed = reasoningTokens != 0;
+        match.matched = isFinalOnly && reasoningAllowed && (effort == "high" || effort == "xhigh");
+        match.reasonForLog = QString("final_answer_only=%1 effort=%2 reasoning_tokens=%3 zero_reasoning_excluded=%4")
             .arg(isFinalOnly ? QString("true") : QString("false"))
             .arg(effort.isEmpty() ? QString("unknown") : effort)
-            .arg(reasoningTokens >= 0 ? QString::number(reasoningTokens) : QString("null"));
+            .arg(reasoningTokens >= 0 ? QString::number(reasoningTokens) : QString("null"))
+            .arg(reasoningTokens == 0 ? QString("true") : QString("false"));
         return match;
     }
     match.matched = reasoningMatched(settings, reasoningTokens);
@@ -1093,11 +1095,19 @@ private slots:
             }
             const ProxySettings settings = server_->settings();
             const RuleMatch ruleMatch = buildRuleMatch(settings, reasoningTokens, requestKind_, requestReasoningEffort_, structure);
+            interceptExemptReason_ = ruleMatch.exemptReason;
             const bool matched = ruleMatch.matched;
             const QString streamKind = isStream ? QString("stream") : QString("non-stream");
             if (!streamInspectedRecorded_) {
                 server_->recordInspectedResponse(reasoningTokens, matched, streamKind);
                 streamInspectedRecorded_ = isStream;
+            }
+            if (!ruleMatch.exemptReason.isEmpty()) {
+                emit server_->logLine(QString("[pass] %1 path=%2 %3 action=intercept_exempt mode=%4")
+                    .arg(streamKind)
+                    .arg(path_)
+                    .arg(ruleMatch.reasonForLog)
+                    .arg(ruleMatch.mode));
             }
             const bool capacityRetryMatched = settings.retryUpstreamCapacityErrors &&
                 !isStream &&
@@ -1113,7 +1123,7 @@ private slots:
                     .arg(action));
                 if (canGuardRetry) {
                     ++retryAttempt_;
-                    server_->recordReasoningGuardRetry(method_, path_, retryAttempt_, settings.guardRetryAttempts, reasoningTokens);
+                    server_->recordReasoningGuardRetry(method_, path_, retryAttempt_, settings.guardRetryAttempts, reasoningTokens, requestKind_, interceptExemptReason_);
                     startUpstreamRequest();
                     return;
                 }
@@ -1134,7 +1144,7 @@ private slots:
                     .arg(ruleMatch.mode));
                 if (canGuardRetry) {
                     ++retryAttempt_;
-                    server_->recordReasoningGuardRetry(method_, path_, retryAttempt_, settings.guardRetryAttempts, reasoningTokens);
+                    server_->recordReasoningGuardRetry(method_, path_, retryAttempt_, settings.guardRetryAttempts, reasoningTokens, requestKind_, interceptExemptReason_);
                     startUpstreamRequest();
                     return;
                 }
@@ -1549,6 +1559,7 @@ private:
         responseTimedOut_ = false;
         responseLimitExceeded_ = false;
         upstreamTimedOut_ = false;
+        interceptExemptReason_.clear();
     }
 
     bool ensureUpstreamResponseState(QNetworkReply *reply)
@@ -1763,7 +1774,7 @@ private:
         abortCurrentReply(reply);
         if (canGuardRetry) {
             ++retryAttempt_;
-            server_->recordReasoningGuardRetry(method_, path_, retryAttempt_, settings.guardRetryAttempts, reasoningTokens);
+            server_->recordReasoningGuardRetry(method_, path_, retryAttempt_, settings.guardRetryAttempts, reasoningTokens, requestKind_, interceptExemptReason_);
             startUpstreamRequest();
             return true;
         }
@@ -1808,6 +1819,7 @@ private:
                                                    requestKind_,
                                                    requestReasoningEffort_,
                                                    streamStructure_);
+        interceptExemptReason_ = ruleMatch.exemptReason;
         if (ruleMatch.matched && streamObservedReasoning_ >= 0) {
             return handleStreamingReasoningObservation(reply, streamObservedReasoning_);
         }
@@ -1817,10 +1829,17 @@ private:
             streamInspectedRecorded_ = true;
         }
 
+        if (!ruleMatch.exemptReason.isEmpty()) {
+            emit server_->logLine(QString("[pass] stream path=%1 %2 action=intercept_exempt mode=%3")
+                .arg(path_)
+                .arg(ruleMatch.reasonForLog)
+                .arg(ruleMatch.mode));
+        }
         emit server_->logLine(QString("[pass] stream path=%1 reasoning_tokens=%2 action=terminal_pass_through")
             .arg(path_)
             .arg(streamObservedReasoning_ >= 0 ? QString::number(streamObservedReasoning_) : QString("null")));
         beginUpstreamPassThrough(reply);
+        responseWritten_ = true;
         socket_->disconnectFromHost();
         record(upstreamResponseStatus_ > 0 ? upstreamResponseStatus_ : 200,
                QString(),
@@ -1861,7 +1880,7 @@ private:
 
         if (canGuardRetry) {
             ++retryAttempt_;
-            server_->recordReasoningGuardRetry(method_, path_, retryAttempt_, settings.guardRetryAttempts, streamObservedReasoning_);
+            server_->recordReasoningGuardRetry(method_, path_, retryAttempt_, settings.guardRetryAttempts, streamObservedReasoning_, requestKind_, interceptExemptReason_);
             startUpstreamRequest();
             return true;
         }
@@ -1986,7 +2005,9 @@ private:
                               elapsed_.isValid() ? elapsed_.elapsed() : 0.0,
                               errorType,
                               errorMessage,
-                              reasoningTokens);
+                              reasoningTokens,
+                              requestKind_,
+                              interceptExemptReason_);
     }
 
     HttpProxyServer *server_;
@@ -2026,6 +2047,7 @@ private:
     QJsonObject requestJson_;
     QString requestKind_;
     QString requestReasoningEffort_;
+    QString interceptExemptReason_;
     bool requestIsStream_;
     bool proxyRequestRecorded_;
     bool responseWritten_;
@@ -2318,7 +2340,9 @@ void HttpProxyServer::recordResult(const QString &kind,
                                    double latencyMs,
                                    const QString &errorType,
                                    const QString &errorMessage,
-                                   int reasoningTokens)
+                                   int reasoningTokens,
+                                   const QString &requestKind,
+                                   const QString &interceptExemptReason)
 {
     QJsonObject result;
     result.insert("kind", kind);
@@ -2331,6 +2355,12 @@ void HttpProxyServer::recordResult(const QString &kind,
     result.insert("at", QDateTime::currentMSecsSinceEpoch() / 1000.0);
     if (reasoningTokens >= 0) {
         result.insert("reasoning_tokens", reasoningTokens);
+    }
+    if (!requestKind.isEmpty()) {
+        result.insert("request_kind", requestKind);
+    }
+    if (!interceptExemptReason.isEmpty()) {
+        result.insert("intercept_exempt_reason", interceptExemptReason);
     }
 
     lastResult_ = result;
@@ -2354,7 +2384,10 @@ void HttpProxyServer::recordResult(const QString &kind,
                 ++upstreamTimeoutTotal_;
             } else if (errorType == "request_body_limit_exceeded" ||
                        errorType == "response_buffer_limit_exceeded" ||
-                       errorType == "bad_request") {
+                       errorType == "bad_request" ||
+                       errorType == "stream_failed_event" ||
+                       errorType == "stream_incomplete_response" ||
+                       errorType == "stream_missing_usage") {
                 ++localProxyErrorTotal_;
             } else if (errorType == "reasoning_tokens_516" || errorType == "reasoning_guard_triggered") {
                 if (reasoningTokens == 516) {
@@ -2377,7 +2410,9 @@ void HttpProxyServer::recordReasoningGuardRetry(const QString &method,
                                                 const QString &path,
                                                 int attempt,
                                                 int maxRetries,
-                                                int reasoningTokens)
+                                                int reasoningTokens,
+                                                const QString &requestKind,
+                                                const QString &interceptExemptReason)
 {
     QJsonObject result;
     result.insert("kind", "retry");
@@ -2390,6 +2425,12 @@ void HttpProxyServer::recordReasoningGuardRetry(const QString &method,
     result.insert("retry_attempt", attempt);
     result.insert("retry_limit", maxRetries);
     result.insert("at", QDateTime::currentMSecsSinceEpoch() / 1000.0);
+    if (!requestKind.isEmpty()) {
+        result.insert("request_kind", requestKind);
+    }
+    if (!interceptExemptReason.isEmpty()) {
+        result.insert("intercept_exempt_reason", interceptExemptReason);
+    }
 
     ++guardRetryTotal_;
     if (reasoningTokens == 516) {

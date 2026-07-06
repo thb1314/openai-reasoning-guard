@@ -125,8 +125,13 @@ make_icns() {
     local source_png="$1"
     local out_icns="$2"
     local iconset="${WORK_DIR}/icon.iconset"
-    if [[ ! -f "${source_png}" ]] || ! command -v sips >/dev/null 2>&1 || ! command -v iconutil >/dev/null 2>&1; then
-        return 0
+    if [[ ! -f "${source_png}" ]]; then
+        echo "icon source missing: ${source_png}" >&2
+        exit 2
+    fi
+    if ! command -v sips >/dev/null 2>&1 || ! command -v iconutil >/dev/null 2>&1; then
+        echo "sips and iconutil are required to build the macOS app icon" >&2
+        exit 2
     fi
     rm -rf "${iconset}"
     mkdir -p "${iconset}"

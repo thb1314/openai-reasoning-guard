@@ -148,8 +148,23 @@ target_link_libraries(net-tunnel-core PUBLIC
     Qt5::Network
 )
 
+set(NET_TUNNEL_WINDOWS_ICON_RESOURCE)
+if(WIN32)
+    enable_language(RC)
+    set(NET_TUNNEL_APP_ICON_ICO "${CMAKE_CURRENT_SOURCE_DIR}/assets/openai-reasoning-guard.ico")
+    configure_file(
+        "${CMAKE_CURRENT_SOURCE_DIR}/assets/openai-reasoning-guard.rc.in"
+        "${CMAKE_CURRENT_BINARY_DIR}/openai-reasoning-guard.rc"
+        @ONLY
+    )
+    set(NET_TUNNEL_WINDOWS_ICON_RESOURCE
+        "${CMAKE_CURRENT_BINARY_DIR}/openai-reasoning-guard.rc"
+    )
+endif()
+
 add_executable(net-tunnel-cli
     src/cli/main.cpp
+    ${NET_TUNNEL_WINDOWS_ICON_RESOURCE}
 )
 net_tunnel_add_private_compile_options(net-tunnel-cli)
 target_link_libraries(net-tunnel-cli PRIVATE
@@ -162,6 +177,8 @@ add_executable(net-tunnel-gui
     src/gui/main.cpp
     src/gui/main_window.h
     src/gui/main_window.cpp
+    assets/app_resources.qrc
+    ${NET_TUNNEL_WINDOWS_ICON_RESOURCE}
     third_party/qui/form/quiwidget.h
     third_party/qui/form/quiwidget.cpp
     third_party/qui/qui_resources.qrc
@@ -178,6 +195,12 @@ target_link_libraries(net-tunnel-gui PRIVATE
     Qt5::Widgets
     Qt5::Network
 )
+if(WIN32)
+    set_target_properties(net-tunnel-gui PROPERTIES WIN32_EXECUTABLE TRUE)
+    if(TARGET Qt5::WinMain)
+        target_link_libraries(net-tunnel-gui PRIVATE Qt5::WinMain)
+    endif()
+endif()
 
 if(NET_TUNNEL_BUILD_TESTS)
     if(NOT TARGET Qt5::Test)

@@ -2,6 +2,7 @@
 
 #include <QtCore/QDateTime>
 #include <QtCore/QJsonObject>
+#include <QtCore/QSize>
 #include <QtWidgets/QAction>
 #include <QtGui/QClipboard>
 #include <QtGui/QIcon>
@@ -16,10 +17,11 @@
 #include <QtWidgets/QMenu>
 #include <QtWidgets/QMenuBar>
 #include <QtWidgets/QMessageBox>
-#include <QtWidgets/QScrollBar>
 #include <QtWidgets/QScrollArea>
 #include <QtWidgets/QSplitter>
 #include <QtWidgets/QStyle>
+#include <QtWidgets/QSystemTrayIcon>
+#include <QtWidgets/QToolBar>
 #include <QtWidgets/QVBoxLayout>
 
 using namespace net_tunnel;
@@ -49,6 +51,10 @@ MainWindow::MainWindow(QWidget *parent)
       languageMenu_(0),
       zhAction_(0),
       enAction_(0),
+      trayIcon_(0),
+      trayMenu_(0),
+      trayShowAction_(0),
+      trayQuitAction_(0),
       proxyState_(0),
       proxyUrl_(0),
       requestsMetric_(0),
@@ -87,6 +93,7 @@ MainWindow::MainWindow(QWidget *parent)
       logEdit_(0)
 {
     buildUi();
+    setupTrayIcon();
     applyStyle();
     loadSettingsToUi();
     retranslateUi();
@@ -106,6 +113,9 @@ MainWindow::MainWindow(QWidget *parent)
 
 MainWindow::~MainWindow()
 {
+    if (trayIcon_) {
+        trayIcon_->hide();
+    }
     proxy_.stop();
 }
 
@@ -116,7 +126,8 @@ void MainWindow::buildUi()
     setVisible(QUIWidget::BtnMenu, true);
     setBtnWidth(36);
     setTitleHeight(42);
-    setWindowIcon(QIcon(QStringLiteral(":/main.ico")));
+    setWindowIcon(QIcon(QStringLiteral(":/app-icon.png")));
+    setPixmap(QUIWidget::Lab_Ico, QStringLiteral(":/app-icon.png"), QSize(22, 22));
     setMinimumSize(980, 580);
 
     QWidget *root = new QWidget;
@@ -157,6 +168,28 @@ void MainWindow::buildUi()
     resize(normalWidth, normalHeight);
     QUIWidget::setFormInCenter(this);
     setWindowState(Qt::WindowNoState);
+}
+
+void MainWindow::setupTrayIcon()
+{
+    if (!QSystemTrayIcon::isSystemTrayAvailable()) {
+        return;
+    }
+
+    const QIcon appIcon(QStringLiteral(":/app-icon.png"));
+    trayMenu_ = new QMenu(this);
+    trayShowAction_ = trayMenu_->addAction(appIcon, QString());
+    trayShowAction_->setProperty("i18n_tooltip_key", "tray_show");
+    trayQuitAction_ = trayMenu_->addAction(style()->standardIcon(QStyle::SP_DialogCloseButton), QString());
+    trayQuitAction_->setProperty("i18n_tooltip_key", "tray_quit");
+
+    trayIcon_ = new QSystemTrayIcon(appIcon, this);
+    trayIcon_->setContextMenu(trayMenu_);
+    connect(trayShowAction_, SIGNAL(triggered()), this, SLOT(showFromTray()));
+    connect(trayQuitAction_, SIGNAL(triggered()), qApp, SLOT(quit()));
+    connect(trayIcon_, SIGNAL(activated(QSystemTrayIcon::ActivationReason)),
+            this, SLOT(handleTrayActivated(QSystemTrayIcon::ActivationReason)));
+    trayIcon_->show();
 }
 
 QMenuBar *MainWindow::buildMenuBar()
@@ -435,10 +468,34 @@ QWidget *MainWindow::buildLogPanel()
     box->setProperty("i18n_key", "group_console");
     QVBoxLayout *layout = new QVBoxLayout(box);
     layout->setContentsMargins(12, 16, 12, 12);
+
+    QHBoxLayout *content = new QHBoxLayout;
+    content->setContentsMargins(0, 0, 0, 0);
+    content->setSpacing(6);
+
     logEdit_ = new QPlainTextEdit(box);
     logEdit_->setReadOnly(true);
     logEdit_->setMaximumBlockCount(1200);
-    layout->addWidget(logEdit_);
+    content->addWidget(logEdit_, 1);
+
+    QToolBar *tools = new QToolBar(box);
+    tools->setObjectName("consoleToolBar");
+    tools->setOrientation(Qt::Vertical);
+    tools->setMovable(false);
+    tools->setFloatable(false);
+    tools->setIconSize(QSize(18, 18));
+    tools->setToolButtonStyle(Qt::ToolButtonIconOnly);
+
+    QAction *copyAction = tools->addAction(style()->standardIcon(QStyle::SP_FileDialogDetailedView), QString());
+    copyAction->setProperty("i18n_tooltip_key", "console_copy");
+    connect(copyAction, SIGNAL(triggered()), this, SLOT(copyConsole()));
+
+    QAction *clearAction = tools->addAction(style()->standardIcon(QStyle::SP_DialogDiscardButton), QString());
+    clearAction->setProperty("i18n_tooltip_key", "console_clear");
+    connect(clearAction, SIGNAL(triggered()), this, SLOT(clearConsole()));
+
+    content->addWidget(tools);
+    layout->addLayout(content);
     return box;
 }
 
@@ -473,6 +530,10 @@ void MainWindow::applyStyle()
         "QWidget#rootContent QPushButton:hover { background: #dff1fb; }"
         "QWidget#rootContent QPushButton:pressed { background: #b8dbf1; }"
         "QWidget#rootContent QPushButton:disabled { color: #8aabc1; background: #e1edf5; }"
+        "QWidget#rootContent QToolBar#consoleToolBar { background: #eef9ff; border: 0; spacing: 5px; }"
+        "QWidget#rootContent QToolBar#consoleToolBar QToolButton { background: #cde7f8; border: 1px solid #accfe6; border-radius: 4px; min-width: 28px; min-height: 28px; padding: 2px; color: #255b82; }"
+        "QWidget#rootContent QToolBar#consoleToolBar QToolButton:hover { background: #dff1fb; }"
+        "QWidget#rootContent QToolBar#consoleToolBar QToolButton:pressed { background: #b8dbf1; }"
         "QWidget#rootContent QLabel[state='ok'] { color: #16824a; font-weight: 600; }"
         "QWidget#rootContent QLabel[state='warn'] { color: #9b6a00; font-weight: 600; }"
         "QWidget#rootContent QLabel[state='bad'] { color: #b13b3b; font-weight: 600; }"
@@ -564,11 +625,17 @@ QString MainWindow::textFor(const QString &key) const
     if (key == "info_indented_line_template") return "  %1: %2";
     if (key == "info_indented_item_template") return "    %1";
     if (key == "group_console") return en ? "Console" : "控制台";
+    if (key == "console_copy") return en ? "Copy console" : "复制控制台";
+    if (key == "console_clear") return en ? "Clear console" : "清空控制台";
+    if (key == "tray_show") return en ? "Show window" : "显示主窗口";
+    if (key == "tray_quit") return en ? "Quit" : "退出";
+    if (key == "tray_tooltip") return en ? "OpenAI Reasoning Guard" : "OpenAI Reasoning Guard";
     if (key == "state_running") return en ? "Running" : "运行中";
     if (key == "state_stopped") return en ? "Stopped" : "已停止";
     if (key == "error_save_config_failed") return en ? "Save config failed: %1" : "保存配置失败: %1";
     if (key == "log_saved_config") return en ? "saved config: %1" : "已保存配置: %1";
     if (key == "log_proxy_url_copied") return en ? "proxy url copied" : "已复制代理地址";
+    if (key == "log_console_copied") return en ? "console copied to clipboard" : "已复制控制台内容";
     if (key == "log_config_path") return "config=%1";
     if (key == "log_error") return en ? "error: %1" : "错误: %1";
     return key;
@@ -613,6 +680,9 @@ void MainWindow::retranslateUi()
         enAction_->setText(textFor("lang_en"));
         enAction_->setChecked(currentLanguage() == "en");
     }
+    if (trayIcon_) {
+        trayIcon_->setToolTip(textFor("tray_tooltip"));
+    }
     if (upstreamTimeoutSpin_ && bufferTimeoutSpin_) {
         const QString suffix = currentLanguage() == "en" ? QString(" sec") : QString(" 秒");
         upstreamTimeoutSpin_->setSuffix(suffix);
@@ -635,17 +705,31 @@ void MainWindow::retranslateUi()
     for (int i = 0; i < widgets.size(); ++i) {
         QWidget *widget = widgets.at(i);
         const QString key = widget->property("i18n_key").toString();
-        if (key.isEmpty()) {
-            continue;
+        if (!key.isEmpty()) {
+            if (QGroupBox *group = qobject_cast<QGroupBox *>(widget)) {
+                group->setTitle(textFor(key));
+            } else if (QLabel *label = qobject_cast<QLabel *>(widget)) {
+                label->setText(textFor(key));
+            } else if (QPushButton *button = qobject_cast<QPushButton *>(widget)) {
+                button->setText(textFor(key));
+            } else if (QCheckBox *check = qobject_cast<QCheckBox *>(widget)) {
+                check->setText(textFor(key));
+            }
         }
-        if (QGroupBox *group = qobject_cast<QGroupBox *>(widget)) {
-            group->setTitle(textFor(key));
-        } else if (QLabel *label = qobject_cast<QLabel *>(widget)) {
-            label->setText(textFor(key));
-        } else if (QPushButton *button = qobject_cast<QPushButton *>(widget)) {
-            button->setText(textFor(key));
-        } else if (QCheckBox *check = qobject_cast<QCheckBox *>(widget)) {
-            check->setText(textFor(key));
+        const QString tooltipKey = widget->property("i18n_tooltip_key").toString();
+        if (!tooltipKey.isEmpty()) {
+            widget->setToolTip(textFor(tooltipKey));
+        }
+    }
+
+    const QList<QAction *> actions = findChildren<QAction *>();
+    for (int i = 0; i < actions.size(); ++i) {
+        QAction *action = actions.at(i);
+        const QString tooltipKey = action->property("i18n_tooltip_key").toString();
+        if (!tooltipKey.isEmpty()) {
+            const QString text = textFor(tooltipKey);
+            action->setText(text);
+            action->setToolTip(text);
         }
     }
     setProxyRunningUi(proxy_.isRunning());
@@ -674,6 +758,23 @@ void MainWindow::switchToChinese()
 void MainWindow::switchToEnglish()
 {
     setLanguage("en");
+}
+
+void MainWindow::showFromTray()
+{
+    show();
+    if (isMinimized()) {
+        showNormal();
+    }
+    raise();
+    activateWindow();
+}
+
+void MainWindow::handleTrayActivated(QSystemTrayIcon::ActivationReason reason)
+{
+    if (reason == QSystemTrayIcon::Trigger || reason == QSystemTrayIcon::DoubleClick) {
+        showFromTray();
+    }
 }
 
 void MainWindow::loadSettingsToUi()
@@ -811,6 +912,22 @@ void MainWindow::copyProxyUrl()
 {
     QApplication::clipboard()->setText(proxyUrl_->text());
     appendLog(textFor("log_proxy_url_copied"));
+}
+
+void MainWindow::copyConsole()
+{
+    if (!logEdit_) {
+        return;
+    }
+    QApplication::clipboard()->setText(logEdit_->toPlainText());
+    appendLog(textFor("log_console_copied"));
+}
+
+void MainWindow::clearConsole()
+{
+    if (logEdit_) {
+        logEdit_->clear();
+    }
 }
 
 void MainWindow::appendLog(const QString &line)

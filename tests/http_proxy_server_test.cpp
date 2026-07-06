@@ -71,6 +71,22 @@ public:
         mode_ = mode;
         responseBody_ = responseBody;
         streamChunks_ = streamChunks;
+        responseBodySequences_.clear();
+        streamChunkSequences_.clear();
+        lastPath_.clear();
+        lastBody_.clear();
+        lastAuthorization_.clear();
+        requestCount_ = 0;
+        disconnectedCount_ = 0;
+        return server_.listen(QHostAddress::LocalHost, 0);
+    }
+
+    bool startJsonResponses(const QList<QByteArray> &responseBodySequences)
+    {
+        mode_ = JsonResponse;
+        responseBody_.clear();
+        responseBodySequences_ = responseBodySequences;
+        streamChunks_.clear();
         streamChunkSequences_.clear();
         lastPath_.clear();
         lastBody_.clear();
@@ -84,6 +100,7 @@ public:
     {
         mode_ = StreamingSse;
         responseBody_.clear();
+        responseBodySequences_.clear();
         streamChunks_.clear();
         streamChunkSequences_ = streamChunkSequences;
         lastPath_.clear();
@@ -182,12 +199,17 @@ private slots:
                 emit requestReceived();
 
                 if (mode_ == LargeResponse || mode_ == JsonResponse) {
+                    QByteArray body = responseBody_;
+                    if (!responseBodySequences_.isEmpty()) {
+                        const int sequenceIndex = qMin(requestCount_ - 1, responseBodySequences_.size() - 1);
+                        body = responseBodySequences_.at(sequenceIndex);
+                    }
                     QByteArray response;
                     response += "HTTP/1.1 200 OK\r\n";
                     response += "Content-Type: application/json\r\n";
-                    response += "Content-Length: " + QByteArray::number(responseBody_.size()) + "\r\n";
+                    response += "Content-Length: " + QByteArray::number(body.size()) + "\r\n";
                     response += "Connection: close\r\n\r\n";
-                    response += responseBody_;
+                    response += body;
                     socket->write(response);
                     socket->flush();
                     socket->disconnectFromHost();
@@ -230,6 +252,7 @@ private:
     QTcpServer server_;
     Mode mode_;
     QByteArray responseBody_;
+    QList<QByteArray> responseBodySequences_;
     QList<QByteArray> streamChunks_;
     QList<QList<QByteArray> > streamChunkSequences_;
     QString lastPath_;
@@ -283,6 +306,9 @@ static QByteArray sendRequest(int port, const QByteArray &request, int timeoutMs
 }
 
 static QByteArray postRequestToPath(const QByteArray &path, const QByteArray &body);
+static QByteArray postRequestToPathWithHeaders(const QByteArray &path,
+                                               const QByteArray &body,
+                                               const QList<QPair<QByteArray, QByteArray> > &headers);
 
 static QByteArray postRequest(const QByteArray &body)
 {
@@ -291,10 +317,20 @@ static QByteArray postRequest(const QByteArray &body)
 
 static QByteArray postRequestToPath(const QByteArray &path, const QByteArray &body)
 {
+    return postRequestToPathWithHeaders(path, body, QList<QPair<QByteArray, QByteArray> >());
+}
+
+static QByteArray postRequestToPathWithHeaders(const QByteArray &path,
+                                               const QByteArray &body,
+                                               const QList<QPair<QByteArray, QByteArray> > &headers)
+{
     QByteArray request;
     request += "POST " + path + " HTTP/1.1\r\n";
     request += "Host: 127.0.0.1\r\n";
     request += "Content-Type: application/json\r\n";
+    for (int i = 0; i < headers.size(); ++i) {
+        request += headers.at(i).first + ": " + headers.at(i).second + "\r\n";
+    }
     request += "Content-Length: " + QByteArray::number(body.size()) + "\r\n";
     request += "\r\n";
     request += body;
@@ -692,6 +728,113 @@ private slots:
                  QString("reasoning_guard_triggered"));
     }
 
+    void finalAnswerOnlyHighXhighIgnoresZeroReasoning()
+    {
+        const QByteArray finalOnlyZeroBody =
+            "{\"usage\":{\"output_tokens_details\":{\"reasoning_tokens\":0}},"
+            "\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"visible final answer\"}]}]}";
+        TestUpstream upstream;
+        QVERIFY(upstream.start(TestUpstream::JsonResponse, finalOnlyZeroBody));
+
+        HttpProxyServer proxy;
+        ProxySettings settings = baseSettings(reserveFreePort(), upstream.port());
+        settings.interceptRuleMode = "final_answer_only_high_xhigh";
+        settings.guardRetryAttempts = 0;
+        QString error;
+        QVERIFY2(proxy.start(settings, &error), qPrintable(error));
+
+        const QByteArray response = sendRequest(settings.listenPort,
+                                                postRequest("{\"reasoning\":{\"effort\":\"high\"}}"),
+                                                2500);
+        QVERIFY(response.contains("200 OK"));
+        QVERIFY(!response.contains("reasoning_guard_triggered"));
+        QCOMPARE(upstream.requestCount(), 1);
+
+        const QJsonObject runtime = runtimeOf(&proxy);
+        QCOMPARE(runtime.value("matched_non_streaming_count").toInt(), 0);
+        QCOMPARE(runtime.value("failed_requests_total").toInt(), 0);
+        const QJsonObject lastResult = runtime.value("last_result").toObject();
+        QCOMPARE(lastResult.value("reasoning_tokens").toInt(), 0);
+        QCOMPARE(lastResult.value("request_kind").toString(), QString("normal"));
+        QVERIFY(!lastResult.contains("intercept_exempt_reason"));
+    }
+
+    void contextCompactionZeroExemptionIsRecordedAndLogged()
+    {
+        const QByteArray finalOnlyZeroBody =
+            "{\"usage\":{\"output_tokens_details\":{\"reasoning_tokens\":0}},"
+            "\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"compact summary\"}]}]}";
+        TestUpstream upstream;
+        QVERIFY(upstream.start(TestUpstream::JsonResponse, finalOnlyZeroBody));
+
+        QStringList logs;
+        HttpProxyServer proxy;
+        QObject::connect(&proxy, &HttpProxyServer::logLine, [&](const QString &line) {
+            logs.append(line);
+        });
+        ProxySettings settings = baseSettings(reserveFreePort(), upstream.port());
+        settings.interceptRuleMode = "final_answer_only_high_xhigh";
+        settings.guardRetryAttempts = 0;
+        QString error;
+        QVERIFY2(proxy.start(settings, &error), qPrintable(error));
+
+        QList<QPair<QByteArray, QByteArray> > headers;
+        headers.append(qMakePair(QByteArray("X-Codex-Beta-Features"), QByteArray("remote_compaction_v2")));
+        headers.append(qMakePair(QByteArray("X-Codex-Request-Kind"), QByteArray("context_compaction")));
+        const QByteArray response = sendRequest(settings.listenPort,
+                                                postRequestToPathWithHeaders("/v1/responses",
+                                                                             "{\"reasoning\":{\"effort\":\"xhigh\"}}",
+                                                                             headers),
+                                                2500);
+        QVERIFY(response.contains("200 OK"));
+        QVERIFY(!response.contains("reasoning_guard_triggered"));
+
+        const QJsonObject runtime = runtimeOf(&proxy);
+        const QJsonObject lastResult = runtime.value("last_result").toObject();
+        QCOMPARE(lastResult.value("request_kind").toString(), QString("context_compaction"));
+        QCOMPARE(lastResult.value("intercept_exempt_reason").toString(), QString("context_compaction"));
+        QCOMPARE(lastResult.value("reasoning_tokens").toInt(), 0);
+        QVERIFY(logs.join("\n").contains("intercept_exempt_reason=context_compaction"));
+    }
+
+    void remoteCompactionV2NormalTurnDoesNotBypassReasoningGuard()
+    {
+        const QByteArray guardedBody =
+            "{\"usage\":{\"output_tokens_details\":{\"reasoning_tokens\":516}}}";
+        const QByteArray cleanBody =
+            "{\"usage\":{\"output_tokens_details\":{\"reasoning_tokens\":128}}}";
+        QList<QByteArray> bodies;
+        bodies << guardedBody << cleanBody;
+        TestUpstream upstream;
+        QVERIFY(upstream.startJsonResponses(bodies));
+
+        HttpProxyServer proxy;
+        ProxySettings settings = baseSettings(reserveFreePort(), upstream.port());
+        settings.guardRetryAttempts = 1;
+        QString error;
+        QVERIFY2(proxy.start(settings, &error), qPrintable(error));
+
+        QList<QPair<QByteArray, QByteArray> > headers;
+        headers.append(qMakePair(QByteArray("X-Codex-Beta-Features"), QByteArray("remote_compaction_v2")));
+        headers.append(qMakePair(QByteArray("X-Codex-Turn-Metadata"), QByteArray("{\"request_kind\":\"turn\"}")));
+        const QByteArray response = sendRequest(settings.listenPort,
+                                                postRequestToPathWithHeaders("/v1/responses",
+                                                                             "{\"reasoning\":{\"effort\":\"xhigh\"}}",
+                                                                             headers),
+                                                3000);
+        QVERIFY(response.contains("200 OK"));
+        QVERIFY(response.contains("128"));
+        QCOMPARE(upstream.requestCount(), 2);
+
+        const QJsonObject runtime = runtimeOf(&proxy);
+        QCOMPARE(runtime.value("guard_retry_total").toInt(), 1);
+        QCOMPARE(runtime.value("matched_non_streaming_count").toInt(), 1);
+        const QJsonObject lastResult = runtime.value("last_result").toObject();
+        QCOMPARE(lastResult.value("request_kind").toString(), QString("normal"));
+        QCOMPARE(lastResult.value("reasoning_tokens").toInt(), 128);
+        QVERIFY(!lastResult.contains("intercept_exempt_reason"));
+    }
+
     void configSavePreservesProtocolProxyFields()
     {
         QTemporaryDir dir;
@@ -812,6 +955,8 @@ private slots:
         QVERIFY(response.contains("ok"));
         QVERIFY(!response.contains("stream_incomplete_response"));
         QCOMPARE(upstream.requestCount(), 2);
+        QTest::qWait(50);
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 25);
 
         const QJsonObject runtime = runtimeOf(&proxy);
         QCOMPARE(runtime.value("guard_retry_total").toInt(), 1);
@@ -842,6 +987,8 @@ private slots:
         const QJsonObject runtime = runtimeOf(&proxy);
         QCOMPARE(runtime.value("blocked_streaming_count").toInt(), 1);
         QCOMPARE(runtime.value("failed_requests_total").toInt(), 1);
+        QCOMPARE(runtime.value("local_proxy_error_total").toInt(), 1);
+        QCOMPARE(runtime.value("upstream_http_error_total").toInt(), 0);
         QCOMPARE(runtime.value("last_failure").toObject().value("error_type").toString(),
                  QString("stream_incomplete_response"));
     }

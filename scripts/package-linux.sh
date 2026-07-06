@@ -316,11 +316,15 @@ EOF
 
 write_icon_assets() {
     local root="$1"
-    local png_dir="${root}/usr/share/icons/hicolor/1024x1024/apps"
     local svg_dir="${root}/usr/share/icons/hicolor/scalable/apps"
-    mkdir -p "${png_dir}" "${svg_dir}"
+    local size
+    mkdir -p "${svg_dir}"
     if [[ -f "${ICON_SOURCE}" ]]; then
-        cp -a "${ICON_SOURCE}" "${png_dir}/${DESKTOP_ID}.png"
+        for size in 16 24 32 48 64 128 256 512 1024; do
+            local png_dir="${root}/usr/share/icons/hicolor/${size}x${size}/apps"
+            mkdir -p "${png_dir}"
+            cp -a "${ICON_SOURCE}" "${png_dir}/${DESKTOP_ID}.png"
+        done
     else
         write_fallback_svg_icon "${svg_dir}/${DESKTOP_ID}.svg"
     fi
@@ -328,7 +332,9 @@ write_icon_assets() {
 
 appimage_icon_path() {
     local appdir="$1"
-    if [[ -f "${appdir}/usr/share/icons/hicolor/1024x1024/apps/${DESKTOP_ID}.png" ]]; then
+    if [[ -f "${appdir}/usr/share/icons/hicolor/256x256/apps/${DESKTOP_ID}.png" ]]; then
+        printf '%s\n' "${appdir}/usr/share/icons/hicolor/256x256/apps/${DESKTOP_ID}.png"
+    elif [[ -f "${appdir}/usr/share/icons/hicolor/1024x1024/apps/${DESKTOP_ID}.png" ]]; then
         printf '%s\n' "${appdir}/usr/share/icons/hicolor/1024x1024/apps/${DESKTOP_ID}.png"
     else
         printf '%s\n' "${appdir}/usr/share/icons/hicolor/scalable/apps/${DESKTOP_ID}.svg"

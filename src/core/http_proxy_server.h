@@ -63,12 +63,16 @@ public:
                       double latencyMs,
                       const QString &errorType = QString(),
                       const QString &errorMessage = QString(),
-                      int reasoningTokens = -1);
+                      int reasoningTokens = -1,
+                      const QString &requestKind = QString(),
+                      const QString &interceptExemptReason = QString());
     void recordReasoningGuardRetry(const QString &method,
                                    const QString &path,
                                    int attempt,
                                    int maxRetries,
-                                   int reasoningTokens);
+                                   int reasoningTokens,
+                                   const QString &requestKind = QString(),
+                                   const QString &interceptExemptReason = QString());
     void recordInspectedResponse(int reasoningTokens,
                                  bool matched,
                                  const QString &streamKind);

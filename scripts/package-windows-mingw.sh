@@ -320,6 +320,9 @@ require_file "${BUILD_DIR}/net-tunnel-gui.exe"
 require_file "${BUILD_DIR}/net-tunnel-cli.exe"
 cp -f "${BUILD_DIR}/net-tunnel-gui.exe" "${stage_dir}/${PACKAGE_ID}-gui.exe"
 cp -f "${BUILD_DIR}/net-tunnel-cli.exe" "${stage_dir}/${PACKAGE_ID}-cli.exe"
+if [[ -f "${PROJECT_DIR}/assets/openai-reasoning-guard.ico" ]]; then
+    cp -f "${PROJECT_DIR}/assets/openai-reasoning-guard.ico" "${stage_dir}/${PACKAGE_ID}.ico"
+fi
 
 for file in config.example.json README.md LICENSE THIRD_PARTY_NOTICES.md; do
     if [[ -f "${PROJECT_DIR}/${file}" ]]; then
@@ -410,8 +413,8 @@ Section "Install"
   SetOutPath "\$INSTDIR"
   File /r "${stage_dir}/*"
   CreateDirectory "\$SMPROGRAMS\\${APP_NAME}"
-  CreateShortCut "\$SMPROGRAMS\\${APP_NAME}\\${APP_NAME}.lnk" "\$INSTDIR\\${PACKAGE_ID}-gui.exe"
-  CreateShortCut "\$SMPROGRAMS\\${APP_NAME}\\CLI.lnk" "\$INSTDIR\\${PACKAGE_ID}-cli.exe"
+  CreateShortCut "\$SMPROGRAMS\\${APP_NAME}\\${APP_NAME}.lnk" "\$INSTDIR\\${PACKAGE_ID}-gui.exe" "" "\$INSTDIR\\${PACKAGE_ID}-gui.exe" 0
+  CreateShortCut "\$SMPROGRAMS\\${APP_NAME}\\CLI.lnk" "\$INSTDIR\\${PACKAGE_ID}-cli.exe" "" "\$INSTDIR\\${PACKAGE_ID}-cli.exe" 0
   WriteUninstaller "\$INSTDIR\\Uninstall.exe"
 SectionEnd
 

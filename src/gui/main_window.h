@@ -11,6 +11,7 @@
 #include <QtWidgets/QPlainTextEdit>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QSpinBox>
+#include <QtWidgets/QSystemTrayIcon>
 
 class QAction;
 class QCheckBox;
@@ -31,6 +32,8 @@ private slots:
     void stopProxy();
     void saveSettings();
     void copyProxyUrl();
+    void copyConsole();
+    void clearConsole();
     void appendLog(const QString &line);
     void updateProxyStats();
     void handleProxyStarted(const QString &url);
@@ -38,9 +41,12 @@ private slots:
     void handleFailure(const QString &message);
     void switchToChinese();
     void switchToEnglish();
+    void showFromTray();
+    void handleTrayActivated(QSystemTrayIcon::ActivationReason reason);
 
 private:
     void buildUi();
+    void setupTrayIcon();
     QMenuBar *buildMenuBar();
     QWidget *buildHeader();
     QWidget *buildProxyPanel();
@@ -76,6 +82,10 @@ private:
     QMenu *languageMenu_;
     QAction *zhAction_;
     QAction *enAction_;
+    QSystemTrayIcon *trayIcon_;
+    QMenu *trayMenu_;
+    QAction *trayShowAction_;
+    QAction *trayQuitAction_;
 
     QLabel *proxyState_;
     QLabel *proxyUrl_;

@@ -109,6 +109,11 @@ New-Item -ItemType Directory -Force -Path (Join-Path $StageDir "fonts") | Out-Nu
 Copy-Item (Find-BuiltExe "net-tunnel-gui.exe") (Join-Path $StageDir "$PackageId-gui.exe")
 Copy-Item (Find-BuiltExe "net-tunnel-cli.exe") (Join-Path $StageDir "$PackageId-cli.exe")
 
+$IconFile = Join-Path $ProjectDir "assets/openai-reasoning-guard.ico"
+if (Test-Path $IconFile) {
+    Copy-Item $IconFile (Join-Path $StageDir "$PackageId.ico")
+}
+
 foreach ($file in @("config.example.json", "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md")) {
     $source = Join-Path $ProjectDir $file
     if (Test-Path $source) {

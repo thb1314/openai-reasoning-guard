@@ -7,6 +7,7 @@
 #include <QtCore/QFile>
 #include <QtGui/QFont>
 #include <QtGui/QFontDatabase>
+#include <QtGui/QIcon>
 #include <QtWidgets/QApplication>
 
 static void loadApplicationFonts()
@@ -41,6 +42,7 @@ int main(int argc, char **argv)
     QApplication app(argc, argv);
     QApplication::setApplicationName("openai-reasoning-guard-gui");
     QApplication::setApplicationVersion("0.1.0");
+    QApplication::setWindowIcon(QIcon(QStringLiteral(":/app-icon.png")));
     loadApplicationFonts();
     QUIWidget::setStyle(QUIWidget::Style_LightBlue);
 
