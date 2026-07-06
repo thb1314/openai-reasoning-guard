@@ -547,6 +547,10 @@ patch_qt_config_prefix_build_fallback() {
                 print "# OpenAI Reasoning Guard prefix-build qconfig fallback for CI Qt SDK builds."
                 print "!exists($$QMAKE_QT_CONFIG):exists(" qt_build "/mkspecs/qconfig.pri): QMAKE_QT_CONFIG = " qt_build "/mkspecs/qconfig.pri"
             }
+            if ($0 == "   mods = $$files($$dir/qt_*.pri)") {
+                print "   # OpenAI Reasoning Guard qmake module enumeration fallback for Docker/QEMU builds."
+                print "   isEmpty(mods): mods = $$system(\"find \" $$system_quote($$dir) \" -maxdepth 1 -name \\047qt_*.pri\\047 -type f | sort\", lines, ec)"
+            }
             if ($0 == "   QMAKE_MODULE_PATH = $$unique(QMAKE_MODULE_PATH)") {
                 print "   QMAKE_MODULE_PATH += " qt_build "/mkspecs/modules"
             }
