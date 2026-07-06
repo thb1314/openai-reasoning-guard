@@ -527,6 +527,22 @@ patch_qmake_use_pcre2_fallback() {
     }
 }
 
+# OpenAI Reasoning Guard harfbuzz fallback for CI cross-architecture Qt builds.
+!defined(QMAKE_LIBS_HARFBUZZ, var) {
+    contains(QMAKE_USE_PRIVATE, harfbuzz)|contains(QMAKE_USE, harfbuzz) {
+        QMAKE_INCDIR_HARFBUZZ = ${source_dir}/src/3rdparty/harfbuzz-ng/include
+        QMAKE_LIBS_HARFBUZZ = ${qt_build}/lib/libqtharfbuzz.a
+    }
+}
+
+# OpenAI Reasoning Guard freetype fallback for CI cross-architecture Qt builds.
+!defined(QMAKE_LIBS_FREETYPE, var) {
+    contains(QMAKE_USE_PRIVATE, freetype)|contains(QMAKE_USE, freetype) {
+        QMAKE_INCDIR_FREETYPE = ${source_dir}/src/3rdparty/freetype/include
+        QMAKE_LIBS_FREETYPE = ${qt_build}/lib/libqtfreetype.a
+    }
+}
+
 EOF
 )"
 
@@ -536,7 +552,9 @@ EOF
             continue
         fi
         if grep -q 'OpenAI Reasoning Guard pcre2 fallback' "${qmake_use_prf}" \
-            && grep -q 'OpenAI Reasoning Guard libpng fallback' "${qmake_use_prf}"; then
+            && grep -q 'OpenAI Reasoning Guard libpng fallback' "${qmake_use_prf}" \
+            && grep -q 'OpenAI Reasoning Guard harfbuzz fallback' "${qmake_use_prf}" \
+            && grep -q 'OpenAI Reasoning Guard freetype fallback' "${qmake_use_prf}"; then
             continue
         fi
 
