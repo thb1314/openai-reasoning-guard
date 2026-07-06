@@ -519,6 +519,14 @@ patch_qmake_use_pcre2_fallback() {
     }
 }
 
+# OpenAI Reasoning Guard libpng fallback for CI cross-architecture Qt builds.
+!defined(QMAKE_LIBS_LIBPNG, var) {
+    contains(QMAKE_USE_PRIVATE, libpng)|contains(QMAKE_USE, libpng) {
+        QMAKE_INCDIR_LIBPNG = ${source_dir}/src/3rdparty/libpng
+        QMAKE_LIBS_LIBPNG = ${qt_build}/lib/libqtlibpng.a
+    }
+}
+
 EOF
 )"
 
@@ -527,7 +535,8 @@ EOF
         if [[ ! -f "${qmake_use_prf}" ]]; then
             continue
         fi
-        if grep -q 'OpenAI Reasoning Guard pcre2 fallback' "${qmake_use_prf}"; then
+        if grep -q 'OpenAI Reasoning Guard pcre2 fallback' "${qmake_use_prf}" \
+            && grep -q 'OpenAI Reasoning Guard libpng fallback' "${qmake_use_prf}"; then
             continue
         fi
 
@@ -537,7 +546,7 @@ EOF
             cat "${qmake_use_prf}"
         } > "${patched_qmake_use}"
         mv "${patched_qmake_use}" "${qmake_use_prf}"
-        echo "patched qmake_use.prf pcre2 fallback: ${qmake_use_prf}"
+        echo "patched qmake_use.prf library fallbacks: ${qmake_use_prf}"
     done
 }
 
