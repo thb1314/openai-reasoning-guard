@@ -34,13 +34,15 @@ MACOS_STAPLE="${MACOS_STAPLE:-1}"
 MACOS_DMG_STYLE="${MACOS_DMG_STYLE:-1}"
 MACOS_DMG_STYLE_STRICT="${MACOS_DMG_STYLE_STRICT:-0}"
 MACOS_DMG_BACKGROUND="${MACOS_DMG_BACKGROUND:-1}"
+MACOS_KEEP_DMG="${MACOS_KEEP_DMG:-0}"
 CLEAN=0
 
 usage() {
     cat <<EOF
 Usage: $(basename "$0") [--arch x86_64|aarch64] [--skip-build] [--clean]
 
-Build a macOS dmg for ${PACKAGE_ID}.
+Build a macOS sudo shell installer for ${PACKAGE_ID}. The installer embeds a
+temporary dmg payload and installs the app into /Applications.
 
 Environment overrides:
   QT_ROOT=/path/to/qt5
@@ -63,6 +65,7 @@ Environment overrides:
   MACOS_DMG_STYLE=1
   MACOS_DMG_STYLE_STRICT=0
   MACOS_DMG_BACKGROUND=1
+  MACOS_KEEP_DMG=0                  # set to 1 to also copy the inner dmg to DIST_DIR
 EOF
 }
 
@@ -601,11 +604,147 @@ notarize_dmg() {
     fi
 }
 
+write_shell_installer() {
+    local dmg_path="$1"
+    local out="$2"
+    local payload_name="${PACKAGE_ID}-macos-${ARCH}-${VERSION}.dmg"
+
+    require_tool base64
+    rm -f "${out}"
+    {
+        printf '%s\n' '#!/usr/bin/env bash'
+        printf '%s\n' 'set -euo pipefail'
+        printf 'PACKAGE_ID=%q\n' "${PACKAGE_ID}"
+        printf 'APP_NAME=%q\n' "${APP_NAME}"
+        printf 'CLI_COMMAND=%q\n' "${CLI_COMMAND}"
+        printf 'PAYLOAD_NAME=%q\n' "${payload_name}"
+        cat <<'INSTALLER'
+
+die() {
+    echo "error: $*" >&2
+    exit 1
+}
+
+require_tool() {
+    command -v "$1" >/dev/null 2>&1 || die "required tool not found: $1"
+}
+
+decode_payload() {
+    local payload_line="$1"
+    local out_dmg="$2"
+    if tail -n +"${payload_line}" "$0" | base64 -D > "${out_dmg}" 2>/dev/null; then
+        return 0
+    fi
+    if tail -n +"${payload_line}" "$0" | base64 -d > "${out_dmg}" 2>/dev/null; then
+        return 0
+    fi
+    if tail -n +"${payload_line}" "$0" | base64 --decode > "${out_dmg}" 2>/dev/null; then
+        return 0
+    fi
+    return 1
+}
+
+if [[ "$(uname -s)" != "Darwin" ]]; then
+    die "this installer must be run on macOS"
+fi
+
+require_tool awk
+require_tool base64
+require_tool hdiutil
+require_tool tail
+
+if [[ "${EUID}" -eq 0 ]]; then
+    run_privileged() {
+        "$@"
+    }
+else
+    require_tool sudo
+    echo "This installer needs sudo permission to install ${APP_NAME} into /Applications."
+    sudo -v
+    run_privileged() {
+        sudo "$@"
+    }
+fi
+
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/${PACKAGE_ID}.install.XXXXXX")"
+DMG_PATH="${TMP_DIR}/${PAYLOAD_NAME}"
+MOUNT_DIR=""
+DETACH_TARGET=""
+
+cleanup() {
+    if [[ -n "${DETACH_TARGET}" ]]; then
+        hdiutil detach "${DETACH_TARGET}" >/dev/null 2>&1 || true
+    elif [[ -n "${MOUNT_DIR}" && -d "${MOUNT_DIR}" ]]; then
+        hdiutil detach "${MOUNT_DIR}" >/dev/null 2>&1 || true
+    fi
+    rm -rf "${TMP_DIR}"
+}
+trap cleanup EXIT
+
+PAYLOAD_LINE="$(awk 'BEGIN { line = 0 } /^__DMG_PAYLOAD_BELOW__$/ { line = NR + 1; exit } END { if (line > 0) print line; else exit 1 }' "$0")" || die "embedded dmg payload marker missing"
+decode_payload "${PAYLOAD_LINE}" "${DMG_PATH}" || die "failed to decode embedded dmg payload"
+
+ATTACH_OUTPUT="$(hdiutil attach -nobrowse -noverify "${DMG_PATH}")"
+DETACH_TARGET="$(printf '%s\n' "${ATTACH_OUTPUT}" | awk '/\/Volumes\// { print $1; exit }')"
+MOUNT_DIR="$(printf '%s\n' "${ATTACH_OUTPUT}" | awk '/\/Volumes\// { for (i = 1; i <= NF; i++) if ($i ~ /^\/Volumes\//) { print substr($0, index($0, $i)); exit } }')"
+if [[ -z "${MOUNT_DIR}" || ! -d "${MOUNT_DIR}" ]]; then
+    MOUNT_DIR="/Volumes/${APP_NAME}"
+fi
+[[ -d "${MOUNT_DIR}" ]] || die "unable to find mounted dmg volume"
+
+SOURCE_APP="${MOUNT_DIR}/${APP_NAME}.app"
+if [[ ! -d "${SOURCE_APP}" ]]; then
+    SOURCE_APP=""
+    for candidate in "${MOUNT_DIR}"/*.app; do
+        if [[ -d "${candidate}" ]]; then
+            SOURCE_APP="${candidate}"
+            break
+        fi
+    done
+fi
+[[ -d "${SOURCE_APP}" ]] || die "unable to find app bundle in mounted dmg"
+
+TARGET_APP="/Applications/${APP_NAME}.app"
+echo "Installing ${APP_NAME} to ${TARGET_APP}"
+run_privileged /bin/mkdir -p /Applications
+run_privileged /bin/rm -rf "${TARGET_APP}"
+run_privileged /usr/bin/ditto "${SOURCE_APP}" "${TARGET_APP}"
+run_privileged /usr/bin/xattr -dr com.apple.quarantine "${TARGET_APP}" 2>/dev/null || true
+run_privileged /usr/sbin/chown -R root:wheel "${TARGET_APP}" 2>/dev/null || true
+
+CLI_SOURCE="${TARGET_APP}/Contents/Resources/bin/${CLI_COMMAND}"
+if [[ "${INSTALL_CLI_SYMLINK:-1}" == "1" && -x "${CLI_SOURCE}" ]]; then
+    WRAPPER="${TMP_DIR}/${CLI_COMMAND}"
+    cat > "${WRAPPER}" <<WRAPPER_EOF
+#!/usr/bin/env bash
+exec "${CLI_SOURCE}" "\$@"
+WRAPPER_EOF
+    run_privileged /bin/mkdir -p /usr/local/bin
+    run_privileged /usr/bin/install -m 0755 "${WRAPPER}" "/usr/local/bin/${CLI_COMMAND}"
+    echo "Installed CLI wrapper: /usr/local/bin/${CLI_COMMAND}"
+fi
+
+echo "Installed ${APP_NAME}."
+if [[ "${OPEN_AFTER_INSTALL:-1}" == "1" ]]; then
+    /usr/bin/open "${TARGET_APP}" >/dev/null 2>&1 || true
+fi
+exit 0
+
+__DMG_PAYLOAD_BELOW__
+INSTALLER
+        base64 < "${dmg_path}"
+    } > "${out}"
+    chmod +x "${out}"
+    echo "Built macOS shell installer: ${out}"
+}
+
 build_dmg() {
     require_tool hdiutil
     local app_bundle="${WORK_DIR}/${APP_NAME}.app"
     local dmg_root="${WORK_DIR}/dmgroot"
-    local out="${DIST_DIR}/${PACKAGE_ID}-macos-${ARCH}-${VERSION}.dmg"
+    local dmg_out="${WORK_DIR}/${PACKAGE_ID}-macos-${ARCH}-${VERSION}.dmg"
+    local dmg_dist="${DIST_DIR}/${PACKAGE_ID}-macos-${ARCH}-${VERSION}.dmg"
+    local installer_out="${DIST_DIR}/${PACKAGE_ID}-macos-${ARCH}-${VERSION}-installer.sh"
 
     stage_app_bundle "${app_bundle}"
     deploy_qt "${app_bundle}"
@@ -632,9 +771,14 @@ EOF
     write_dmg_background "${dmg_root}/.background/background.png"
     ln -s /Applications "${dmg_root}/Applications"
 
-    create_drag_install_dmg "${dmg_root}" "${out}"
-    notarize_dmg "${out}"
-    echo "Built dmg: ${out}"
+    rm -f "${dmg_out}" "${dmg_dist}" "${installer_out}"
+    create_drag_install_dmg "${dmg_root}" "${dmg_out}"
+    notarize_dmg "${dmg_out}"
+    write_shell_installer "${dmg_out}" "${installer_out}"
+    if [[ "${MACOS_KEEP_DMG}" == "1" ]]; then
+        cp -a "${dmg_out}" "${dmg_dist}"
+        echo "Built macOS dmg: ${dmg_dist}"
+    fi
 }
 
 if [[ "${SKIP_BUILD}" != "1" ]]; then

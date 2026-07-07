@@ -77,8 +77,8 @@ expected_assets=(
     "${PACKAGE_ID}-windows-x86_32-${VERSION}-portable.zip"
     "${PACKAGE_ID}-windows-arm64-${VERSION}-installer.exe"
     "${PACKAGE_ID}-windows-arm64-${VERSION}-portable.zip"
-    "${PACKAGE_ID}-macos-x86_64-${VERSION}.dmg"
-    "${PACKAGE_ID}-macos-aarch64-${VERSION}.dmg"
+    "${PACKAGE_ID}-macos-x86_64-${VERSION}-installer.sh"
+    "${PACKAGE_ID}-macos-aarch64-${VERSION}-installer.sh"
 )
 
 mapfile -t actual_assets < <(

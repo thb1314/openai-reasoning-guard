@@ -537,7 +537,7 @@ jobs:
           gh release upload "${RELEASE_TAG}" "${files[@]}" -R "${GITHUB_REPOSITORY}" --clobber
 
   macos:
-    name: macOS ${{ matrix.arch }} dmg
+    name: macOS ${{ matrix.arch }} shell installer
     needs: plan
     if: needs.plan.outputs.macos_enabled == 'true'
     runs-on: ${{ matrix.runner }}
@@ -684,7 +684,7 @@ jobs:
           cmake --build "${build_dir}" -j"$(sysctl -n hw.ncpu)"
           ctest --test-dir "${build_dir}" --output-on-failure
 
-      - name: Build macOS dmg
+      - name: Build macOS shell installer
         if: env.BUILD_TARGET == 'all' || env.BUILD_TARGET == format('macos-{0}', matrix.arch)
         shell: bash
         run: |
@@ -700,15 +700,15 @@ jobs:
             --skip-build \
             "${clean_arg[@]}"
 
-      - name: Upload macOS dmg
+      - name: Upload macOS shell installer
         if: env.BUILD_TARGET == 'all' || env.BUILD_TARGET == format('macos-{0}', matrix.arch)
         uses: actions/upload-artifact@v4
         with:
           name: openai-reasoning-guard-macos-${{ matrix.arch }}
-          path: dist/*macos-${{ matrix.arch }}*.dmg
+          path: dist/*macos-${{ matrix.arch }}*-installer.sh
           if-no-files-found: error
 
-      - name: Publish macOS dmg to GitHub Release
+      - name: Publish macOS shell installer to GitHub Release
         if: (env.BUILD_TARGET == 'all' || env.BUILD_TARGET == format('macos-{0}', matrix.arch)) && (github.event_name == 'push' || inputs.publish_release == 'true')
         shell: bash
         env:
@@ -718,10 +718,10 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
-          files=(dist/*macos-${{ matrix.arch }}*.dmg)
+          files=(dist/*macos-${{ matrix.arch }}*-installer.sh)
           shopt -u nullglob
           if ((${#files[@]} == 0)); then
-            echo "No macOS dmg files found for release upload" >&2
+            echo "No macOS shell installer files found for release upload" >&2
             exit 2
           fi
           if ! gh release view "${RELEASE_TAG}" -R "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
@@ -736,4 +736,8 @@ jobs:
             fi
             gh release create "${create_args[@]}" || gh release view "${RELEASE_TAG}" -R "${GITHUB_REPOSITORY}" >/dev/null
           fi
+          version="$(sed -n 's/^project([^ ]* VERSION \([^ ]*\).*/\1/p' CMakeLists.txt)"
+          version="${version:-0.1.0}"
+          gh release delete-asset "${RELEASE_TAG}" "openai-reasoning-guard-macos-${{ matrix.arch }}-${version}.dmg" \
+            -R "${GITHUB_REPOSITORY}" -y >/dev/null 2>&1 || true
           gh release upload "${RELEASE_TAG}" "${files[@]}" -R "${GITHUB_REPOSITORY}" --clobber
