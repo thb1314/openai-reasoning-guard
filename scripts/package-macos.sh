@@ -260,16 +260,17 @@ sign_app_bundle() {
     while IFS= read -r path; do
         sign_path "${path}"
     done < <(find \
-        "${app_bundle}/Contents/MacOS" \
-        "${app_bundle}/Contents/Resources/bin" \
         "${app_bundle}/Contents/PlugIns" \
         "${app_bundle}/Contents/Frameworks" \
-        -type f \( -perm -111 -o -name '*.dylib' -o -name '*.so' \) \
+        -type f \( -name '*.dylib' -o -name '*.so' \) \
         -print 2>/dev/null)
 
     while IFS= read -r path; do
         sign_path "${path}"
     done < <(find "${app_bundle}/Contents/Frameworks" -depth -type d -name '*.framework' -print 2>/dev/null)
+
+    sign_path "${app_bundle}/Contents/Resources/bin/${CLI_COMMAND}"
+    sign_path "${app_bundle}/Contents/MacOS/${GUI_COMMAND}"
 
     local bundle_args=(--force --sign "${MACOS_CODESIGN_IDENTITY}")
     if [[ -n "${MACOS_CODESIGN_TIMESTAMP}" ]]; then
