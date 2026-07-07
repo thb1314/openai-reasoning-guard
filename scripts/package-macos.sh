@@ -31,6 +31,9 @@ MACOS_NOTARY_APPLE_ID="${MACOS_NOTARY_APPLE_ID:-}"
 MACOS_NOTARY_TEAM_ID="${MACOS_NOTARY_TEAM_ID:-}"
 MACOS_NOTARY_PASSWORD="${MACOS_NOTARY_PASSWORD:-}"
 MACOS_STAPLE="${MACOS_STAPLE:-1}"
+MACOS_DMG_STYLE="${MACOS_DMG_STYLE:-1}"
+MACOS_DMG_STYLE_STRICT="${MACOS_DMG_STYLE_STRICT:-0}"
+MACOS_DMG_BACKGROUND="${MACOS_DMG_BACKGROUND:-1}"
 CLEAN=0
 
 usage() {
@@ -57,6 +60,9 @@ Environment overrides:
   MACOS_NOTARY_APPLE_ID=apple@example.com
   MACOS_NOTARY_TEAM_ID=TEAMID
   MACOS_NOTARY_PASSWORD=app-specific-password
+  MACOS_DMG_STYLE=1
+  MACOS_DMG_STYLE_STRICT=0
+  MACOS_DMG_BACKGROUND=1
 EOF
 }
 
@@ -355,6 +361,206 @@ helper is not needed.
 EOF
 }
 
+write_dmg_background() {
+    local out_png="$1"
+    if [[ "${MACOS_DMG_BACKGROUND}" != "1" ]]; then
+        return
+    fi
+    if ! command -v swift >/dev/null 2>&1; then
+        echo "swift not found; skipping dmg background image generation"
+        return
+    fi
+
+    local swift_source="${WORK_DIR}/dmg-background.swift"
+    cat > "${swift_source}" <<'SWIFT'
+import AppKit
+import Darwin
+import Foundation
+
+let outPath = ProcessInfo.processInfo.environment["DMG_BACKGROUND_PATH"] ?? ""
+let appName = ProcessInfo.processInfo.environment["DMG_BACKGROUND_APP_NAME"] ?? "Application"
+guard !outPath.isEmpty else {
+    fputs("DMG_BACKGROUND_PATH is empty\n", stderr)
+    exit(2)
+}
+
+let width = 660.0
+let height = 430.0
+let image = NSImage(size: NSSize(width: width, height: height))
+image.lockFocus()
+
+NSColor(calibratedRed: 0.96, green: 0.97, blue: 0.98, alpha: 1.0).setFill()
+NSBezierPath(rect: NSRect(x: 0, y: 0, width: width, height: height)).fill()
+
+NSColor(calibratedRed: 0.88, green: 0.90, blue: 0.93, alpha: 1.0).setStroke()
+let arrow = NSBezierPath()
+arrow.lineWidth = 5
+arrow.move(to: NSPoint(x: 250, y: 240))
+arrow.line(to: NSPoint(x: 410, y: 240))
+arrow.line(to: NSPoint(x: 388, y: 260))
+arrow.move(to: NSPoint(x: 410, y: 240))
+arrow.line(to: NSPoint(x: 388, y: 220))
+arrow.stroke()
+
+let paragraph = NSMutableParagraphStyle()
+paragraph.alignment = .center
+let titleAttrs: [NSAttributedString.Key: Any] = [
+    .font: NSFont.systemFont(ofSize: 22, weight: .semibold),
+    .foregroundColor: NSColor(calibratedRed: 0.18, green: 0.20, blue: 0.23, alpha: 1.0),
+    .paragraphStyle: paragraph
+]
+let hintAttrs: [NSAttributedString.Key: Any] = [
+    .font: NSFont.systemFont(ofSize: 13, weight: .regular),
+    .foregroundColor: NSColor(calibratedRed: 0.38, green: 0.41, blue: 0.45, alpha: 1.0),
+    .paragraphStyle: paragraph
+]
+
+("Drag \(appName) to Applications" as NSString).draw(
+    in: NSRect(x: 0, y: 292, width: width, height: 30),
+    withAttributes: titleAttrs
+)
+("Unsigned builds can use First Run after copying." as NSString).draw(
+    in: NSRect(x: 0, y: 36, width: width, height: 20),
+    withAttributes: hintAttrs
+)
+
+image.unlockFocus()
+
+guard let tiff = image.tiffRepresentation,
+      let rep = NSBitmapImageRep(data: tiff),
+      let png = rep.representation(using: .png, properties: [:]) else {
+    fputs("failed to render dmg background\n", stderr)
+    exit(2)
+}
+
+do {
+    try png.write(to: URL(fileURLWithPath: outPath))
+} catch {
+    fputs("failed to write dmg background: \(error)\n", stderr)
+    exit(2)
+}
+SWIFT
+
+    DMG_BACKGROUND_PATH="${out_png}" \
+    DMG_BACKGROUND_APP_NAME="${APP_NAME}" \
+        swift "${swift_source}" >/dev/null
+}
+
+apple_script_escape() {
+    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+style_dmg_volume() {
+    local mount_dir="$1"
+    if [[ "${MACOS_DMG_STYLE}" != "1" ]]; then
+        return
+    fi
+    if ! command -v osascript >/dev/null 2>&1; then
+        echo "osascript not found; skipping dmg Finder layout"
+        return
+    fi
+
+    local mount_dir_escaped
+    local app_item_escaped
+    local background_path_escaped
+    mount_dir_escaped="$(apple_script_escape "${mount_dir}")"
+    app_item_escaped="$(apple_script_escape "${APP_NAME}.app")"
+    background_path_escaped="$(apple_script_escape "${mount_dir}/.background/background.png")"
+
+    local applescript="${WORK_DIR}/style-dmg.applescript"
+    cat > "${applescript}" <<EOF
+with timeout of 30 seconds
+  tell application "Finder"
+    set dmgFolder to POSIX file "${mount_dir_escaped}" as alias
+    open dmgFolder
+    delay 1
+
+    set dmgWindow to container window of dmgFolder
+    set current view of dmgWindow to icon view
+    set toolbar visible of dmgWindow to false
+    set statusbar visible of dmgWindow to false
+    set the bounds of dmgWindow to {120, 120, 780, 550}
+
+    set viewOptions to the icon view options of dmgWindow
+    set arrangement of viewOptions to not arranged
+    set icon size of viewOptions to 96
+    try
+      set background picture of viewOptions to POSIX file "${background_path_escaped}"
+    end try
+
+    if exists item "${app_item_escaped}" of dmgFolder then
+      set position of item "${app_item_escaped}" of dmgFolder to {170, 190}
+    end if
+    if exists item "Applications" of dmgFolder then
+      set position of item "Applications" of dmgFolder to {490, 190}
+    end if
+    if exists item "OpenAI Reasoning Guard - First Run.command" of dmgFolder then
+      set position of item "OpenAI Reasoning Guard - First Run.command" of dmgFolder to {170, 360}
+    end if
+    if exists item "README-macOS-Install.txt" of dmgFolder then
+      set position of item "README-macOS-Install.txt" of dmgFolder to {490, 360}
+    end if
+    if exists item "bin" of dmgFolder then
+      set position of item "bin" of dmgFolder to {80, 360}
+    end if
+
+    update without registering applications
+    close dmgWindow
+  end tell
+end timeout
+EOF
+
+    if ! osascript "${applescript}"; then
+        if [[ "${MACOS_DMG_STYLE_STRICT}" == "1" ]]; then
+            echo "failed to apply dmg Finder layout" >&2
+            return 2
+        fi
+        echo "failed to apply dmg Finder layout; continuing because MACOS_DMG_STYLE_STRICT=0" >&2
+    fi
+}
+
+create_drag_install_dmg() {
+    local dmg_root="$1"
+    local out="$2"
+    local rw_dmg="${WORK_DIR}/${PACKAGE_ID}-macos-${ARCH}-${VERSION}.rw.dmg"
+    local attach_output
+    local mount_dir
+    local style_status=0
+
+    rm -f "${rw_dmg}" "${out}"
+    hdiutil create \
+        -volname "${APP_NAME}" \
+        -srcfolder "${dmg_root}" \
+        -ov \
+        -format UDRW \
+        -fs HFS+ \
+        "${rw_dmg}"
+
+    attach_output="$(hdiutil attach -readwrite -noverify -noautoopen "${rw_dmg}")"
+    mount_dir="$(printf '%s\n' "${attach_output}" | sed -n 's#^/dev/[^[:space:]]*[[:space:]].*\(/Volumes/.*\)$#\1#p' | tail -n 1)"
+    if [[ -z "${mount_dir}" || ! -d "${mount_dir}" ]]; then
+        mount_dir="/Volumes/${APP_NAME}"
+    fi
+    if [[ ! -d "${mount_dir}" ]]; then
+        echo "unable to find mounted dmg volume" >&2
+        printf '%s\n' "${attach_output}" >&2
+        exit 2
+    fi
+
+    style_dmg_volume "${mount_dir}" || style_status=$?
+    sync
+    hdiutil detach "${mount_dir}" || {
+        sleep 2
+        hdiutil detach "${mount_dir}" -force
+    }
+    if ((style_status != 0)); then
+        exit "${style_status}"
+    fi
+
+    hdiutil convert "${rw_dmg}" -format UDZO -imagekey zlib-level=9 -o "${out}"
+    rm -f "${rw_dmg}"
+}
+
 notarize_dmg() {
     local dmg_path="$1"
     if [[ "${MACOS_NOTARIZE}" != "1" ]]; then
@@ -396,7 +602,7 @@ build_dmg() {
     sign_app_bundle "${app_bundle}"
 
     rm -rf "${dmg_root}"
-    mkdir -p "${dmg_root}/bin"
+    mkdir -p "${dmg_root}/bin" "${dmg_root}/.background"
     cp -R "${app_bundle}" "${dmg_root}/"
 
     cat > "${dmg_root}/bin/${CLI_COMMAND}" <<EOF
@@ -413,15 +619,17 @@ EOF
         fi
     done
     write_first_run_helper "${dmg_root}"
+    write_dmg_background "${dmg_root}/.background/background.png"
     ln -s /Applications "${dmg_root}/Applications"
 
-    rm -f "${out}"
-    hdiutil create -volname "${APP_NAME}" -srcfolder "${dmg_root}" -ov -format UDZO "${out}"
+    create_drag_install_dmg "${dmg_root}" "${out}"
     notarize_dmg "${out}"
     echo "Built dmg: ${out}"
 }
 
-require_tool cmake
+if [[ "${SKIP_BUILD}" != "1" ]]; then
+    require_tool cmake
+fi
 
 if ((CLEAN == 1)); then
     rm -rf "${WORK_DIR}"

@@ -225,7 +225,7 @@ powershell -ExecutionPolicy Bypass -File scripts/package-windows.ps1 `
 
 ### macOS
 
-macOS 打包脚本会创建 `.app` bundle，使用 `macdeployqt` 收集 Qt frameworks，并生成 dmg。CLI 二进制会放在 app 的 `Contents/Resources/bin` 中，dmg 根目录也会提供一个 `bin/openai-reasoning-guard-cli` 启动脚本。
+macOS 打包脚本会创建 `.app` bundle，使用 `macdeployqt` 收集 Qt frameworks，并生成可拖拽安装的 dmg。DMG 中包含应用、`Applications` 链接、首次运行辅助脚本和安装说明；CLI 二进制会放在 app 的 `Contents/Resources/bin` 中，dmg 根目录也会提供一个 `bin/openai-reasoning-guard-cli` 启动脚本。
 
 示例：
 
@@ -243,8 +243,16 @@ dist/openai-reasoning-guard-macos-aarch64-0.1.0.dmg
 
 macOS 分发有两种签名模式：
 
-- 默认模式：使用 ad-hoc 签名，保证 bundle 内 Qt framework、plugin、GUI 和 CLI 的签名结构完整，但 Apple Gatekeeper 仍会把从浏览器下载的包识别为未验证开发者。DMG 内会附带 `OpenAI Reasoning Guard - First Run.command`，它会把 app 复制到 `/Applications` 或 `~/Applications`，移除该本地副本的 quarantine 标记并打开应用。
+- 默认模式：使用 ad-hoc 签名，保证 bundle 内 Qt framework、plugin、GUI 和 CLI 的签名结构完整，但 Apple Gatekeeper 仍会把从浏览器下载的包识别为未验证开发者。DMG 内会附带 `OpenAI Reasoning Guard - First Run.command`，用户可以手动执行该脚本；它会把 app 复制到 `/Applications` 或 `~/Applications`，对本地副本执行 `xattr -dr com.apple.quarantine` 移除 quarantine 标记，然后打开应用。
 - 正式分发模式：使用 Apple Developer Program 的 `Developer ID Application` 证书签名，并提交 Apple notarization。公证成功并 stapled 后，用户双击 DMG 里的 app 不应再出现“未打开/无法验证开发者”的 Gatekeeper 阻断。
+
+DMG 外观默认按 Finder 图标视图布置为“把 app 拖到 Applications”的安装盘样式，并生成浅色背景图。相关开关：
+
+```bash
+MACOS_DMG_STYLE=1              # 生成可拖拽安装布局，默认开启
+MACOS_DMG_STYLE_STRICT=0       # Finder 布局失败时是否让打包失败，默认只警告
+MACOS_DMG_BACKGROUND=1         # 生成 DMG 背景图，默认开启
+```
 
 GitHub Actions 若要启用正式分发模式，需要配置以下 secrets：
 
