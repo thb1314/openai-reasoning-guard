@@ -10,6 +10,7 @@ JOBS="${JOBS:-1}"
 TEST_DOCKER_IMAGE="${TEST_DOCKER_IMAGE:-debian:bookworm}"
 TEST_DOCKER_ENTRYPOINT="${TEST_DOCKER_ENTRYPOINT:-}"
 TEST_DOCKER_PLATFORM="${TEST_DOCKER_PLATFORM:-}"
+TEST_DOCKER_PROXY="${TEST_DOCKER_PROXY:-}"
 PREPARED_TEST_IMAGE=""
 
 usage() {
@@ -26,6 +27,8 @@ Environment overrides:
   TEST_DOCKER_IMAGE=<image>         Override the runtime test image.
   TEST_DOCKER_ENTRYPOINT=<path>     Override the image entrypoint.
   TEST_DOCKER_PLATFORM=<platform>   Override docker run --platform.
+  TEST_DOCKER_PROXY=<url>           Proxy exposed to containers, for example
+                                    http://host.docker.internal:7890.
 
 If Docker Hub is unavailable for ARM smoke tests, create a local Debian image
 first with scripts/create-debian-test-image.sh and point TEST_DOCKER_IMAGE at it.
@@ -172,6 +175,7 @@ run_in_container() {
         --platform "${PLATFORM}"
         -v "${INPUT_DIR}:/packages:ro"
     )
+    add_container_proxy_args docker_args
     if [[ -n "${TEST_DOCKER_ENTRYPOINT}" ]]; then
         docker_args+=(--entrypoint "${TEST_DOCKER_ENTRYPOINT}")
         docker_args+=("${TEST_DOCKER_IMAGE}" -lc "${script}")
@@ -197,6 +201,7 @@ prepare_runtime_image() {
         --platform "${PLATFORM}"
         --name "${container_name}"
     )
+    add_container_proxy_args create_args
 
     trap cleanup_prepared_image EXIT
 
@@ -214,6 +219,23 @@ prepare_runtime_image() {
     PREPARED_TEST_IMAGE="${image_tag}"
     TEST_DOCKER_IMAGE="${PREPARED_TEST_IMAGE}"
     TEST_DOCKER_ENTRYPOINT=""
+}
+
+add_container_proxy_args() {
+    local -n args_ref="$1"
+    if [[ -z "${TEST_DOCKER_PROXY}" ]]; then
+        return
+    fi
+
+    args_ref+=(--add-host=host.docker.internal:host-gateway)
+    args_ref+=(
+        -e "http_proxy=${TEST_DOCKER_PROXY}"
+        -e "https_proxy=${TEST_DOCKER_PROXY}"
+        -e "HTTP_PROXY=${TEST_DOCKER_PROXY}"
+        -e "HTTPS_PROXY=${TEST_DOCKER_PROXY}"
+        -e "no_proxy=localhost,127.0.0.1,::1"
+        -e "NO_PROXY=localhost,127.0.0.1,::1"
+    )
 }
 
 runtime_apt_install=$'set -euo pipefail\nexport DEBIAN_FRONTEND=noninteractive\n'

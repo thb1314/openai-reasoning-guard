@@ -614,7 +614,7 @@ patch_qt_config_prefix_build_fallback() {
                     print "   org_modules = $$files(" source_dir "/mkspecs/modules/qt_*.pri)"
                     print "   org_modules += $$files(" qt_build "/mkspecs/modules/qt_*.pri)"
                     print "   org_modules += $$files(" prefix "/mkspecs/modules/qt_*.pri)"
-                    print "   isEmpty(org_modules): org_modules = $$system(\"find " qt_build "/mkspecs/modules " source_dir "/mkspecs/modules " prefix "/mkspecs/modules -maxdepth 1 -name qt_*.pri -type f | sort\", lines, ec)"
+                    print "   isEmpty(org_modules): org_modules = $$system(\"for d in " qt_build "/mkspecs/modules " source_dir "/mkspecs/modules " prefix "/mkspecs/modules; do test -d \\\"$d\\\" && find \\\"$d\\\" -maxdepth 1 -name qt_*.pri -type f; done | sort\", lines, ec)"
                     print "   for(mod, org_modules) {"
                     print "      QT_MODULE_INCLUDE_BASE = " source_dir "/include"
                     print "      QT_MODULE_LIB_BASE = " qt_build "/lib"
