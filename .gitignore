@@ -6,6 +6,7 @@ build/
 build-*/
 build-ci/
 build-package/
+qmake/
 CMakeFiles/
 CMakeCache.txt
 cmake_install.cmake
@@ -22,6 +23,9 @@ dist/
 
 # Local evaluation and agent scratch data
 .agents/
+.config.notes
+scripts/manual-arm32-network-probe.sh
+scripts/probe-arm32-qtbase-qmake.sh
 *.pid
 *.log
 *.out
