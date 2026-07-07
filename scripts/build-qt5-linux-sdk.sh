@@ -602,7 +602,7 @@ patch_qt_config_prefix_build_fallback() {
                 }
                 if (!has_module_fallback && $0 ~ /^[[:space:]]*mods = \$\$files\(\$\$dir\/qt_\*\.pri\)$/) {
                     print "   # OpenAI Reasoning Guard qmake module enumeration fallback for Docker/QEMU builds."
-                    print "   isEmpty(mods): mods = $$system(\"find \" $$system_quote($$dir) \" -maxdepth 1 -name \\047qt_*.pri\\047 -type f | sort\", lines, ec)"
+                    print "   isEmpty(mods): mods = $$system(\"find \" $$system_quote($$dir) \" -maxdepth 1 -name qt_*.pri -type f | sort\", lines, ec)"
                 }
                 if (!has_module_fallback && $0 ~ /^[[:space:]]*QMAKE_MODULE_PATH = \$\$unique\(QMAKE_MODULE_PATH\)$/) {
                     print "   QMAKE_MODULE_PATH += " source_dir "/mkspecs/modules"
@@ -614,7 +614,7 @@ patch_qt_config_prefix_build_fallback() {
                     print "   org_modules = $$files(" source_dir "/mkspecs/modules/qt_*.pri)"
                     print "   org_modules += $$files(" qt_build "/mkspecs/modules/qt_*.pri)"
                     print "   org_modules += $$files(" prefix "/mkspecs/modules/qt_*.pri)"
-                    print "   isEmpty(org_modules): org_modules = $$system(\"find " qt_build "/mkspecs/modules " source_dir "/mkspecs/modules " prefix "/mkspecs/modules -maxdepth 1 -name \\047qt_*.pri\\047 -type f | sort\", lines, ec)"
+                    print "   isEmpty(org_modules): org_modules = $$system(\"find " qt_build "/mkspecs/modules " source_dir "/mkspecs/modules " prefix "/mkspecs/modules -maxdepth 1 -name qt_*.pri -type f | sort\", lines, ec)"
                     print "   for(mod, org_modules) {"
                     print "      QT_MODULE_INCLUDE_BASE = " source_dir "/include"
                     print "      QT_MODULE_LIB_BASE = " qt_build "/lib"
@@ -730,7 +730,12 @@ configure_qmake_search_env() {
         "${qt_build}/mkspecs/features" \
         "${source_dir}/mkspecs/features" \
         "${prefix}/mkspecs/features"; do
-        [[ -d "${entry}" ]] && qmake_features+=("${entry}")
+        [[ -d "${entry}" ]] || continue
+        qmake_features+=("${entry}")
+        local feature_subdir
+        for feature_subdir in "${entry}"/*; do
+            [[ -d "${feature_subdir}" ]] && qmake_features+=("${feature_subdir}")
+        done
     done
     for entry in \
         "${qt_build}/mkspecs/modules" \
@@ -787,7 +792,7 @@ write_build_qmake_wrapper() {
     local real_qmake="${qt_build}/bin/qmake.real.bin"
     local compat_qmake="${qt_build}/bin/qmake.real"
     local qmakepath="${qt_build}:${source_dir}:${prefix}"
-    local qmakefeatures="${qt_build}/mkspecs/features:${source_dir}/mkspecs/features:${prefix}/mkspecs/features"
+    local qmakefeatures="${qt_build}/mkspecs/features:${qt_build}/mkspecs/features/unix:${source_dir}/mkspecs/features:${source_dir}/mkspecs/features/unix:${prefix}/mkspecs/features:${prefix}/mkspecs/features/unix"
     local qmakemodules="${qt_build}/mkspecs/modules:${source_dir}/mkspecs/modules:${prefix}/mkspecs/modules"
     local wrapper_target
 
