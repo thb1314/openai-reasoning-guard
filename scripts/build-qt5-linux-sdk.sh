@@ -1075,19 +1075,20 @@ build_openssl() {
                 --openssldir="${PREFIX}/ssl" \
                 shared \
                 no-ssl3 \
-                no-comp
+                no-comp \
+                no-tests
         elif [[ "${TARGET}" == "linux-arm32" ]]; then
             ./Configure linux-generic32 no-asm \
                 --prefix="${PREFIX}" \
                 --openssldir="${PREFIX}/ssl" \
                 shared \
                 no-ssl3 \
-                no-comp
+                no-comp \
+                no-tests
         else
-            ./config --prefix="${PREFIX}" --openssldir="${PREFIX}/ssl" shared no-ssl3 no-comp
+            ./config --prefix="${PREFIX}" --openssldir="${PREFIX}/ssl" shared no-ssl3 no-comp no-tests
         fi
-        make -j"${JOBS}"
-        make install_sw
+        make -j"${JOBS}" install_sw
     )
 }
 
