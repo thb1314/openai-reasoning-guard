@@ -241,6 +241,28 @@ dist/openai-reasoning-guard-macos-x86_64-0.1.0.dmg
 dist/openai-reasoning-guard-macos-aarch64-0.1.0.dmg
 ```
 
+macOS 分发有两种签名模式：
+
+- 默认模式：使用 ad-hoc 签名，保证 bundle 内 Qt framework、plugin、GUI 和 CLI 的签名结构完整，但 Apple Gatekeeper 仍会把从浏览器下载的包识别为未验证开发者。DMG 内会附带 `OpenAI Reasoning Guard - First Run.command`，它会把 app 复制到 `/Applications` 或 `~/Applications`，移除该本地副本的 quarantine 标记并打开应用。
+- 正式分发模式：使用 Apple Developer Program 的 `Developer ID Application` 证书签名，并提交 Apple notarization。公证成功并 stapled 后，用户双击 DMG 里的 app 不应再出现“未打开/无法验证开发者”的 Gatekeeper 阻断。
+
+GitHub Actions 若要启用正式分发模式，需要配置以下 secrets：
+
+```text
+MACOS_CERTIFICATE_P12_BASE64   # Developer ID Application 证书 .p12 的 base64
+MACOS_CERTIFICATE_PASSWORD     # .p12 密码
+MACOS_CODESIGN_IDENTITY        # 例如 Developer ID Application: Your Name (TEAMID)
+MACOS_NOTARY_APPLE_ID          # Apple ID
+MACOS_NOTARY_TEAM_ID           # Team ID
+MACOS_NOTARY_PASSWORD          # app-specific password
+```
+
+也可以使用已保存的 notarytool profile：
+
+```text
+MACOS_NOTARY_PROFILE
+```
+
 ### GitHub Actions
 
 项目有两条 CI 流水线：

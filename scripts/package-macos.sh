@@ -22,7 +22,15 @@ JOBS="${JOBS:-$(sysctl -n hw.ncpu 2>/dev/null || echo 2)}"
 SKIP_BUILD="${SKIP_BUILD:-0}"
 MACOS_CODESIGN="${MACOS_CODESIGN:-1}"
 MACOS_CODESIGN_IDENTITY="${MACOS_CODESIGN_IDENTITY:--}"
-MACOS_CODESIGN_TIMESTAMP="${MACOS_CODESIGN_TIMESTAMP:-none}"
+MACOS_CODESIGN_TIMESTAMP="${MACOS_CODESIGN_TIMESTAMP-none}"
+MACOS_CODESIGN_OPTIONS="${MACOS_CODESIGN_OPTIONS:-}"
+MACOS_CODESIGN_ENTITLEMENTS="${MACOS_CODESIGN_ENTITLEMENTS:-}"
+MACOS_NOTARIZE="${MACOS_NOTARIZE:-0}"
+MACOS_NOTARY_PROFILE="${MACOS_NOTARY_PROFILE:-}"
+MACOS_NOTARY_APPLE_ID="${MACOS_NOTARY_APPLE_ID:-}"
+MACOS_NOTARY_TEAM_ID="${MACOS_NOTARY_TEAM_ID:-}"
+MACOS_NOTARY_PASSWORD="${MACOS_NOTARY_PASSWORD:-}"
+MACOS_STAPLE="${MACOS_STAPLE:-1}"
 CLEAN=0
 
 usage() {
@@ -42,6 +50,13 @@ Environment overrides:
   MACOS_CODESIGN=1
   MACOS_CODESIGN_IDENTITY=-          # ad-hoc signing by default
   MACOS_CODESIGN_TIMESTAMP=none
+  MACOS_CODESIGN_OPTIONS=runtime
+  MACOS_CODESIGN_ENTITLEMENTS=/path/to/entitlements.plist
+  MACOS_NOTARIZE=1
+  MACOS_NOTARY_PROFILE=notary-profile
+  MACOS_NOTARY_APPLE_ID=apple@example.com
+  MACOS_NOTARY_TEAM_ID=TEAMID
+  MACOS_NOTARY_PASSWORD=app-specific-password
 EOF
 }
 
@@ -245,6 +260,12 @@ sign_path() {
     if [[ -n "${MACOS_CODESIGN_TIMESTAMP}" ]]; then
         args+=("--timestamp=${MACOS_CODESIGN_TIMESTAMP}")
     fi
+    if [[ -n "${MACOS_CODESIGN_OPTIONS}" ]]; then
+        args+=(--options "${MACOS_CODESIGN_OPTIONS}")
+    fi
+    if [[ -n "${MACOS_CODESIGN_ENTITLEMENTS}" ]]; then
+        args+=(--entitlements "${MACOS_CODESIGN_ENTITLEMENTS}")
+    fi
     codesign "${args[@]}" "${path}"
 }
 
@@ -255,6 +276,10 @@ sign_app_bundle() {
         return
     fi
     require_tool codesign
+    if [[ -n "${MACOS_CODESIGN_ENTITLEMENTS}" && ! -f "${MACOS_CODESIGN_ENTITLEMENTS}" ]]; then
+        echo "macOS codesign entitlements file not found: ${MACOS_CODESIGN_ENTITLEMENTS}" >&2
+        exit 2
+    fi
 
     local path
     while IFS= read -r path; do
@@ -276,8 +301,88 @@ sign_app_bundle() {
     if [[ -n "${MACOS_CODESIGN_TIMESTAMP}" ]]; then
         bundle_args+=("--timestamp=${MACOS_CODESIGN_TIMESTAMP}")
     fi
+    if [[ -n "${MACOS_CODESIGN_OPTIONS}" ]]; then
+        bundle_args+=(--options "${MACOS_CODESIGN_OPTIONS}")
+    fi
+    if [[ -n "${MACOS_CODESIGN_ENTITLEMENTS}" ]]; then
+        bundle_args+=(--entitlements "${MACOS_CODESIGN_ENTITLEMENTS}")
+    fi
     codesign "${bundle_args[@]}" --deep "${app_bundle}"
     codesign --verify --deep --strict --verbose=2 "${app_bundle}"
+}
+
+write_first_run_helper() {
+    local dmg_root="$1"
+    local helper="${dmg_root}/OpenAI Reasoning Guard - First Run.command"
+    cat > "${helper}" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="\$(cd -- "\$(dirname -- "\${BASH_SOURCE[0]}")" && pwd)"
+SOURCE_APP="\${ROOT}/${APP_NAME}.app"
+TARGET_APP="/Applications/${APP_NAME}.app"
+
+if [[ ! -d "\${SOURCE_APP}" ]]; then
+  echo "Cannot find \${SOURCE_APP}" >&2
+  exit 1
+fi
+
+if [[ ! -w "/Applications" ]]; then
+  TARGET_APP="\${HOME}/Applications/${APP_NAME}.app"
+  mkdir -p "\${HOME}/Applications"
+fi
+
+rm -rf "\${TARGET_APP}"
+/usr/bin/ditto "\${SOURCE_APP}" "\${TARGET_APP}"
+/usr/bin/xattr -dr com.apple.quarantine "\${TARGET_APP}" 2>/dev/null || true
+/usr/bin/open "\${TARGET_APP}"
+EOF
+    chmod +x "${helper}"
+
+    cat > "${dmg_root}/README-macOS-Install.txt" <<EOF
+OpenAI Reasoning Guard macOS install
+
+Preferred install:
+1. Drag "${APP_NAME}.app" to Applications.
+2. Open it from Applications.
+
+If macOS says it was not opened because the developer cannot be verified:
+1. Double-click "OpenAI Reasoning Guard - First Run.command" in this disk image.
+2. The helper copies the app to Applications (or ~/Applications), removes the
+   quarantine flag from that local copy, and opens it.
+
+For builds signed with a Developer ID certificate and notarized by Apple, the
+helper is not needed.
+EOF
+}
+
+notarize_dmg() {
+    local dmg_path="$1"
+    if [[ "${MACOS_NOTARIZE}" != "1" ]]; then
+        echo "Skipping macOS notarization because MACOS_NOTARIZE=${MACOS_NOTARIZE}"
+        return
+    fi
+    if [[ "${MACOS_CODESIGN_IDENTITY}" == "-" ]]; then
+        echo "MACOS_NOTARIZE=1 requires a Developer ID Application signing identity" >&2
+        exit 2
+    fi
+    require_tool xcrun
+
+    local submit_args=(notarytool submit "${dmg_path}" --wait)
+    if [[ -n "${MACOS_NOTARY_PROFILE}" ]]; then
+        submit_args+=(--keychain-profile "${MACOS_NOTARY_PROFILE}")
+    else
+        if [[ -z "${MACOS_NOTARY_APPLE_ID}" || -z "${MACOS_NOTARY_TEAM_ID}" || -z "${MACOS_NOTARY_PASSWORD}" ]]; then
+            echo "MACOS_NOTARIZE=1 requires MACOS_NOTARY_PROFILE or Apple ID/team/password variables" >&2
+            exit 2
+        fi
+        submit_args+=(--apple-id "${MACOS_NOTARY_APPLE_ID}" --team-id "${MACOS_NOTARY_TEAM_ID}" --password "${MACOS_NOTARY_PASSWORD}")
+    fi
+
+    xcrun "${submit_args[@]}"
+    if [[ "${MACOS_STAPLE}" == "1" ]]; then
+        xcrun stapler staple "${dmg_path}"
+        xcrun stapler validate "${dmg_path}"
+    fi
 }
 
 build_dmg() {
@@ -307,10 +412,12 @@ EOF
             cp -a "${PROJECT_DIR}/${file}" "${dmg_root}/${file}"
         fi
     done
+    write_first_run_helper "${dmg_root}"
     ln -s /Applications "${dmg_root}/Applications"
 
     rm -f "${out}"
     hdiutil create -volname "${APP_NAME}" -srcfolder "${dmg_root}" -ov -format UDZO "${out}"
+    notarize_dmg "${out}"
     echo "Built dmg: ${out}"
 }
 
