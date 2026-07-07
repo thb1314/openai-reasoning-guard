@@ -3,7 +3,7 @@
     "proxy_host": "127.0.0.1",
     "proxy_port": "8010",
     "proxy_prefix": "/v1",
-    "upstream_base_url": "https://ai.input.im/v1",
+    "upstream_base_url": "",
     "upstream_api_key": "",
     "upstream_user_agent": "curl/8.7.1",
     "forward_user_agent": false,
