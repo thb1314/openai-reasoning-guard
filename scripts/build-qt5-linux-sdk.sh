@@ -1088,7 +1088,8 @@ build_openssl() {
         else
             ./config --prefix="${PREFIX}" --openssldir="${PREFIX}/ssl" shared no-ssl3 no-comp no-tests
         fi
-        make -j"${JOBS}" install_sw
+        make -j"${JOBS}"
+        make install_sw
     )
 }
 
