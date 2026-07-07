@@ -117,7 +117,7 @@ int main(int argc, char **argv)
     QCommandLineOption proxyHostOpt("proxy-host", "Proxy bind host", "host", "127.0.0.1");
     QCommandLineOption proxyPortOpt("proxy-port", "Proxy bind port", "port", "8010");
     QCommandLineOption proxyPrefixOpt("proxy-prefix", "Proxy request path prefix", "prefix");
-    QCommandLineOption upstreamBaseUrlOpt("upstream-base-url", "Upstream OpenAI-compatible base URL", "url", "https://ai.input.im/v1");
+    QCommandLineOption upstreamBaseUrlOpt("upstream-base-url", "Upstream OpenAI-compatible base URL", "url");
     QCommandLineOption upstreamApiKeyOpt("upstream-api-key", "Upstream bearer token override; empty forwards incoming Authorization", "token");
     QCommandLineOption upstreamUserAgentOpt("upstream-user-agent", "User-Agent sent upstream", "ua", "curl/8.7.1");
     QCommandLineOption forwardUserAgentOpt("forward-user-agent", "Forward incoming User-Agent upstream");

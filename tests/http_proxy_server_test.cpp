@@ -874,6 +874,32 @@ private slots:
         QCOMPARE(loaded.streamAction, config.streamAction);
     }
 
+    void configDefaultsDoNotSetUpstreamBaseUrl()
+    {
+        const AppConfig config;
+        QVERIFY(config.upstreamBaseUrl.isEmpty());
+
+        const ProxySettings settings;
+        QVERIFY(settings.upstreamBaseUrl.isEmpty());
+    }
+
+    void configLoadClearsLegacyDefaultUpstreamBaseUrl()
+    {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString path = dir.filePath("config.json");
+
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        QJsonObject object;
+        object.insert("upstream_base_url", "https://ai.input.im/v1");
+        file.write(QJsonDocument(object).toJson(QJsonDocument::Indented));
+        file.close();
+
+        const AppConfig loaded = loadConfig(path);
+        QVERIFY(loaded.upstreamBaseUrl.isEmpty());
+    }
+
     void splitOnlyProxyFieldsStaySplitOnRoundTrip()
     {
         QTemporaryDir dir;

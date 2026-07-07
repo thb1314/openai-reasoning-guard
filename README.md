@@ -493,7 +493,7 @@ build/net-tunnel-cli \
   --proxy-host 127.0.0.1 \
   --proxy-port 8010 \
   --proxy-prefix /v1 \
-  --upstream-base-url https://ai.input.im/v1 \
+  --upstream-base-url https://api.openai.com/v1 \
   --reasoning-equals 516,1034,1552 \
   --guard-retry-attempts 3
 ```
@@ -565,7 +565,7 @@ build/net-tunnel-cli --config config.example.json --api-proxy
   "proxy_host": "127.0.0.1",
   "proxy_port": "8010",
   "proxy_prefix": "/v1",
-  "upstream_base_url": "https://ai.input.im/v1",
+  "upstream_base_url": "",
   "upstream_api_key": "",
   "upstream_user_agent": "curl/8.7.1",
   "forward_user_agent": false,
@@ -598,7 +598,7 @@ build/net-tunnel-cli --config config.example.json --api-proxy
 | `proxy_host` | `127.0.0.1` | `"0.0.0.0"` | 本地代理监听地址。只给本机客户端使用时保持 `127.0.0.1`；需要局域网其它机器访问时可设为 `0.0.0.0`。 |
 | `proxy_port` | `8010` | `8011` | 本地代理监听端口。客户端 base URL 需要使用这个端口，例如 `http://127.0.0.1:8011/v1`。 |
 | `proxy_prefix` | `/v1` | `""` 或 `"/api"` | 客户端访问代理的业务路径前缀。`"/v1"` 表示客户端请求 `/v1/responses`；空字符串表示 root proxy，请求 `/responses` 直接转发。root proxy 下 `GET /` 会转发上游根路径，健康检查用 `/healthz`。 |
-| `upstream_base_url` | `https://ai.input.im/v1` | `"https://api.openai.com/v1"` | 真实上游 OpenAI 兼容 API base URL。代理会把去掉 `proxy_prefix` 后的业务路径拼到这个 base URL 后面。 |
+| `upstream_base_url` | 空 | `"https://api.openai.com/v1"` | 真实上游 OpenAI 兼容 API base URL。代理会把去掉 `proxy_prefix` 后的业务路径拼到这个 base URL 后面。为空时不会自动使用内置上游地址，启动代理前需要在 GUI、配置文件或 CLI 中显式填写。 |
 | `upstream_api_key` | 空 | `"sk-..."` | 显式上游 Bearer token。非空时上游 `Authorization` 固定为 `Bearer sk-...`；为空时透传客户端 `Authorization`，也就是让 Codex 继续使用自己的 `auth.json`。 |
 | `upstream_user_agent` | `curl/8.7.1` | `"codex-cli/0.1"` | 发往上游的默认 `User-Agent`。`forward_user_agent=false` 时使用该值。 |
 | `forward_user_agent` | `false` | `true` | 是否把客户端请求里的 `User-Agent` 原样转给上游。为 `false` 时使用 `upstream_user_agent`。 |
@@ -638,7 +638,7 @@ build/net-tunnel-cli --config config.example.json --api-proxy
 | `--proxy-host` | `--proxy-host 127.0.0.1` | 覆盖 `proxy_host`。 |
 | `--proxy-port` | `--proxy-port 8011` | 覆盖 `proxy_port`。 |
 | `--proxy-prefix` | `--proxy-prefix /v1` 或 `--proxy-prefix ""` | 覆盖 `proxy_prefix`；空字符串表示 root proxy。 |
-| `--upstream-base-url` | `--upstream-base-url https://ai.input.im/v1` | 覆盖 `upstream_base_url`。 |
+| `--upstream-base-url` | `--upstream-base-url https://api.openai.com/v1` | 覆盖 `upstream_base_url`。 |
 | `--upstream-api-key` | `--upstream-api-key sk-...` | 覆盖 `upstream_api_key`；非空时强制覆盖客户端 Authorization。 |
 | `--upstream-user-agent` | `--upstream-user-agent curl/8.7.1` | 覆盖 `upstream_user_agent`。 |
 | `--forward-user-agent` | `--forward-user-agent` | 将客户端 `User-Agent` 转发给上游。 |

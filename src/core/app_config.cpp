@@ -25,6 +25,15 @@ static QString readString(const QJsonObject &object, const QString &key, const Q
     return fallback;
 }
 
+static QString normalizeUpstreamBaseUrl(const QString &value)
+{
+    const QString trimmed = value.trimmed();
+    if (trimmed == "https://ai.input.im/v1") {
+        return QString();
+    }
+    return trimmed;
+}
+
 static int readInt(const QJsonObject &object, const QString &key, int fallback)
 {
     const QJsonValue value = object.value(key);
@@ -137,7 +146,7 @@ AppConfig::AppConfig()
       proxyHost("127.0.0.1"),
       proxyPort(8010),
       proxyPrefix("/v1"),
-      upstreamBaseUrl("https://ai.input.im/v1"),
+      upstreamBaseUrl(""),
       upstreamUserAgent("curl/8.7.1"),
       forwardUserAgent(false),
       upstreamTimeoutSec(1800),
@@ -185,7 +194,7 @@ AppConfig loadConfig(const QString &path)
     config.proxyHost = readString(object, "proxy_host", config.proxyHost);
     config.proxyPort = readInt(object, "proxy_port", config.proxyPort);
     config.proxyPrefix = readString(object, "proxy_prefix", config.proxyPrefix);
-    config.upstreamBaseUrl = readString(object, "upstream_base_url", config.upstreamBaseUrl);
+    config.upstreamBaseUrl = normalizeUpstreamBaseUrl(readString(object, "upstream_base_url", config.upstreamBaseUrl));
     config.upstreamApiKey = readString(object, "upstream_api_key", config.upstreamApiKey);
     config.upstreamUserAgent = readString(object, "upstream_user_agent", config.upstreamUserAgent);
     config.forwardUserAgent = readBool(object, "forward_user_agent", config.forwardUserAgent);

@@ -809,7 +809,7 @@ static QJsonObject blockedReasoningBody(const QString &path, int reasoningTokens
 ProxySettings::ProxySettings()
     : listenHost("127.0.0.1"),
       listenPort(8010),
-      upstreamBaseUrl("https://ai.input.im/v1"),
+      upstreamBaseUrl(""),
       proxyPrefix("/v1"),
       upstreamUserAgent("curl/8.7.1"),
       forwardUserAgent(false),
