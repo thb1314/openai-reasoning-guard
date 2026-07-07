@@ -20,6 +20,9 @@ QT_ROOT="${QT_ROOT:-}"
 BUILD_TESTS="${BUILD_TESTS:-OFF}"
 JOBS="${JOBS:-$(sysctl -n hw.ncpu 2>/dev/null || echo 2)}"
 SKIP_BUILD="${SKIP_BUILD:-0}"
+MACOS_CODESIGN="${MACOS_CODESIGN:-1}"
+MACOS_CODESIGN_IDENTITY="${MACOS_CODESIGN_IDENTITY:--}"
+MACOS_CODESIGN_TIMESTAMP="${MACOS_CODESIGN_TIMESTAMP:-none}"
 CLEAN=0
 
 usage() {
@@ -36,6 +39,9 @@ Environment overrides:
   DIST_DIR=${DIST_DIR}
   WORK_DIR=${WORK_DIR}
   MACDEPLOYQT=/path/to/macdeployqt
+  MACOS_CODESIGN=1
+  MACOS_CODESIGN_IDENTITY=-          # ad-hoc signing by default
+  MACOS_CODESIGN_TIMESTAMP=none
 EOF
 }
 
@@ -230,6 +236,49 @@ deploy_qt() {
         "-executable=${app_bundle}/Contents/Resources/bin/${CLI_COMMAND}"
 }
 
+sign_path() {
+    local path="$1"
+    if [[ ! -e "${path}" ]]; then
+        return
+    fi
+    local args=(--force --sign "${MACOS_CODESIGN_IDENTITY}")
+    if [[ -n "${MACOS_CODESIGN_TIMESTAMP}" ]]; then
+        args+=("--timestamp=${MACOS_CODESIGN_TIMESTAMP}")
+    fi
+    codesign "${args[@]}" "${path}"
+}
+
+sign_app_bundle() {
+    local app_bundle="$1"
+    if [[ "${MACOS_CODESIGN}" != "1" ]]; then
+        echo "Skipping macOS codesign because MACOS_CODESIGN=${MACOS_CODESIGN}"
+        return
+    fi
+    require_tool codesign
+
+    local path
+    while IFS= read -r path; do
+        sign_path "${path}"
+    done < <(find \
+        "${app_bundle}/Contents/MacOS" \
+        "${app_bundle}/Contents/Resources/bin" \
+        "${app_bundle}/Contents/PlugIns" \
+        "${app_bundle}/Contents/Frameworks" \
+        -type f \( -perm -111 -o -name '*.dylib' -o -name '*.so' \) \
+        -print 2>/dev/null)
+
+    while IFS= read -r path; do
+        sign_path "${path}"
+    done < <(find "${app_bundle}/Contents/Frameworks" -depth -type d -name '*.framework' -print 2>/dev/null)
+
+    local bundle_args=(--force --sign "${MACOS_CODESIGN_IDENTITY}")
+    if [[ -n "${MACOS_CODESIGN_TIMESTAMP}" ]]; then
+        bundle_args+=("--timestamp=${MACOS_CODESIGN_TIMESTAMP}")
+    fi
+    codesign "${bundle_args[@]}" --deep "${app_bundle}"
+    codesign --verify --deep --strict --verbose=2 "${app_bundle}"
+}
+
 build_dmg() {
     require_tool hdiutil
     local app_bundle="${WORK_DIR}/${APP_NAME}.app"
@@ -238,6 +287,7 @@ build_dmg() {
 
     stage_app_bundle "${app_bundle}"
     deploy_qt "${app_bundle}"
+    sign_app_bundle "${app_bundle}"
 
     rm -rf "${dmg_root}"
     mkdir -p "${dmg_root}/bin"
