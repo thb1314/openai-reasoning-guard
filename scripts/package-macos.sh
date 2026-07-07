@@ -488,23 +488,23 @@ with timeout of 30 seconds
       set background picture of viewOptions to POSIX file "${background_path_escaped}"
     end try
 
-    if exists item "${app_item_escaped}" of dmgFolder then
-      set position of item "${app_item_escaped}" of dmgFolder to {170, 190}
+    if exists item "${app_item_escaped}" of dmgWindow then
+      set position of item "${app_item_escaped}" of dmgWindow to {170, 190}
     end if
-    if exists item "Applications" of dmgFolder then
-      set position of item "Applications" of dmgFolder to {490, 190}
+    if exists item "Applications" of dmgWindow then
+      set position of item "Applications" of dmgWindow to {490, 190}
     end if
-    if exists item "OpenAI Reasoning Guard - First Run.command" of dmgFolder then
-      set position of item "OpenAI Reasoning Guard - First Run.command" of dmgFolder to {170, 360}
+    if exists item "OpenAI Reasoning Guard - First Run.command" of dmgWindow then
+      set position of item "OpenAI Reasoning Guard - First Run.command" of dmgWindow to {170, 360}
     end if
-    if exists item "README-macOS-Install.txt" of dmgFolder then
-      set position of item "README-macOS-Install.txt" of dmgFolder to {490, 360}
+    if exists item "README-macOS-Install.txt" of dmgWindow then
+      set position of item "README-macOS-Install.txt" of dmgWindow to {490, 360}
     end if
-    if exists item "bin" of dmgFolder then
-      set position of item "bin" of dmgFolder to {80, 360}
+    if exists item "bin" of dmgWindow then
+      set position of item "bin" of dmgWindow to {80, 360}
     end if
 
-    update without registering applications
+    delay 1
     close dmgWindow
   end tell
 end timeout
@@ -525,6 +525,8 @@ create_drag_install_dmg() {
     local rw_dmg="${WORK_DIR}/${PACKAGE_ID}-macos-${ARCH}-${VERSION}.rw.dmg"
     local attach_output
     local mount_dir
+    local device
+    local detach_target
     local style_status=0
 
     rm -f "${rw_dmg}" "${out}"
@@ -537,6 +539,7 @@ create_drag_install_dmg() {
         "${rw_dmg}"
 
     attach_output="$(hdiutil attach -readwrite -noverify -noautoopen "${rw_dmg}")"
+    device="$(printf '%s\n' "${attach_output}" | awk '/\/Volumes\// {print $1; exit}')"
     mount_dir="$(printf '%s\n' "${attach_output}" | sed -n 's#^/dev/[^[:space:]]*[[:space:]].*\(/Volumes/.*\)$#\1#p' | tail -n 1)"
     if [[ -z "${mount_dir}" || ! -d "${mount_dir}" ]]; then
         mount_dir="/Volumes/${APP_NAME}"
@@ -549,9 +552,16 @@ create_drag_install_dmg() {
 
     style_dmg_volume "${mount_dir}" || style_status=$?
     sync
-    hdiutil detach "${mount_dir}" || {
+    detach_target="${device:-${mount_dir}}"
+    hdiutil detach "${detach_target}" || {
         sleep 2
-        hdiutil detach "${mount_dir}" -force
+        if [[ -d "${mount_dir}" ]]; then
+            hdiutil detach "${detach_target}" -force || {
+                if [[ -d "${mount_dir}" ]]; then
+                    hdiutil detach "${mount_dir}" -force
+                fi
+            }
+        fi
     }
     if ((style_status != 0)); then
         exit "${style_status}"
