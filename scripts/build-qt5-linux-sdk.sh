@@ -763,7 +763,7 @@ write_prefix_tool_wrappers() {
     local prefix="$2"
     local tool
     mkdir -p "${prefix}/bin"
-    for tool in qmake moc rcc tracegen; do
+    for tool in qmake moc rcc tracegen qvkgen; do
         cat > "${prefix}/bin/${tool}" <<EOF
 #!/usr/bin/env bash
 # OpenAI Reasoning Guard temporary Qt SDK build wrapper.
@@ -1021,7 +1021,7 @@ replace_prefix_tool_wrappers() {
     local qt_build="$1"
     local prefix="$2"
     local tool
-    for tool in qmake moc rcc tracegen; do
+    for tool in qmake moc rcc tracegen qvkgen; do
         if [[ -f "${prefix}/bin/${tool}" ]] \
             && grep -q 'OpenAI Reasoning Guard temporary Qt SDK build wrapper' "${prefix}/bin/${tool}" \
             && [[ -x "${qt_build}/bin/${tool}" ]]; then
