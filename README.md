@@ -308,11 +308,15 @@ openai-reasoning-guard-cli --config config.example.json --api-proxy
 
 `/status` 的 `runtime` 会展示本次代理启动以来的统计：
 
+实时概览分别显示业务请求、控制请求和处理中请求。业务请求口径为 `intercepted_requests_total = successful_requests_total + failed_requests_total + in_flight_proxy_requests`；总 HTTP 请求口径则是 `requests_total = control_requests_total + intercepted_requests_total`，所以控制接口和尚未结束的业务请求会让“成功 + 失败”暂时小于总请求数。
+
 - `requests_total`：所有请求总数，包含控制接口。
 - `control_requests_total`：控制接口请求总数。
 - `health_requests_total`：健康检查请求数。
 - `status_requests_total`：状态、版本和 props 请求数。
 - `intercepted_requests_total`：进入代理转发路径的业务请求数。
+- `completed_proxy_requests_total`：已经产生最终结果的业务请求数，等于成功数与失败数之和。
+- `in_flight_proxy_requests`：当前仍在处理中的业务请求数。
 - `upstream_attempts_total`：实际发往上游的尝试次数，内部重试会增加这个值。
 - `successful_requests_total` / `failed_requests_total`：最终对客户端完成的代理请求成功/失败数。
 - `proxy_error_total`：网络代理层错误数。
@@ -326,8 +330,9 @@ openai-reasoning-guard-cli --config config.example.json --api-proxy
 - `inspected_response_count`：被 guard 检查过的响应数。
 - `bypassed_proxy_request_count`：未进入 guard 检查的业务请求数。
 - `matched_response_count`：命中当前拦截规则的响应数。
+- `guard_match_rate`：Guard 命中率，计算方式为 `matched_response_count / inspected_response_count`；按被检查的上游响应计数，包含内部重试产生的响应。
 - `matched_streaming_count` / `matched_non_streaming_count`：命中当前拦截规则的流式/非流式响应次数。
-- `blocked_response_count`：最终实际拦截的响应总数。
+- `blocked_response_count`：重试耗尽后最终阻断客户端响应的次数；GUI 显示为“最终阻断”，不等同于 Guard 命中次数。
 - `blocked_streaming_count` / `blocked_non_streaming_count`：最终实际拦截的流式/非流式响应次数。
 - `guard_retry_total`：guard 或受保护异常触发的内部重试次数。
 - `reasoning_tokens_516_retry_total`：因 `reasoning_tokens=516` 触发的内部重试次数。

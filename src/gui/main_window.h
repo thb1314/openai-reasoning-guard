@@ -90,8 +90,11 @@ private:
     QLabel *proxyState_;
     QLabel *proxyUrl_;
     QLabel *requestsMetric_;
+    QLabel *controlRequestsMetric_;
     QLabel *successMetric_;
     QLabel *failedMetric_;
+    QLabel *inFlightMetric_;
+    QLabel *guardMatchRateMetric_;
     QLabel *blockedMetric_;
     QLabel *retryMetric_;
     QLabel *latencyMetric_;

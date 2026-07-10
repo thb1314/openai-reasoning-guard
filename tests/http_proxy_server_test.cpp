@@ -771,6 +771,11 @@ private slots:
         client.flush();
         QVERIFY(waitUntil([&]() { return upstream.requestCount() == 1; }, 1000));
 
+        const QJsonObject activeRuntime = runtimeOf(&proxy);
+        QCOMPARE(activeRuntime.value("intercepted_requests_total").toInt(), 1);
+        QCOMPARE(activeRuntime.value("completed_proxy_requests_total").toInt(), 0);
+        QCOMPARE(activeRuntime.value("in_flight_proxy_requests").toInt(), 1);
+
         client.abort();
         QVERIFY(waitUntil([&]() {
             return runtimeOf(&proxy).value("client_connection_error_total").toInt() == 1;
@@ -778,6 +783,8 @@ private slots:
         QVERIFY(waitUntil([&]() { return upstream.disconnectedCount() >= 1; }, 3000));
 
         const QJsonObject runtime = runtimeOf(&proxy);
+        QCOMPARE(runtime.value("completed_proxy_requests_total").toInt(), 1);
+        QCOMPARE(runtime.value("in_flight_proxy_requests").toInt(), 0);
         QCOMPARE(runtime.value("last_failure").toObject().value("error_type").toString(),
                  QString("client_connection_error"));
     }
@@ -835,6 +842,11 @@ private slots:
         QVERIFY(response.contains("200 OK"));
         QVERIFY(response.contains("\"ok\":true"));
         QCOMPARE(upstream.requestCount(), 0);
+        const QJsonObject runtime = runtimeOf(&proxy);
+        QCOMPARE(runtime.value("requests_total").toInt(), 1);
+        QCOMPARE(runtime.value("control_requests_total").toInt(), 1);
+        QCOMPARE(runtime.value("intercepted_requests_total").toInt(), 0);
+        QCOMPARE(runtime.value("in_flight_proxy_requests").toInt(), 0);
     }
 
     void customProxyPrefixStillMatchesGuardEndpoint()
@@ -858,6 +870,11 @@ private slots:
         QCOMPARE(upstream.lastPath(), QString("/v1/responses"));
 
         const QJsonObject runtime = runtimeOf(&proxy);
+        QCOMPARE(runtime.value("inspected_response_count").toInt(), 1);
+        QCOMPARE(runtime.value("matched_response_count").toInt(), 1);
+        QCOMPARE(runtime.value("guard_match_rate").toDouble(), 1.0);
+        QCOMPARE(runtime.value("completed_proxy_requests_total").toInt(), 1);
+        QCOMPARE(runtime.value("in_flight_proxy_requests").toInt(), 0);
         QCOMPARE(runtime.value("blocked_non_streaming_count").toInt(), 1);
         QCOMPARE(runtime.value("last_failure").toObject().value("error_type").toString(),
                  QString("reasoning_guard_triggered"));

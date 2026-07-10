@@ -2553,6 +2553,11 @@ QJsonObject HttpProxyServer::runtimePayload() const
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
     const double uptime = startedAtMs_ > 0 ? (now - startedAtMs_) / 1000.0 : 0.0;
     const double avgLatency = latencySamples_ > 0 ? latencyTotalMs_ / latencySamples_ : -1.0;
+    const qint64 completedProxyRequests = successfulRequestsTotal_ + failedRequestsTotal_;
+    const qint64 inFlightProxyRequests = qMax(qint64(0), interceptedRequestsTotal_ - completedProxyRequests);
+    const double guardMatchRate = inspectedResponseCount_ > 0
+        ? double(matchedResponseCount_) / double(inspectedResponseCount_)
+        : 0.0;
     QJsonObject runtime;
     runtime.insert("started_at", startedAtMs_ / 1000.0);
     runtime.insert("uptime_sec", uptime);
@@ -2561,6 +2566,8 @@ QJsonObject HttpProxyServer::runtimePayload() const
     runtime.insert("health_requests_total", double(healthRequestsTotal_));
     runtime.insert("status_requests_total", double(statusRequestsTotal_));
     runtime.insert("intercepted_requests_total", double(interceptedRequestsTotal_));
+    runtime.insert("completed_proxy_requests_total", double(completedProxyRequests));
+    runtime.insert("in_flight_proxy_requests", double(inFlightProxyRequests));
     runtime.insert("successful_requests_total", double(successfulRequestsTotal_));
     runtime.insert("failed_requests_total", double(failedRequestsTotal_));
     runtime.insert("proxy_error_total", double(proxyErrorTotal_));
@@ -2578,6 +2585,7 @@ QJsonObject HttpProxyServer::runtimePayload() const
     runtime.insert("inspected_response_count", double(inspectedResponseCount_));
     runtime.insert("bypassed_proxy_request_count", double(bypassedProxyRequestCount_));
     runtime.insert("matched_response_count", double(matchedResponseCount_));
+    runtime.insert("guard_match_rate", guardMatchRate);
     runtime.insert("matched_streaming_count", double(matchedStreamingCount_));
     runtime.insert("matched_non_streaming_count", double(matchedNonStreamingCount_));
     runtime.insert("blocked_response_count", double(blockedResponseCount_));

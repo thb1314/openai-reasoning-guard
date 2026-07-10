@@ -20,6 +20,7 @@
 #include <QtWidgets/QMenuBar>
 #include <QtWidgets/QMessageBox>
 #include <QtWidgets/QScrollArea>
+#include <QtWidgets/QSizePolicy>
 #include <QtWidgets/QSplitter>
 #include <QtWidgets/QStyle>
 #include <QtWidgets/QSystemTrayIcon>
@@ -32,6 +33,25 @@ static QLabel *makeI18nLabel(const QString &key, QWidget *parent)
 {
     QLabel *label = new QLabel(key, parent);
     label->setProperty("i18n_key", key);
+    return label;
+}
+
+static QLabel *makeMetricLabel(const QString &key, QWidget *parent)
+{
+    QLabel *label = makeI18nLabel(key, parent);
+    label->setObjectName("metricLabel");
+    label->setWordWrap(false);
+    label->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    label->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    return label;
+}
+
+static QLabel *makeFormLabel(const QString &key, QWidget *parent)
+{
+    QLabel *label = makeI18nLabel(key, parent);
+    label->setWordWrap(true);
+    label->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    label->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     return label;
 }
 
@@ -60,8 +80,11 @@ MainWindow::MainWindow(QWidget *parent)
       proxyState_(0),
       proxyUrl_(0),
       requestsMetric_(0),
+      controlRequestsMetric_(0),
       successMetric_(0),
       failedMetric_(0),
+      inFlightMetric_(0),
+      guardMatchRateMetric_(0),
       blockedMetric_(0),
       retryMetric_(0),
       latencyMetric_(0),
@@ -151,7 +174,7 @@ void MainWindow::buildUi()
     QWidget *right = new QWidget(splitter);
     QVBoxLayout *rightLayout = new QVBoxLayout(right);
     rightLayout->setContentsMargins(0, 0, 0, 0);
-    rightLayout->setSpacing(8);
+    rightLayout->setSpacing(16);
     rightLayout->addWidget(buildRuntimePanel());
     rightLayout->addWidget(buildInfoPanel(), 1);
     rightLayout->addWidget(buildLogPanel(), 1);
@@ -249,18 +272,17 @@ QWidget *MainWindow::buildProxyPanel()
 
     QWidget *content = new QWidget(box);
     content->setObjectName("proxyFormContent");
-    content->setMinimumWidth(640);
     QVBoxLayout *contentLayout = new QVBoxLayout(content);
     contentLayout->setContentsMargins(0, 0, 0, 0);
     contentLayout->setSpacing(10);
 
     QGridLayout *grid = new QGridLayout();
-    grid->setHorizontalSpacing(10);
+    grid->setHorizontalSpacing(8);
     grid->setVerticalSpacing(8);
-    grid->setColumnMinimumWidth(0, 110);
-    grid->setColumnMinimumWidth(1, 150);
-    grid->setColumnMinimumWidth(2, 130);
-    grid->setColumnMinimumWidth(3, 150);
+    grid->setColumnMinimumWidth(0, 105);
+    grid->setColumnMinimumWidth(1, 145);
+    grid->setColumnMinimumWidth(2, 115);
+    grid->setColumnMinimumWidth(3, 145);
 
     proxyHostEdit_ = new QLineEdit(box);
     proxyPortSpin_ = new QSpinBox(box);
@@ -309,46 +331,46 @@ QWidget *MainWindow::buildProxyPanel()
     forwardUserAgentCheck_ = new QCheckBox(box);
     forwardUserAgentCheck_->setProperty("i18n_key", "forward_user_agent");
 
-    grid->addWidget(makeI18nLabel("listen_host", box), 0, 0);
+    grid->addWidget(makeFormLabel("listen_host", box), 0, 0);
     grid->addWidget(proxyHostEdit_, 0, 1);
-    grid->addWidget(makeI18nLabel("listen_port", box), 0, 2);
+    grid->addWidget(makeFormLabel("listen_port", box), 0, 2);
     grid->addWidget(proxyPortSpin_, 0, 3);
-    grid->addWidget(makeI18nLabel("path_prefix", box), 1, 0);
+    grid->addWidget(makeFormLabel("path_prefix", box), 1, 0);
     grid->addWidget(proxyPrefixEdit_, 1, 1);
-    grid->addWidget(makeI18nLabel("upstream_base_url", box), 1, 2);
+    grid->addWidget(makeFormLabel("upstream_base_url", box), 1, 2);
     grid->addWidget(upstreamUrlEdit_, 1, 3);
-    grid->addWidget(makeI18nLabel("fallback_api_key", box), 2, 0);
+    grid->addWidget(makeFormLabel("fallback_api_key", box), 2, 0);
     grid->addWidget(apiKeyEdit_, 2, 1);
-    grid->addWidget(makeI18nLabel("user_agent", box), 2, 2);
+    grid->addWidget(makeFormLabel("user_agent", box), 2, 2);
     grid->addWidget(userAgentEdit_, 2, 3);
-    grid->addWidget(makeI18nLabel("upstream_proxy", box), 3, 0);
+    grid->addWidget(makeFormLabel("upstream_proxy", box), 3, 0);
     grid->addWidget(upstreamProxyEdit_, 3, 1, 1, 3);
-    grid->addWidget(makeI18nLabel("upstream_timeout_sec", box), 4, 0);
+    grid->addWidget(makeFormLabel("upstream_timeout_sec", box), 4, 0);
     grid->addWidget(upstreamTimeoutSpin_, 4, 1);
-    grid->addWidget(makeI18nLabel("buffer_timeout_sec", box), 4, 2);
+    grid->addWidget(makeFormLabel("buffer_timeout_sec", box), 4, 2);
     grid->addWidget(bufferTimeoutSpin_, 4, 3);
-    grid->addWidget(makeI18nLabel("first_token_timeout_sec", box), 5, 0);
+    grid->addWidget(makeFormLabel("first_token_timeout_sec", box), 5, 0);
     grid->addWidget(firstTokenTimeoutSpin_, 5, 1);
-    grid->addWidget(makeI18nLabel("request_body_limit_bytes", box), 6, 0);
+    grid->addWidget(makeFormLabel("request_body_limit_bytes", box), 6, 0);
     grid->addWidget(requestBodyLimitSpin_, 6, 1);
-    grid->addWidget(makeI18nLabel("response_buffer_limit_bytes", box), 6, 2);
+    grid->addWidget(makeFormLabel("response_buffer_limit_bytes", box), 6, 2);
     grid->addWidget(responseBufferLimitSpin_, 6, 3);
-    grid->addWidget(makeI18nLabel("stream_action", box), 7, 0);
+    grid->addWidget(makeFormLabel("stream_action", box), 7, 0);
     grid->addWidget(streamActionCombo_, 7, 1, 1, 3);
-    grid->addWidget(makeI18nLabel("intercept_rule_mode", box), 8, 0);
+    grid->addWidget(makeFormLabel("intercept_rule_mode", box), 8, 0);
     grid->addWidget(interceptRuleModeCombo_, 8, 1, 1, 3);
-    grid->addWidget(makeI18nLabel("guard_values", box), 9, 0);
+    grid->addWidget(makeFormLabel("guard_values", box), 9, 0);
     grid->addWidget(reasoningEqualsEdit_, 9, 1);
-    grid->addWidget(makeI18nLabel("guard_retries", box), 9, 2);
+    grid->addWidget(makeFormLabel("guard_retries", box), 9, 2);
     grid->addWidget(reasoning516RetrySpin_, 9, 3);
-    grid->addWidget(makeI18nLabel("guard_endpoints", box), 10, 0);
+    grid->addWidget(makeFormLabel("guard_endpoints", box), 10, 0);
     grid->addWidget(guardEndpointsEdit_, 10, 1, 1, 3);
-    grid->addWidget(makeI18nLabel("block_status_code", box), 11, 0);
+    grid->addWidget(makeFormLabel("block_status_code", box), 11, 0);
     grid->addWidget(nonStreamStatusCodeSpin_, 11, 1);
-    grid->addWidget(interceptStreamingCheck_, 11, 2);
-    grid->addWidget(interceptNonStreamingCheck_, 11, 3);
-    grid->addWidget(retryCapacityCheck_, 12, 1, 1, 2);
-    grid->addWidget(forwardUserAgentCheck_, 13, 1, 1, 2);
+    grid->addWidget(interceptStreamingCheck_, 12, 0, 1, 2);
+    grid->addWidget(interceptNonStreamingCheck_, 12, 2, 1, 2);
+    grid->addWidget(retryCapacityCheck_, 13, 0, 1, 2);
+    grid->addWidget(forwardUserAgentCheck_, 13, 2, 1, 2);
     grid->setColumnStretch(1, 2);
     grid->setColumnStretch(3, 3);
     contentLayout->addLayout(grid);
@@ -374,7 +396,7 @@ QWidget *MainWindow::buildProxyPanel()
     scrollArea->setObjectName("proxyScrollArea");
     scrollArea->setWidgetResizable(true);
     scrollArea->setFrameShape(QFrame::NoFrame);
-    scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     scrollArea->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     scrollArea->setWidget(content);
     outer->addWidget(scrollArea, 1);
@@ -410,42 +432,58 @@ QWidget *MainWindow::buildRuntimePanel()
 {
     QGroupBox *box = new QGroupBox(this);
     box->setProperty("i18n_key", "group_live");
+    box->setMinimumHeight(122);
     QGridLayout *grid = new QGridLayout(box);
-    grid->setContentsMargins(12, 16, 12, 12);
-    grid->setHorizontalSpacing(14);
-    grid->setVerticalSpacing(10);
+    grid->setContentsMargins(10, 14, 10, 8);
+    grid->setHorizontalSpacing(6);
+    grid->setVerticalSpacing(2);
 
     requestsMetric_ = new QLabel("0", box);
+    controlRequestsMetric_ = new QLabel("0", box);
     successMetric_ = new QLabel("0", box);
     failedMetric_ = new QLabel("0", box);
+    inFlightMetric_ = new QLabel("0", box);
+    guardMatchRateMetric_ = new QLabel("0.00%", box);
     blockedMetric_ = new QLabel("0", box);
     retryMetric_ = new QLabel("0", box);
     latencyMetric_ = new QLabel("-", box);
     uptimeMetric_ = new QLabel("-", box);
 
     QList<QLabel *> values;
-    values << requestsMetric_ << successMetric_ << failedMetric_ << blockedMetric_ << retryMetric_ << latencyMetric_ << uptimeMetric_;
+    values << requestsMetric_ << controlRequestsMetric_ << successMetric_ << failedMetric_ << inFlightMetric_
+           << guardMatchRateMetric_ << blockedMetric_ << retryMetric_ << latencyMetric_ << uptimeMetric_;
     for (int i = 0; i < values.size(); ++i) {
         values.at(i)->setObjectName("metricValue");
         values.at(i)->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        values.at(i)->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     }
 
-    grid->addWidget(makeI18nLabel("metric_requests", box), 0, 0);
+    grid->addWidget(makeMetricLabel("metric_requests", box), 0, 0);
     grid->addWidget(requestsMetric_, 0, 1);
-    grid->addWidget(makeI18nLabel("metric_success", box), 1, 0);
-    grid->addWidget(successMetric_, 1, 1);
-    grid->addWidget(makeI18nLabel("metric_failed", box), 2, 0);
-    grid->addWidget(failedMetric_, 2, 1);
-    grid->addWidget(makeI18nLabel("metric_guard_blocked", box), 0, 2);
-    grid->addWidget(blockedMetric_, 0, 3);
-    grid->addWidget(makeI18nLabel("metric_guard_retries", box), 1, 2);
-    grid->addWidget(retryMetric_, 1, 3);
-    grid->addWidget(makeI18nLabel("metric_avg_latency", box), 2, 2);
-    grid->addWidget(latencyMetric_, 2, 3);
-    grid->addWidget(makeI18nLabel("metric_uptime", box), 3, 2);
-    grid->addWidget(uptimeMetric_, 3, 3);
-    grid->setColumnStretch(1, 1);
-    grid->setColumnStretch(3, 1);
+    grid->addWidget(makeMetricLabel("metric_control_requests", box), 1, 0);
+    grid->addWidget(controlRequestsMetric_, 1, 1);
+    grid->addWidget(makeMetricLabel("metric_success", box), 2, 0);
+    grid->addWidget(successMetric_, 2, 1);
+    grid->addWidget(makeMetricLabel("metric_failed", box), 3, 0);
+    grid->addWidget(failedMetric_, 3, 1);
+    grid->addWidget(makeMetricLabel("metric_in_flight", box), 4, 0);
+    grid->addWidget(inFlightMetric_, 4, 1);
+    grid->addWidget(makeMetricLabel("metric_guard_match_rate", box), 0, 2);
+    grid->addWidget(guardMatchRateMetric_, 0, 3);
+    grid->addWidget(makeMetricLabel("metric_guard_blocked", box), 1, 2);
+    grid->addWidget(blockedMetric_, 1, 3);
+    grid->addWidget(makeMetricLabel("metric_guard_retries", box), 2, 2);
+    grid->addWidget(retryMetric_, 2, 3);
+    grid->addWidget(makeMetricLabel("metric_avg_latency", box), 3, 2);
+    grid->addWidget(latencyMetric_, 3, 3);
+    grid->addWidget(makeMetricLabel("metric_uptime", box), 4, 2);
+    grid->addWidget(uptimeMetric_, 4, 3);
+    grid->setColumnMinimumWidth(0, 70);
+    grid->setColumnMinimumWidth(2, 70);
+    grid->setColumnStretch(0, 1);
+    grid->setColumnStretch(1, 2);
+    grid->setColumnStretch(2, 1);
+    grid->setColumnStretch(3, 2);
     return box;
 }
 
@@ -455,7 +493,7 @@ QWidget *MainWindow::buildInfoPanel()
     box->setProperty("i18n_key", "group_info");
     box->setMinimumHeight(180);
     QVBoxLayout *outer = new QVBoxLayout(box);
-    outer->setContentsMargins(12, 16, 12, 12);
+    outer->setContentsMargins(12, 16, 12, 28);
     outer->setSpacing(4);
 
     infoText_ = new QPlainTextEdit(box);
@@ -547,7 +585,8 @@ void MainWindow::applyStyle()
         "QWidget#rootContent QLabel[state='warn'] { color: #9b6a00; font-weight: 600; }"
         "QWidget#rootContent QLabel[state='bad'] { color: #b13b3b; font-weight: 600; }"
         "QWidget#rootContent QLabel[state='idle'] { color: #5f86a5; font-weight: 600; }"
-        "QWidget#rootContent QLabel#metricValue { font-size: 18px; font-weight: 600; color: #174e78; }"
+        "QWidget#rootContent QLabel#metricLabel { font-size: 12px; color: #3d6e93; }"
+        "QWidget#rootContent QLabel#metricValue { font-size: 14px; font-weight: 600; color: #174e78; }"
         "QWidget#rootContent QLabel#infoValue { color: #204d70; }"
     );
 }
@@ -603,12 +642,15 @@ QString MainWindow::textFor(const QString &key) const
     if (key == "copy_proxy_url") return en ? "Copy Proxy URL" : "复制代理地址";
     if (key == "save_config") return en ? "Save Config" : "保存配置";
     if (key == "group_live") return en ? "Live Overview" : "实时概览";
-    if (key == "metric_requests") return en ? "Requests" : "请求数";
+    if (key == "metric_requests") return en ? "Business" : "业务请求";
+    if (key == "metric_control_requests") return en ? "Control" : "控制请求";
     if (key == "metric_success") return en ? "Success" : "成功";
     if (key == "metric_failed") return en ? "Failed" : "失败";
-    if (key == "metric_guard_blocked") return en ? "Guard Blocked" : "Guard 拦截";
-    if (key == "metric_guard_retries") return en ? "Guard Retries" : "Guard 重试";
-    if (key == "metric_avg_latency") return en ? "Avg Latency" : "平均延迟";
+    if (key == "metric_in_flight") return en ? "In Flight" : "处理中";
+    if (key == "metric_guard_match_rate") return en ? "Match Rate" : "命中率";
+    if (key == "metric_guard_blocked") return en ? "Final Block" : "最终阻断";
+    if (key == "metric_guard_retries") return en ? "Retries" : "重试次数";
+    if (key == "metric_avg_latency") return en ? "Latency" : "平均延迟";
     if (key == "metric_uptime") return en ? "Uptime" : "运行时间";
     if (key == "group_info") return en ? "Info Panel" : "信息面板";
     if (key == "info_listen_url") return en ? "Listen URL" : "监听地址";
@@ -964,9 +1006,13 @@ void MainWindow::updateProxyStats()
     } else if (!lastRuntimeSnapshot_.isEmpty()) {
         runtime = lastRuntimeSnapshot_;
     }
-    requestsMetric_->setText(displayJsonNumber(runtime, "requests_total"));
+    requestsMetric_->setText(displayJsonNumber(runtime, "intercepted_requests_total"));
+    controlRequestsMetric_->setText(displayJsonNumber(runtime, "control_requests_total"));
     successMetric_->setText(displayJsonNumber(runtime, "successful_requests_total"));
     failedMetric_->setText(displayJsonNumber(runtime, "failed_requests_total"));
+    inFlightMetric_->setText(displayJsonNumber(runtime, "in_flight_proxy_requests"));
+    const double guardMatchRate = runtime.value("guard_match_rate").toDouble(0.0);
+    guardMatchRateMetric_->setText(QString::number(guardMatchRate * 100.0, 'f', 2) + "%");
     blockedMetric_->setText(displayJsonNumber(runtime, "blocked_response_count"));
     retryMetric_->setText(displayJsonNumber(runtime, "guard_retry_total"));
     const double avg = runtime.value("avg_latency_ms").toDouble(-1.0);

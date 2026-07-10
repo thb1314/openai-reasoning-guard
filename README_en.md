@@ -308,11 +308,15 @@ When `proxy_prefix` is empty, `GET /` is not fixed as a health check, but is for
 
 The `runtime` field in `/status` displays statistics since the current proxy startup:
 
+The live overview displays business, control, and in-flight requests separately. The business-request scope is `intercepted_requests_total = successful_requests_total + failed_requests_total + in_flight_proxy_requests`; the all-HTTP-request scope is `requests_total = control_requests_total + intercepted_requests_total`, so control endpoints and unfinished business requests can temporarily make "success + failed" smaller than the total request count.
+
 - `requests_total`: total number of all requests, including control endpoints.
 - `control_requests_total`: total number of control endpoint requests.
 - `health_requests_total`: number of health check requests.
 - `status_requests_total`: number of status, version, and props requests.
 - `intercepted_requests_total`: number of business requests entering the proxy forwarding path.
+- `completed_proxy_requests_total`: number of business requests with a final result, equal to successful plus failed requests.
+- `in_flight_proxy_requests`: number of business requests currently still being processed.
 - `upstream_attempts_total`: number of actual attempts sent to the upstream service; internal retries increase this value.
 - `successful_requests_total` / `failed_requests_total`: number of final proxy requests completed successfully/failed for the client.
 - `proxy_error_total`: number of network proxy layer errors.
@@ -326,8 +330,9 @@ The `runtime` field in `/status` displays statistics since the current proxy sta
 - `inspected_response_count`: number of responses inspected by the guard.
 - `bypassed_proxy_request_count`: number of business requests that did not enter guard inspection.
 - `matched_response_count`: number of responses matching the current interception rule.
+- `guard_match_rate`: Guard match rate, calculated as `matched_response_count / inspected_response_count`; it counts inspected upstream responses, including responses produced by internal retries.
 - `matched_streaming_count` / `matched_non_streaming_count`: number of streaming/non-streaming responses matching the current interception rule.
-- `blocked_response_count`: total number of responses actually intercepted in the end.
+- `blocked_response_count`: number of client responses finally blocked after retry exhaustion; the GUI labels this as "Final Blocks", which is different from Guard matches.
 - `blocked_streaming_count` / `blocked_non_streaming_count`: number of streaming/non-streaming responses actually intercepted in the end.
 - `guard_retry_total`: number of internal retries triggered by guard or protected exceptions.
 - `reasoning_tokens_516_retry_total`: number of internal retries triggered by `reasoning_tokens=516`.
