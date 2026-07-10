@@ -78,7 +78,7 @@ Chat Completions API 则使用 `usage.completion_tokens_details.reasoning_tokens
 - 默认 guard 集合：`516,1034,1552`。
 - 命中 guard 后先内部重试；中间重试只计 retry，不计 blocked/failed；重试耗尽后才返回配置的错误状态。
 - 流式 SSE 异常检测：`200` 但流不完整、缺 terminal event、缺 usage 或出现 failed/error event 时，不当作成功透传。
-- 请求体和响应体资源限制、请求/响应缓冲超时、上游请求超时。
+- 请求体和响应体资源限制、请求/响应缓冲超时、流式首 token 超时重试、上游请求超时。
 - 支持 `Content-Length` 和 `Transfer-Encoding: chunked` 请求体。
 - 支持通用上游代理和 HTTP/HTTPS/SOCKS 拆分代理字段。
 - 控制接口：`/healthz`、`/status`、`/version`、`/props`。
@@ -159,7 +159,7 @@ GUI 第一屏分为四块：
 - 右上实时统计。
 - 右侧信息面板与控制台日志。
 
-信息面板会展示当前代理监听地址、上游地址、路径前缀、控制端点、buffer limit、stream action 和 reasoning guard 策略。GUI 可直接编辑 `request_body_limit_bytes`、`response_buffer_limit_bytes` 和 `stream_action`。
+信息面板会展示当前代理监听地址、上游地址、路径前缀、控制端点、buffer limit、首 token 超时、stream action 和 reasoning guard 策略。GUI 可直接编辑 `first_token_timeout_sec`、`request_body_limit_bytes`、`response_buffer_limit_bytes` 和 `stream_action`。
 
 项目提供一键重启脚本：
 
@@ -200,6 +200,7 @@ openai-reasoning-guard-cli --config config.example.json --api-proxy
   "upstream_https_proxy": "",
   "upstream_socks_proxy": "",
   "upstream_timeout_sec": 1800,
+  "first_token_timeout_sec": 30,
   "buffer_timeout_sec": 180,
   "request_body_limit_bytes": 104857600,
   "response_buffer_limit_bytes": 104857600,
@@ -233,14 +234,15 @@ openai-reasoning-guard-cli --config config.example.json --api-proxy
 | `upstream_https_proxy` | 空 | `"http://127.0.0.1:7890"` | HTTPS 上游代理字段。仅在 `upstream_proxy` 为空且上游 base URL 是 HTTPS 时优先使用。 |
 | `upstream_socks_proxy` | 空 | `"127.0.0.1:7890"` 或 `"socks5://127.0.0.1:7890"` | SOCKS 上游代理字段。没有 scheme 时默认补 `socks5://`。作为通用/协议代理都为空时的最后备选。 |
 | `upstream_timeout_sec` | `1800` | `600` | 单次上游请求最长等待秒数。超时返回 `504`，记录 `error_type=upstream_timeout` 和 `upstream_timeout_total`。长推理场景建议保持较大值。 |
+| `first_token_timeout_sec` | `30` | `10` 或 `0` | 流式请求的首 token 超时，代理层按“收到首个非空上游响应 body 字节”计时。只对请求体中 `stream=true` 生效；超时会占用 `guard_retry_attempts` 预算重试，耗尽后返回 `504` 和 `error_type=first_token_timeout`。设为 `0` 可关闭。读取配置时也兼容 `upstream_first_byte_timeout_seconds`。 |
 | `buffer_timeout_sec` | `180` | `360` | 请求体缓冲和上游响应缓冲的等待秒数。请求体未收齐返回 `408`；响应缓冲超时返回 `502`；均记录 `error_type=buffer_timeout`。 |
 | `request_body_limit_bytes` | `104857600` | `10485760` | 客户端请求体最大缓冲字节数。示例为 10MB；默认 100MB。超限返回 `413`，不会请求上游。 |
 | `response_buffer_limit_bytes` | `104857600` | `209715200` | 上游响应最大缓冲字节数。示例为 200MB；默认 100MB。严格流式和非流式检查都受这个限制保护，超限返回 `502`。 |
 | `intercept_rule_mode` | `reasoning_tokens` | `"final_answer_only_high_xhigh"` | 拦截规则模式。`reasoning_tokens` 按 `reasoning_equals` 精确命中；`final_answer_only_high_xhigh` 是实验模式，用 high/xhigh 且只有最终答案结构作为命中特征。 |
 | `reasoning_equals` | `[516,1034,1552]` | `[516, 1034]` 或 `"516,1034"` | 需要拦截的 `reasoning_tokens` 集合。配置文件推荐 JSON 数组；CLI/GUI 可用逗号或空格分隔。 |
-| `guard_retry_attempts` | `3` | `10` | 命中 guard 后代理内部重新请求上游的次数。中间 retry 不返回给客户端；耗尽后才返回 `non_stream_status_code`。 |
+| `guard_retry_attempts` | `3` | `10` | 每个客户端请求的共享内部重试预算，用于 guard 命中、首 token 超时和指定 capacity 错误。中间 retry 不返回给客户端；各错误在预算耗尽后按自身最终策略返回。 |
 | `reasoning_516_retry_count` | `3` | `10` | 兼容字段，含义等同 `guard_retry_attempts`。保存配置时会和 `guard_retry_attempts` 保持一致。 |
-| `retry_upstream_capacity_errors` | `true` | `false` | 是否对特定上游 capacity 错误做内部重试。只匹配明确的 capacity 文案，不泛化重试普通 `429/502`。 |
+| `retry_upstream_capacity_errors` | `true` | `false` | 是否对特定上游 capacity 错误做内部重试。只匹配明确的 capacity 文案，不泛化重试普通 `429/502`；重试耗尽后会原样转发最后一次上游状态码、响应头和错误 body。 |
 | `guard_endpoints` | `/responses`, `/chat/completions`, `/v1/responses`, `/v1/chat/completions` | `["/responses", "/v1/responses"]` | 需要检查 reasoning guard 的路径集合。匹配时会同时看原始路径和去掉 `proxy_prefix` 后的业务路径。 |
 | `intercept_streaming` | `true` | `false` | 是否对流式 SSE 响应实际拦截。关闭后仍可观察统计，但命中不会阻断客户端响应。 |
 | `intercept_non_streaming` | `true` | `false` | 是否对非流式 JSON 响应实际拦截。关闭后仍可观察统计，但命中不会阻断客户端响应。 |
@@ -273,6 +275,7 @@ openai-reasoning-guard-cli --config config.example.json --api-proxy
 | `--upstream-https-proxy` | `--upstream-https-proxy http://127.0.0.1:7890` | 覆盖 `upstream_https_proxy`。 |
 | `--upstream-socks-proxy` | `--upstream-socks-proxy socks5://127.0.0.1:7890` | 覆盖 `upstream_socks_proxy`。 |
 | `--upstream-timeout` | `--upstream-timeout 1800` | 覆盖 `upstream_timeout_sec`。 |
+| `--first-token-timeout` | `--first-token-timeout 30` 或 `--first-token-timeout 0` | 覆盖 `first_token_timeout_sec`；`--upstream-first-byte-timeout` 是兼容别名。 |
 | `--buffer-timeout` | `--buffer-timeout 360` | 覆盖 `buffer_timeout_sec`。 |
 | `--request-body-limit-bytes` | `--request-body-limit-bytes 104857600` | 覆盖 `request_body_limit_bytes`。 |
 | `--response-buffer-limit-bytes` | `--response-buffer-limit-bytes 104857600` | 覆盖 `response_buffer_limit_bytes`。 |
@@ -317,6 +320,8 @@ openai-reasoning-guard-cli --config config.example.json --api-proxy
 - `client_connection_error_total`：客户端提前断开或连接异常数。
 - `buffer_timeout_total`：请求体或响应缓冲超时数。
 - `upstream_timeout_total`：上游请求超时数。
+- `first_token_timeout_total`：流式请求未在配置时间内收到首个上游响应 body 字节的尝试次数，包含随后重试成功的尝试。
+- `first_token_timeout_retry_total`：首 token 超时实际触发的内部重试次数。
 - `local_proxy_error_total`：本地请求/响应限制、bad request 等本地错误数。
 - `inspected_response_count`：被 guard 检查过的响应数。
 - `bypassed_proxy_request_count`：未进入 guard 检查的业务请求数。

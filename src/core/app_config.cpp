@@ -27,11 +27,7 @@ static QString readString(const QJsonObject &object, const QString &key, const Q
 
 static QString normalizeUpstreamBaseUrl(const QString &value)
 {
-    const QString trimmed = value.trimmed();
-    if (trimmed == "https://ai.input.im/v1") {
-        return QString();
-    }
-    return trimmed;
+    return value.trimmed();
 }
 
 static int readInt(const QJsonObject &object, const QString &key, int fallback)
@@ -150,6 +146,7 @@ AppConfig::AppConfig()
       upstreamUserAgent("curl/8.7.1"),
       forwardUserAgent(false),
       upstreamTimeoutSec(1800),
+      firstTokenTimeoutSec(30),
       bufferTimeoutSec(180),
       requestBodyLimitBytes(defaultRequestBodyLimitBytes()),
       responseBufferLimitBytes(defaultResponseBufferLimitBytes()),
@@ -209,6 +206,8 @@ AppConfig loadConfig(const QString &path)
     config.upstreamHttpsProxy = proxyTextWithDefaultScheme(config.upstreamHttpsProxy, false);
     config.upstreamSocksProxy = proxyTextWithDefaultScheme(config.upstreamSocksProxy, true);
     config.upstreamTimeoutSec = readInt(object, "upstream_timeout_sec", config.upstreamTimeoutSec);
+    config.firstTokenTimeoutSec = readInt(object, "first_token_timeout_sec",
+        readInt(object, "upstream_first_byte_timeout_seconds", config.firstTokenTimeoutSec));
     config.bufferTimeoutSec = readInt(object, "buffer_timeout_sec", config.bufferTimeoutSec);
     config.requestBodyLimitBytes = readInt64(object, "request_body_limit_bytes", config.requestBodyLimitBytes);
     config.responseBufferLimitBytes = readInt64(object, "response_buffer_limit_bytes", config.responseBufferLimitBytes);
@@ -243,6 +242,7 @@ bool saveConfig(const AppConfig &config, const QString &path, QString *error)
     object.insert("upstream_https_proxy", proxyTextWithDefaultScheme(config.upstreamHttpsProxy, false));
     object.insert("upstream_socks_proxy", proxyTextWithDefaultScheme(config.upstreamSocksProxy, true));
     object.insert("upstream_timeout_sec", config.upstreamTimeoutSec);
+    object.insert("first_token_timeout_sec", config.firstTokenTimeoutSec);
     object.insert("buffer_timeout_sec", config.bufferTimeoutSec);
     object.insert("request_body_limit_bytes", double(config.requestBodyLimitBytes));
     object.insert("response_buffer_limit_bytes", double(config.responseBufferLimitBytes));

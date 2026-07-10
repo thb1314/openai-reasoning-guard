@@ -75,6 +75,7 @@ MainWindow::MainWindow(QWidget *parent)
       userAgentEdit_(0),
       upstreamProxyEdit_(0),
       upstreamTimeoutSpin_(0),
+      firstTokenTimeoutSpin_(0),
       bufferTimeoutSpin_(0),
       requestBodyLimitSpin_(0),
       responseBufferLimitSpin_(0),
@@ -273,6 +274,9 @@ QWidget *MainWindow::buildProxyPanel()
     upstreamTimeoutSpin_ = new QSpinBox(box);
     upstreamTimeoutSpin_->setRange(1, 86400);
     upstreamTimeoutSpin_->setMinimumWidth(118);
+    firstTokenTimeoutSpin_ = new QSpinBox(box);
+    firstTokenTimeoutSpin_->setRange(0, 3600);
+    firstTokenTimeoutSpin_->setMinimumWidth(118);
     bufferTimeoutSpin_ = new QSpinBox(box);
     bufferTimeoutSpin_->setRange(1, 86400);
     bufferTimeoutSpin_->setMinimumWidth(118);
@@ -323,26 +327,28 @@ QWidget *MainWindow::buildProxyPanel()
     grid->addWidget(upstreamTimeoutSpin_, 4, 1);
     grid->addWidget(makeI18nLabel("buffer_timeout_sec", box), 4, 2);
     grid->addWidget(bufferTimeoutSpin_, 4, 3);
-    grid->addWidget(makeI18nLabel("request_body_limit_bytes", box), 5, 0);
-    grid->addWidget(requestBodyLimitSpin_, 5, 1);
-    grid->addWidget(makeI18nLabel("response_buffer_limit_bytes", box), 5, 2);
-    grid->addWidget(responseBufferLimitSpin_, 5, 3);
-    grid->addWidget(makeI18nLabel("stream_action", box), 6, 0);
-    grid->addWidget(streamActionCombo_, 6, 1, 1, 3);
-    grid->addWidget(makeI18nLabel("intercept_rule_mode", box), 7, 0);
-    grid->addWidget(interceptRuleModeCombo_, 7, 1, 1, 3);
-    grid->addWidget(makeI18nLabel("guard_values", box), 8, 0);
-    grid->addWidget(reasoningEqualsEdit_, 8, 1);
-    grid->addWidget(makeI18nLabel("guard_retries", box), 8, 2);
-    grid->addWidget(reasoning516RetrySpin_, 8, 3);
-    grid->addWidget(makeI18nLabel("guard_endpoints", box), 9, 0);
-    grid->addWidget(guardEndpointsEdit_, 9, 1, 1, 3);
-    grid->addWidget(makeI18nLabel("block_status_code", box), 10, 0);
-    grid->addWidget(nonStreamStatusCodeSpin_, 10, 1);
-    grid->addWidget(interceptStreamingCheck_, 10, 2);
-    grid->addWidget(interceptNonStreamingCheck_, 10, 3);
-    grid->addWidget(retryCapacityCheck_, 11, 1, 1, 2);
-    grid->addWidget(forwardUserAgentCheck_, 12, 1, 1, 2);
+    grid->addWidget(makeI18nLabel("first_token_timeout_sec", box), 5, 0);
+    grid->addWidget(firstTokenTimeoutSpin_, 5, 1);
+    grid->addWidget(makeI18nLabel("request_body_limit_bytes", box), 6, 0);
+    grid->addWidget(requestBodyLimitSpin_, 6, 1);
+    grid->addWidget(makeI18nLabel("response_buffer_limit_bytes", box), 6, 2);
+    grid->addWidget(responseBufferLimitSpin_, 6, 3);
+    grid->addWidget(makeI18nLabel("stream_action", box), 7, 0);
+    grid->addWidget(streamActionCombo_, 7, 1, 1, 3);
+    grid->addWidget(makeI18nLabel("intercept_rule_mode", box), 8, 0);
+    grid->addWidget(interceptRuleModeCombo_, 8, 1, 1, 3);
+    grid->addWidget(makeI18nLabel("guard_values", box), 9, 0);
+    grid->addWidget(reasoningEqualsEdit_, 9, 1);
+    grid->addWidget(makeI18nLabel("guard_retries", box), 9, 2);
+    grid->addWidget(reasoning516RetrySpin_, 9, 3);
+    grid->addWidget(makeI18nLabel("guard_endpoints", box), 10, 0);
+    grid->addWidget(guardEndpointsEdit_, 10, 1, 1, 3);
+    grid->addWidget(makeI18nLabel("block_status_code", box), 11, 0);
+    grid->addWidget(nonStreamStatusCodeSpin_, 11, 1);
+    grid->addWidget(interceptStreamingCheck_, 11, 2);
+    grid->addWidget(interceptNonStreamingCheck_, 11, 3);
+    grid->addWidget(retryCapacityCheck_, 12, 1, 1, 2);
+    grid->addWidget(forwardUserAgentCheck_, 13, 1, 1, 2);
     grid->setColumnStretch(1, 2);
     grid->setColumnStretch(3, 3);
     contentLayout->addLayout(grid);
@@ -383,6 +389,7 @@ QWidget *MainWindow::buildProxyPanel()
     connect(upstreamUrlEdit_, SIGNAL(textChanged(QString)), this, SLOT(updateProxyStats()));
     connect(upstreamProxyEdit_, SIGNAL(textChanged(QString)), this, SLOT(updateProxyStats()));
     connect(upstreamTimeoutSpin_, SIGNAL(valueChanged(int)), this, SLOT(updateProxyStats()));
+    connect(firstTokenTimeoutSpin_, SIGNAL(valueChanged(int)), this, SLOT(updateProxyStats()));
     connect(bufferTimeoutSpin_, SIGNAL(valueChanged(int)), this, SLOT(updateProxyStats()));
     connect(requestBodyLimitSpin_, SIGNAL(valueChanged(int)), this, SLOT(updateProxyStats()));
     connect(responseBufferLimitSpin_, SIGNAL(valueChanged(int)), this, SLOT(updateProxyStats()));
@@ -575,6 +582,7 @@ QString MainWindow::textFor(const QString &key) const
         ? "http://127.0.0.1:7890 or socks5://127.0.0.1:7890"
         : "http://127.0.0.1:7890 或 socks5://127.0.0.1:7890";
     if (key == "upstream_timeout_sec") return en ? "Upstream Timeout (sec)" : "上游超时（秒）";
+    if (key == "first_token_timeout_sec") return en ? "First Token Timeout (sec)" : "首 Token 超时（秒）";
     if (key == "buffer_timeout_sec") return en ? "Buffer Timeout (sec)" : "缓冲超时（秒）";
     if (key == "request_body_limit_bytes") return en ? "Request Body Limit" : "请求体上限";
     if (key == "response_buffer_limit_bytes") return en ? "Response Buffer Limit" : "响应缓冲上限";
@@ -583,7 +591,7 @@ QString MainWindow::textFor(const QString &key) const
     if (key == "rule_mode_reasoning_tokens") return en ? "reasoning_tokens (Recommended)" : "reasoning_tokens（推荐）";
     if (key == "rule_mode_final_only") return en ? "final answer only (Experimental)" : "final answer only（实验）";
     if (key == "guard_values") return en ? "Guard Values" : "Guard 规则值";
-    if (key == "guard_retries") return en ? "Guard Retries" : "Guard 重试次数";
+    if (key == "guard_retries") return en ? "Retry Budget" : "内部重试预算";
     if (key == "guard_endpoints") return en ? "Guard Endpoints" : "Guard 端点";
     if (key == "block_status_code") return en ? "Block Status Code" : "拦截状态码";
     if (key == "intercept_streaming") return en ? "Intercept Streaming" : "拦截流式";
@@ -609,11 +617,12 @@ QString MainWindow::textFor(const QString &key) const
     if (key == "info_control_endpoints") return en ? "Control Endpoints" : "控制端点";
     if (key == "info_control_endpoints_value") return "/status  |  /healthz  |  /version  |  /props";
     if (key == "info_buffer_limits") return en ? "Buffer Limits" : "缓冲上限";
+    if (key == "info_first_token_timeout") return en ? "First Token Timeout" : "首 Token 超时";
     if (key == "info_policy") return en ? "Guard Policy" : "拦截策略";
     if (key == "info_rule_mode") return en ? "Rule Mode" : "规则模式";
     if (key == "info_guard_paths") return en ? "Guard Paths" : "拦截路径";
     if (key == "info_guard_values") return en ? "Guard Values" : "命中值";
-    if (key == "info_guard_retries") return en ? "Retries" : "重试次数";
+    if (key == "info_guard_retries") return en ? "Retry Budget" : "重试预算";
     if (key == "info_capacity_retry") return en ? "Capacity Retry" : "capacity 重试";
     if (key == "info_stream_action") return en ? "Stream Action" : "流式动作";
     if (key == "info_enabled") return en ? "enabled" : "开启";
@@ -685,9 +694,10 @@ void MainWindow::retranslateUi()
     if (trayIcon_) {
         trayIcon_->setToolTip(textFor("tray_tooltip"));
     }
-    if (upstreamTimeoutSpin_ && bufferTimeoutSpin_) {
+    if (upstreamTimeoutSpin_ && firstTokenTimeoutSpin_ && bufferTimeoutSpin_) {
         const QString suffix = currentLanguage() == "en" ? QString(" sec") : QString(" 秒");
         upstreamTimeoutSpin_->setSuffix(suffix);
+        firstTokenTimeoutSpin_->setSuffix(suffix);
         bufferTimeoutSpin_->setSuffix(suffix);
     }
     if (requestBodyLimitSpin_ && responseBufferLimitSpin_) {
@@ -789,6 +799,7 @@ void MainWindow::loadSettingsToUi()
     userAgentEdit_->setText(config_.upstreamUserAgent);
     upstreamProxyEdit_->setText(config_.upstreamProxy);
     upstreamTimeoutSpin_->setValue(config_.upstreamTimeoutSec);
+    firstTokenTimeoutSpin_->setValue(config_.firstTokenTimeoutSec);
     bufferTimeoutSpin_->setValue(config_.bufferTimeoutSec);
     requestBodyLimitSpin_->setValue(int(qMin(config_.requestBodyLimitBytes, qint64(0x7fffffff))));
     responseBufferLimitSpin_->setValue(int(qMin(config_.responseBufferLimitBytes, qint64(0x7fffffff))));
@@ -822,6 +833,7 @@ AppConfig MainWindow::collectConfigFromUi() const
     config.forwardUserAgent = forwardUserAgentCheck_->isChecked();
     config.upstreamProxy = proxyTextWithDefaultScheme(upstreamProxyEdit_->text());
     config.upstreamTimeoutSec = upstreamTimeoutSpin_->value();
+    config.firstTokenTimeoutSec = firstTokenTimeoutSpin_->value();
     config.bufferTimeoutSec = bufferTimeoutSpin_->value();
     config.requestBodyLimitBytes = requestBodyLimitSpin_->value();
     config.responseBufferLimitBytes = responseBufferLimitSpin_->value();
@@ -853,6 +865,7 @@ ProxySettings MainWindow::collectProxySettings() const
     settings.upstreamHttpsProxy = config_.upstreamHttpsProxy;
     settings.upstreamSocksProxy = config_.upstreamSocksProxy;
     settings.upstreamTimeoutSec = upstreamTimeoutSpin_->value();
+    settings.firstTokenTimeoutSec = firstTokenTimeoutSpin_->value();
     settings.bufferTimeoutSec = bufferTimeoutSpin_->value();
     settings.requestBodyLimitBytes = requestBodyLimitSpin_->value();
     settings.responseBufferLimitBytes = responseBufferLimitSpin_->value();
@@ -1025,6 +1038,8 @@ void MainWindow::refreshInfoPanel()
     lines << infoLine("info_buffer_limits", QString("request=%1, response=%2")
         .arg(settings.requestBodyLimitBytes)
         .arg(settings.responseBufferLimitBytes));
+    lines << infoLine("info_first_token_timeout", QString::number(settings.firstTokenTimeoutSec) +
+        (currentLanguage() == "en" ? QString(" sec") : QString(" 秒")));
     lines << infoSection("info_policy");
     lines << infoIndentedLine("info_rule_mode", settings.interceptRuleMode);
     lines << infoIndentedLine("info_stream_action", settings.streamAction);

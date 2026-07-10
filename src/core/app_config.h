@@ -20,6 +20,7 @@ struct AppConfig {
     QString upstreamHttpsProxy;
     QString upstreamSocksProxy;
     int upstreamTimeoutSec;
+    int firstTokenTimeoutSec;
     int bufferTimeoutSec;
     qint64 requestBodyLimitBytes;
     qint64 responseBufferLimitBytes;

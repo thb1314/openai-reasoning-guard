@@ -10,6 +10,7 @@
     "upstream_http_proxy": "",
     "upstream_https_proxy": "",
     "upstream_timeout_sec": 1800,
+    "first_token_timeout_sec": 30,
     "buffer_timeout_sec": 180,
     "request_body_limit_bytes": 104857600,
     "response_buffer_limit_bytes": 104857600,

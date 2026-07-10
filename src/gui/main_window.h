@@ -106,6 +106,7 @@ private:
     QLineEdit *userAgentEdit_;
     QLineEdit *upstreamProxyEdit_;
     QSpinBox *upstreamTimeoutSpin_;
+    QSpinBox *firstTokenTimeoutSpin_;
     QSpinBox *bufferTimeoutSpin_;
     QSpinBox *requestBodyLimitSpin_;
     QSpinBox *responseBufferLimitSpin_;

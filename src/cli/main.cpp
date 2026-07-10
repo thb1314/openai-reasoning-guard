@@ -126,12 +126,16 @@ int main(int argc, char **argv)
     QCommandLineOption upstreamHttpsProxyOpt("upstream-https-proxy", "Compatibility alias for --upstream-proxy", "url");
     QCommandLineOption upstreamSocksProxyOpt("upstream-socks-proxy", "Compatibility alias for --upstream-proxy", "url");
     QCommandLineOption upstreamTimeoutOpt("upstream-timeout", "Upstream timeout in seconds", "seconds", "1800");
+    QCommandLineOption firstTokenTimeoutOpt(QStringList() << "first-token-timeout" << "upstream-first-byte-timeout",
+                                            "First upstream response byte timeout for streaming requests; 0 disables it",
+                                            "seconds",
+                                            "30");
     QCommandLineOption bufferTimeoutOpt("buffer-timeout", "JSON/SSE buffer timeout in seconds", "seconds", "180");
     QCommandLineOption requestBodyLimitOpt("request-body-limit-bytes", "Maximum buffered client request body bytes", "bytes", QString::number(defaultRequestBodyLimitBytes()));
     QCommandLineOption responseBufferLimitOpt("response-buffer-limit-bytes", "Maximum buffered upstream response bytes", "bytes", QString::number(defaultResponseBufferLimitBytes()));
     QCommandLineOption reasoningEqualsOpt("reasoning-equals", "Comma/space separated reasoning_tokens values guarded by the proxy", "values", defaultReasoningEquals().join(","));
     QCommandLineOption interceptRuleModeOpt("intercept-rule-mode", "Intercept rule mode: reasoning_tokens or final_answer_only_high_xhigh", "mode");
-    QCommandLineOption guardRetryAttemptsOpt("guard-retry-attempts", "Internal upstream retries after a reasoning guard match", "count", "3");
+    QCommandLineOption guardRetryAttemptsOpt("guard-retry-attempts", "Shared internal retry budget for guard matches, capacity errors, and first-token timeouts", "count", "3");
     QCommandLineOption retryCapacityOpt("retry-upstream-capacity-errors", "Retry selected upstream capacity errors inside the gateway");
     QCommandLineOption noRetryCapacityOpt("no-retry-upstream-capacity-errors", "Pass selected upstream capacity errors through without gateway retries");
     QCommandLineOption reasoning516RetriesOpt("reasoning-516-retries", "Compatibility alias for --guard-retry-attempts", "count");
@@ -161,6 +165,7 @@ int main(int argc, char **argv)
         << upstreamHttpsProxyOpt
         << upstreamSocksProxyOpt
         << upstreamTimeoutOpt
+        << firstTokenTimeoutOpt
         << bufferTimeoutOpt
         << requestBodyLimitOpt
         << responseBufferLimitOpt
@@ -205,6 +210,7 @@ int main(int argc, char **argv)
     settings.upstreamHttpsProxy = proxyTextWithDefaultScheme(settings.upstreamHttpsProxy, false);
     settings.upstreamSocksProxy = proxyTextWithDefaultScheme(settings.upstreamSocksProxy, true);
     settings.upstreamTimeoutSec = optionInt(parser, upstreamTimeoutOpt, config.upstreamTimeoutSec);
+    settings.firstTokenTimeoutSec = optionInt(parser, firstTokenTimeoutOpt, config.firstTokenTimeoutSec);
     settings.bufferTimeoutSec = optionInt(parser, bufferTimeoutOpt, config.bufferTimeoutSec);
     settings.requestBodyLimitBytes = optionInt64(parser, requestBodyLimitOpt, config.requestBodyLimitBytes);
     settings.responseBufferLimitBytes = optionInt64(parser, responseBufferLimitOpt, config.responseBufferLimitBytes);
@@ -247,6 +253,7 @@ int main(int argc, char **argv)
         config.upstreamHttpsProxy = settings.upstreamHttpsProxy;
         config.upstreamSocksProxy = settings.upstreamSocksProxy;
         config.upstreamTimeoutSec = settings.upstreamTimeoutSec;
+        config.firstTokenTimeoutSec = settings.firstTokenTimeoutSec;
         config.bufferTimeoutSec = settings.bufferTimeoutSec;
         config.requestBodyLimitBytes = settings.requestBodyLimitBytes;
         config.responseBufferLimitBytes = settings.responseBufferLimitBytes;

@@ -24,6 +24,7 @@ struct ProxySettings {
     QString upstreamHttpsProxy;
     QString upstreamSocksProxy;
     int upstreamTimeoutSec;
+    int firstTokenTimeoutSec;
     int bufferTimeoutSec;
     qint64 requestBodyLimitBytes;
     qint64 responseBufferLimitBytes;
@@ -78,6 +79,7 @@ public:
                                  const QString &streamKind);
     void recordBlockedResponse(const QString &streamKind);
     void recordUpstreamAttempt();
+    void recordFirstTokenTimeout(bool retried);
     void recordBypassedProxyRequest();
     void recordTransferDiagnostics(const QJsonObject &diagnostics);
 
@@ -117,6 +119,8 @@ private:
     qint64 clientConnectionErrorTotal_;
     qint64 bufferTimeoutTotal_;
     qint64 upstreamTimeoutTotal_;
+    qint64 firstTokenTimeoutTotal_;
+    qint64 firstTokenTimeoutRetryTotal_;
     qint64 localProxyErrorTotal_;
     qint64 reasoningTokens516Total_;
     qint64 reasoningTokens516RetryTotal_;

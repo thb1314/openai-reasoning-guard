@@ -814,6 +814,7 @@ ProxySettings::ProxySettings()
       upstreamUserAgent("curl/8.7.1"),
       forwardUserAgent(false),
       upstreamTimeoutSec(1800),
+      firstTokenTimeoutSec(30),
       bufferTimeoutSec(180),
       requestBodyLimitBytes(defaultRequestBodyLimitBytes()),
       responseBufferLimitBytes(defaultResponseBufferLimitBytes()),
@@ -869,10 +870,13 @@ public:
           requestIsStream_(false),
           proxyRequestRecorded_(false),
           responseWritten_(false),
+          clientCloseAfterWriteRequested_(false),
+          clientCloseCheckScheduled_(false),
           clientCloseRecorded_(false),
           responseTimedOut_(false),
           responseLimitExceeded_(false),
           upstreamTimedOut_(false),
+          firstTokenTimeoutTriggered_(false),
           upstreamBytesRead_(0),
           downstreamBytesQueued_(0),
           downstreamBytesWritten_(0),
@@ -890,8 +894,11 @@ public:
         requestBufferTimer_.setParent(this);
         responseBufferTimer_.setSingleShot(true);
         responseBufferTimer_.setParent(this);
+        firstTokenTimeoutTimer_.setSingleShot(true);
+        firstTokenTimeoutTimer_.setParent(this);
         connect(&requestBufferTimer_, SIGNAL(timeout()), this, SLOT(requestBufferTimedOut()));
         connect(&responseBufferTimer_, SIGNAL(timeout()), this, SLOT(responseBufferTimedOut()));
+        connect(&firstTokenTimeoutTimer_, SIGNAL(timeout()), this, SLOT(firstTokenTimedOut()));
         startRequestBufferTimer();
     }
 
@@ -978,6 +985,7 @@ private slots:
         if (chunk.isEmpty()) {
             return;
         }
+        firstTokenTimeoutTimer_.stop();
         noteUpstreamBytes(chunk);
         if (method_.toUpper() == "HEAD") {
             return;
@@ -1026,7 +1034,33 @@ private slots:
         }
         currentReply_ = 0;
         responseBufferTimer_.stop();
+        firstTokenTimeoutTimer_.stop();
         reply->deleteLater();
+
+        if (firstTokenTimeoutTriggered_) {
+            const ProxySettings settings = server_->settings();
+            const bool canRetry = retryAttempt_ < settings.guardRetryAttempts;
+            server_->recordFirstTokenTimeout(canRetry);
+            emit server_->logLine(QString("[first-token-timeout] path=%1 timeout_sec=%2 action=%3")
+                .arg(path_)
+                .arg(settings.firstTokenTimeoutSec)
+                .arg(canRetry
+                    ? QString("internal_retry remaining=%1").arg(settings.guardRetryAttempts - retryAttempt_)
+                    : QString("return_status_504")));
+            if (canRetry) {
+                ++retryAttempt_;
+                startUpstreamRequest();
+                return;
+            }
+            const int responseStatus = 504;
+            const QString errorType = "first_token_timeout";
+            const QString errorMessage = QString("upstream did not return the first response byte within %1 seconds after %2 retries")
+                .arg(settings.firstTokenTimeoutSec)
+                .arg(settings.guardRetryAttempts);
+            writeJson(QJsonObject{{"error", QJsonObject{{"message", errorMessage}, {"type", errorType}}}}, responseStatus);
+            record(responseStatus, errorType, errorMessage);
+            return;
+        }
 
         if (responseTimedOut_) {
             const int responseStatus = 502;
@@ -1097,7 +1131,7 @@ private slots:
             }
             socket_->flush();
             responseWritten_ = true;
-            socket_->disconnectFromHost();
+            finishClientResponse();
             if (upstreamIsStream_ && upstreamShouldInspect_ && !streamInspectedRecorded_) {
                 server_->recordInspectedResponse(streamObservedReasoning_, false, "stream");
                 streamInspectedRecorded_ = true;
@@ -1249,6 +1283,7 @@ private slots:
         if (!currentReply_) {
             return;
         }
+        firstTokenTimeoutTimer_.stop();
         upstreamTimedOut_ = true;
         currentReply_->abort();
     }
@@ -1273,7 +1308,18 @@ private slots:
         if (!currentReply_) {
             return;
         }
+        firstTokenTimeoutTimer_.stop();
         responseTimedOut_ = true;
+        currentReply_->abort();
+    }
+
+    void firstTokenTimedOut()
+    {
+        if (!currentReply_) {
+            return;
+        }
+        responseBufferTimer_.stop();
+        firstTokenTimeoutTriggered_ = true;
         currentReply_->abort();
     }
 
@@ -1299,9 +1345,33 @@ private slots:
         if (bytes > 0) {
             downstreamBytesWritten_ += bytes;
         }
+        drainClientWriteBacklog();
         if (diagnosticsLogged_) {
             emitTransferDiagnostics();
         }
+        if (clientCloseAfterWriteRequested_) {
+            closeClientWhenFlushed();
+        }
+    }
+
+    void closeClientWhenFlushed()
+    {
+        clientCloseCheckScheduled_ = false;
+        if (!socket_ || !clientCloseAfterWriteRequested_) {
+            return;
+        }
+        if (socket_->state() == QAbstractSocket::UnconnectedState) {
+            clientCloseAfterWriteRequested_ = false;
+            return;
+        }
+        drainClientWriteBacklog();
+        if (!clientWriteBacklog_.isEmpty() || socket_->bytesToWrite() > 0) {
+            socket_->flush();
+            scheduleClientCloseCheck();
+            return;
+        }
+        clientCloseAfterWriteRequested_ = false;
+        socket_->disconnectFromHost();
     }
 
 private:
@@ -1566,6 +1636,14 @@ private:
         }
     }
 
+    void startFirstTokenTimeoutTimer()
+    {
+        const int seconds = server_->settings().firstTokenTimeoutSec;
+        if (requestIsStream_ && method_.toUpper() != "HEAD" && seconds > 0) {
+            firstTokenTimeoutTimer_.start(seconds * 1000);
+        }
+    }
+
     void startUpstreamRequest()
     {
         resetUpstreamResponseState();
@@ -1611,6 +1689,7 @@ private:
         currentReply_ = manager_->sendCustomRequest(request, method_.toLatin1(), requestBody_);
         connect(currentReply_, SIGNAL(readyRead()), this, SLOT(upstreamReadyRead()));
         connect(currentReply_, SIGNAL(finished()), this, SLOT(upstreamFinished()));
+        startFirstTokenTimeoutTimer();
         startResponseBufferTimer();
         if (settings.upstreamTimeoutSec > 0) {
             QTimer *timer = new QTimer(currentReply_);
@@ -1622,6 +1701,7 @@ private:
 
     void resetUpstreamResponseState()
     {
+        firstTokenTimeoutTimer_.stop();
         upstreamBodyBuffer_.clear();
         sseScanBuffer_.clear();
         streamStructure_ = StructureSignals();
@@ -1641,6 +1721,7 @@ private:
         responseTimedOut_ = false;
         responseLimitExceeded_ = false;
         upstreamTimedOut_ = false;
+        firstTokenTimeoutTriggered_ = false;
         streamDoneSeen_ = false;
         interceptExemptReason_.clear();
     }
@@ -1778,6 +1859,7 @@ private:
         if (reply && reply == currentReply_) {
             currentReply_ = 0;
             responseBufferTimer_.stop();
+            firstTokenTimeoutTimer_.stop();
             reply->abort();
             reply->deleteLater();
         }
@@ -1791,6 +1873,7 @@ private:
         QNetworkReply *reply = currentReply_;
         currentReply_ = 0;
         responseBufferTimer_.stop();
+        firstTokenTimeoutTimer_.stop();
         disconnect(reply, 0, this, 0);
         reply->abort();
         reply->deleteLater();
@@ -1800,6 +1883,7 @@ private:
     {
         requestBufferTimer_.stop();
         responseBufferTimer_.stop();
+        firstTokenTimeoutTimer_.stop();
         if (!responseWritten_ && !clientCloseRecorded_ && (currentReply_ || proxyRequestRecorded_)) {
             diagnosticClientClosedFirst_ = true;
             clientCloseRecorded_ = true;
@@ -1986,6 +2070,7 @@ private:
             {"upstream_base_url", settings.upstreamBaseUrl},
             {"proxy_prefix", proxyPrefix_.isEmpty() ? QString("/") : proxyPrefix_},
             {"upstream_timeout_sec", settings.upstreamTimeoutSec},
+            {"first_token_timeout_sec", settings.firstTokenTimeoutSec},
             {"buffer_timeout_sec", settings.bufferTimeoutSec},
             {"request_body_limit_bytes", double(settings.requestBodyLimitBytes)},
             {"response_buffer_limit_bytes", double(settings.responseBufferLimitBytes)},
@@ -2023,6 +2108,7 @@ private:
             }},
             {"features", QJsonObject{
                 {"buffers_responses_for_reasoning_guard", true},
+                {"first_token_timeout_sec", settings.firstTokenTimeoutSec},
                 {"request_body_limit_bytes", double(settings.requestBodyLimitBytes)},
                 {"response_buffer_limit_bytes", double(settings.responseBufferLimitBytes)},
                 {"intercept_rule_mode", normalizeInterceptRuleMode(settings.interceptRuleMode)},
@@ -2071,8 +2157,7 @@ private:
         }
         responseWritten_ = true;
         writeClient(response);
-        socket_->flush();
-        socket_->disconnectFromHost();
+        finishClientResponse();
     }
 
     void noteUpstreamBytes(const QByteArray &chunk)
@@ -2086,12 +2171,45 @@ private:
         if (!socket_ || chunk.isEmpty()) {
             return 0;
         }
-        const qint64 written = socket_->write(chunk);
-        if (written > 0) {
-            downstreamBytesQueued_ += written;
-            rememberTail(&downstreamTail_, chunk.left(int(qMin(written, qint64(chunk.size())))));
+        clientWriteBacklog_.append(chunk);
+        drainClientWriteBacklog();
+        return chunk.size();
+    }
+
+    void drainClientWriteBacklog()
+    {
+        if (!socket_ || socket_->state() == QAbstractSocket::UnconnectedState) {
+            return;
         }
-        return written;
+        while (!clientWriteBacklog_.isEmpty()) {
+            const qint64 written = socket_->write(clientWriteBacklog_);
+            if (written <= 0) {
+                return;
+            }
+            downstreamBytesQueued_ += written;
+            rememberTail(&downstreamTail_, clientWriteBacklog_.left(int(written)));
+            clientWriteBacklog_.remove(0, int(written));
+        }
+    }
+
+    void finishClientResponse()
+    {
+        responseWritten_ = true;
+        if (!socket_) {
+            return;
+        }
+        socket_->flush();
+        clientCloseAfterWriteRequested_ = true;
+        closeClientWhenFlushed();
+    }
+
+    void scheduleClientCloseCheck()
+    {
+        if (clientCloseCheckScheduled_) {
+            return;
+        }
+        clientCloseCheckScheduled_ = true;
+        QTimer::singleShot(25, this, SLOT(closeClientWhenFlushed()));
     }
 
     void emitTransferDiagnostics(const QString &closeReason = QString())
@@ -2115,6 +2233,7 @@ private:
         diagnostics.insert("downstream_bytes_queued", double(downstreamBytesQueued_));
         diagnostics.insert("downstream_bytes_written", double(downstreamBytesWritten_));
         diagnostics.insert("downstream_bytes_pending", double(downstreamBytesQueued_ - downstreamBytesWritten_));
+        diagnostics.insert("downstream_bytes_backlog", double(clientWriteBacklog_.size()));
         diagnostics.insert("upstream_tail_sha256_16", upstreamTail_.isEmpty() ? QJsonValue() : QJsonValue(tailHashText(upstreamTail_)));
         diagnostics.insert("downstream_tail_sha256_16", downstreamTail_.isEmpty() ? QJsonValue() : QJsonValue(tailHashText(downstreamTail_)));
         diagnostics.insert("stream_completed_seen", streamCompletedSeen_);
@@ -2185,6 +2304,7 @@ private:
     bool requestUsesChunkedEncoding_;
     QByteArray buffer_;
     QByteArray requestBody_;
+    QByteArray clientWriteBacklog_;
     QMap<QString, QByteArray> headers_;
     QString method_;
     QString target_;
@@ -2201,10 +2321,13 @@ private:
     bool requestIsStream_;
     bool proxyRequestRecorded_;
     bool responseWritten_;
+    bool clientCloseAfterWriteRequested_;
+    bool clientCloseCheckScheduled_;
     bool clientCloseRecorded_;
     bool responseTimedOut_;
     bool responseLimitExceeded_;
     bool upstreamTimedOut_;
+    bool firstTokenTimeoutTriggered_;
     qint64 upstreamBytesRead_;
     qint64 downstreamBytesQueued_;
     qint64 downstreamBytesWritten_;
@@ -2217,6 +2340,7 @@ private:
     QString diagnosticCloseReason_;
     QTimer requestBufferTimer_;
     QTimer responseBufferTimer_;
+    QTimer firstTokenTimeoutTimer_;
     QElapsedTimer elapsed_;
 };
 
@@ -2235,6 +2359,8 @@ HttpProxyServer::HttpProxyServer(QObject *parent)
       clientConnectionErrorTotal_(0),
       bufferTimeoutTotal_(0),
       upstreamTimeoutTotal_(0),
+      firstTokenTimeoutTotal_(0),
+      firstTokenTimeoutRetryTotal_(0),
       localProxyErrorTotal_(0),
       reasoningTokens516Total_(0),
       reasoningTokens516RetryTotal_(0),
@@ -2294,6 +2420,11 @@ bool HttpProxyServer::start(const ProxySettings &settings, QString *error)
     }
     if (settings_.upstreamTimeoutSec <= 0) {
         settings_.upstreamTimeoutSec = 1800;
+    }
+    if (settings_.firstTokenTimeoutSec < 0) {
+        settings_.firstTokenTimeoutSec = 0;
+    } else if (settings_.firstTokenTimeoutSec > 3600) {
+        settings_.firstTokenTimeoutSec = 3600;
     }
     if (settings_.bufferTimeoutSec <= 0) {
         settings_.bufferTimeoutSec = 180;
@@ -2356,6 +2487,7 @@ bool HttpProxyServer::start(const ProxySettings &settings, QString *error)
     emit logLine(QString("intercept_rule_mode=%1").arg(settings_.interceptRuleMode));
     emit logLine(QString("reasoning_equals=%1").arg(settings_.reasoningEquals.join(",")));
     emit logLine(QString("guard_retry_attempts=%1").arg(settings_.guardRetryAttempts));
+    emit logLine(QString("first_token_timeout_sec=%1").arg(settings_.firstTokenTimeoutSec));
     emit logLine(QString("retry_upstream_capacity_errors=%1").arg(settings_.retryUpstreamCapacityErrors ? "true" : "false"));
     return true;
 }
@@ -2394,6 +2526,7 @@ QJsonObject HttpProxyServer::healthPayload() const
         {"upstream_base_url", settings_.upstreamBaseUrl},
             {"proxy_prefix", proxyPrefix_.isEmpty() ? QString("/") : proxyPrefix_},
             {"upstream_timeout_sec", settings_.upstreamTimeoutSec},
+            {"first_token_timeout_sec", settings_.firstTokenTimeoutSec},
             {"buffer_timeout_sec", settings_.bufferTimeoutSec},
             {"request_body_limit_bytes", double(settings_.requestBodyLimitBytes)},
             {"response_buffer_limit_bytes", double(settings_.responseBufferLimitBytes)},
@@ -2435,6 +2568,8 @@ QJsonObject HttpProxyServer::runtimePayload() const
     runtime.insert("client_connection_error_total", double(clientConnectionErrorTotal_));
     runtime.insert("buffer_timeout_total", double(bufferTimeoutTotal_));
     runtime.insert("upstream_timeout_total", double(upstreamTimeoutTotal_));
+    runtime.insert("first_token_timeout_total", double(firstTokenTimeoutTotal_));
+    runtime.insert("first_token_timeout_retry_total", double(firstTokenTimeoutRetryTotal_));
     runtime.insert("local_proxy_error_total", double(localProxyErrorTotal_));
     runtime.insert("reasoning_tokens_516_total", double(reasoningTokens516Total_));
     runtime.insert("reasoning_tokens_516_retry_total", double(reasoningTokens516RetryTotal_));
@@ -2543,6 +2678,8 @@ void HttpProxyServer::recordResult(const QString &kind,
                 ++bufferTimeoutTotal_;
             } else if (errorType == "upstream_timeout") {
                 ++upstreamTimeoutTotal_;
+            } else if (errorType == "first_token_timeout") {
+                // Attempt-level first-token counters are updated when the timer fires.
             } else if (errorType == "request_body_limit_exceeded" ||
                        errorType == "response_buffer_limit_exceeded" ||
                        errorType == "bad_request" ||
@@ -2635,6 +2772,15 @@ void HttpProxyServer::recordBlockedResponse(const QString &streamKind)
 void HttpProxyServer::recordUpstreamAttempt()
 {
     ++upstreamAttemptsTotal_;
+    emit statsChanged();
+}
+
+void HttpProxyServer::recordFirstTokenTimeout(bool retried)
+{
+    ++firstTokenTimeoutTotal_;
+    if (retried) {
+        ++firstTokenTimeoutRetryTotal_;
+    }
     emit statsChanged();
 }
 

@@ -78,7 +78,7 @@ Core capabilities:
 - Default guard set: `516,1034,1552`.
 - After hitting the guard, it retries internally first; intermediate retries only count as retry, and do not count as blocked/failed; only after retries are exhausted does it return the configured error status.
 - Streaming SSE anomaly detection: if a `200` stream is incomplete, lacks a terminal event, lacks usage, or contains a failed/error event, it is not passed through as success.
-- Request body and response body resource limits, request/response buffer timeouts, and upstream request timeout.
+- Request body and response body resource limits, request/response buffer timeouts, streaming first-token timeout retries, and upstream request timeout.
 - Supports both `Content-Length` and `Transfer-Encoding: chunked` request bodies.
 - Supports a generic upstream proxy and split HTTP/HTTPS/SOCKS upstream proxy fields.
 - Control endpoints: `/healthz`, `/status`, `/version`, `/props`.
@@ -159,7 +159,7 @@ The first GUI screen is divided into four areas:
 - Upper-right real-time statistics.
 - Right-side information panel and console logs.
 
-The information panel displays the current proxy listen address, upstream address, path prefix, control endpoints, buffer limit, stream action, and reasoning guard policy. The GUI can directly edit `request_body_limit_bytes`, `response_buffer_limit_bytes`, and `stream_action`.
+The information panel displays the current proxy listen address, upstream address, path prefix, control endpoints, buffer limit, first-token timeout, stream action, and reasoning guard policy. The GUI can directly edit `first_token_timeout_sec`, `request_body_limit_bytes`, `response_buffer_limit_bytes`, and `stream_action`.
 
 The project provides a one-click restart script:
 
@@ -200,6 +200,7 @@ Full example:
   "upstream_https_proxy": "",
   "upstream_socks_proxy": "",
   "upstream_timeout_sec": 1800,
+  "first_token_timeout_sec": 30,
   "buffer_timeout_sec": 180,
   "request_body_limit_bytes": 104857600,
   "response_buffer_limit_bytes": 104857600,
@@ -233,14 +234,15 @@ Full example:
 | `upstream_https_proxy` | empty | `"http://127.0.0.1:7890"` | HTTPS upstream proxy field. It is used preferentially only when `upstream_proxy` is empty and the upstream base URL is HTTPS. |
 | `upstream_socks_proxy` | empty | `"127.0.0.1:7890"` or `"socks5://127.0.0.1:7890"` | SOCKS upstream proxy field. When no scheme is present, `socks5://` is added by default. It is the final fallback when the generic/protocol proxy fields are all empty. |
 | `upstream_timeout_sec` | `1800` | `600` | Maximum wait time in seconds for a single upstream request. Timeout returns `504`, and records `error_type=upstream_timeout` and `upstream_timeout_total`. Long reasoning scenarios should keep this value relatively large. |
+| `first_token_timeout_sec` | `30` | `10` or `0` | First-token timeout for streaming requests, measured at the proxy layer as the first non-empty upstream response body byte. It only applies when the request body contains `stream=true`; a timeout consumes the `guard_retry_attempts` retry budget, and exhaustion returns `504` with `error_type=first_token_timeout`. Set it to `0` to disable it. Configuration loading also accepts `upstream_first_byte_timeout_seconds`. |
 | `buffer_timeout_sec` | `180` | `360` | Wait time in seconds for request body buffering and upstream response buffering. If the request body is not fully received, `408` is returned; if response buffering times out, `502` is returned; both record `error_type=buffer_timeout`. |
 | `request_body_limit_bytes` | `104857600` | `10485760` | Maximum buffered byte count for the client request body. The example is 10MB; the default is 100MB. If exceeded, `413` is returned and the upstream service is not requested. |
 | `response_buffer_limit_bytes` | `104857600` | `209715200` | Maximum buffered byte count for the upstream response. The example is 200MB; the default is 100MB. Both strict streaming and non-streaming inspection are protected by this limit, and exceeding it returns `502`. |
 | `intercept_rule_mode` | `reasoning_tokens` | `"final_answer_only_high_xhigh"` | Interception rule mode. `reasoning_tokens` matches exactly according to `reasoning_equals`; `final_answer_only_high_xhigh` is an experimental mode that uses high/xhigh and a final-answer-only structure as the match feature. |
 | `reasoning_equals` | `[516,1034,1552]` | `[516, 1034]` or `"516,1034"` | Set of `reasoning_tokens` values to intercept. A JSON array is recommended in the configuration file; comma or space separation can be used in CLI/GUI. |
-| `guard_retry_attempts` | `3` | `10` | Number of internal upstream retries after hitting the guard. Intermediate retries are not returned to the client; only after exhaustion is `non_stream_status_code` returned. |
+| `guard_retry_attempts` | `3` | `10` | Shared internal retry budget per client request for guard matches, first-token timeouts, and selected capacity errors. Intermediate retries are not returned to the client; after exhaustion, each error follows its own final response policy. |
 | `reasoning_516_retry_count` | `3` | `10` | Compatibility field, with the same meaning as `guard_retry_attempts`. It is kept consistent with `guard_retry_attempts` when saving configuration. |
-| `retry_upstream_capacity_errors` | `true` | `false` | Whether to internally retry specific upstream capacity errors. It only matches explicit capacity wording, and does not generalize retry behavior to ordinary `429/502`. |
+| `retry_upstream_capacity_errors` | `true` | `false` | Whether to internally retry specific upstream capacity errors. It only matches explicit capacity wording, and does not generalize retry behavior to ordinary `429/502`; after retries are exhausted, the final upstream status, headers, and error body are forwarded unchanged. |
 | `guard_endpoints` | `/responses`, `/chat/completions`, `/v1/responses`, `/v1/chat/completions` | `["/responses", "/v1/responses"]` | Path set requiring reasoning guard inspection. When matching, both the original path and the business path after removing `proxy_prefix` are checked. |
 | `intercept_streaming` | `true` | `false` | Whether to actually intercept streaming SSE responses. When disabled, statistics can still be observed, but hits do not block the client response. |
 | `intercept_non_streaming` | `true` | `false` | Whether to actually intercept non-streaming JSON responses. When disabled, statistics can still be observed, but hits do not block the client response. |
@@ -273,6 +275,7 @@ Therefore: if you want to force a specific backup key, fill in `upstream_api_key
 | `--upstream-https-proxy` | `--upstream-https-proxy http://127.0.0.1:7890` | Override `upstream_https_proxy`. |
 | `--upstream-socks-proxy` | `--upstream-socks-proxy socks5://127.0.0.1:7890` | Override `upstream_socks_proxy`. |
 | `--upstream-timeout` | `--upstream-timeout 1800` | Override `upstream_timeout_sec`. |
+| `--first-token-timeout` | `--first-token-timeout 30` or `--first-token-timeout 0` | Override `first_token_timeout_sec`; `--upstream-first-byte-timeout` is a compatibility alias. |
 | `--buffer-timeout` | `--buffer-timeout 360` | Override `buffer_timeout_sec`. |
 | `--request-body-limit-bytes` | `--request-body-limit-bytes 104857600` | Override `request_body_limit_bytes`. |
 | `--response-buffer-limit-bytes` | `--response-buffer-limit-bytes 104857600` | Override `response_buffer_limit_bytes`. |
@@ -317,6 +320,8 @@ The `runtime` field in `/status` displays statistics since the current proxy sta
 - `client_connection_error_total`: number of early client disconnects or connection exceptions.
 - `buffer_timeout_total`: number of request body or response buffer timeouts.
 - `upstream_timeout_total`: number of upstream request timeouts.
+- `first_token_timeout_total`: number of streaming attempts that did not receive the first upstream response body byte within the configured time, including attempts later recovered by retry.
+- `first_token_timeout_retry_total`: number of internal retries actually triggered by first-token timeouts.
 - `local_proxy_error_total`: number of local errors such as local request/response limits and bad requests.
 - `inspected_response_count`: number of responses inspected by the guard.
 - `bypassed_proxy_request_count`: number of business requests that did not enter guard inspection.
