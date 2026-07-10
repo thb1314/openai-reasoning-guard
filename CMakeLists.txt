@@ -220,6 +220,26 @@ if(NET_TUNNEL_BUILD_TESTS)
         Qt5::Test
     )
     add_test(NAME http-proxy-server-test COMMAND http-proxy-server-test)
+
+    add_executable(qui-widget-test
+        tests/qui_widget_test.cpp
+        third_party/qui/form/quiwidget.h
+        third_party/qui/form/quiwidget.cpp
+        third_party/qui/qui_resources.qrc
+    )
+    net_tunnel_add_private_compile_options(qui-widget-test)
+    target_include_directories(qui-widget-test PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/qui"
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/qui/form"
+    )
+    target_link_libraries(qui-widget-test PRIVATE
+        Qt5::Core
+        Qt5::Gui
+        Qt5::Widgets
+        Qt5::Network
+        Qt5::Test
+    )
+    add_test(NAME qui-widget-test COMMAND qui-widget-test -platform offscreen)
 endif()
 
 install(TARGETS net-tunnel-cli net-tunnel-gui RUNTIME DESTINATION bin)

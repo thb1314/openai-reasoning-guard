@@ -1069,7 +1069,7 @@ bool QUIWidget::eventFilter(QObject *obj, QEvent *evt)
 {
     static QPoint mousePoint;
     static bool mousePressed = false;
-    const bool titleObject = (obj == this || obj == this->widgetTitle || obj == this->labIco || obj == this->labTitle);
+    const bool titleObject = (obj == this->widgetTitle || obj == this->labIco || obj == this->labTitle);
 
     if (!titleObject) {
         return QWidget::eventFilter(obj, evt);
