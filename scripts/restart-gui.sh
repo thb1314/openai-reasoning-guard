@@ -42,10 +42,20 @@ install_dev_desktop_entry() {
     install_dev_icon_sizes "${icon_root}" "${DESKTOP_ID}"
     write_dev_desktop_file "${app_dir}/${DESKTOP_ID}.desktop" "${DESKTOP_ID}"
     if [[ "${APP_WM_CLASS}" != "${DESKTOP_ID}" ]]; then
-        write_dev_desktop_file "${app_dir}/${APP_WM_CLASS}.desktop" "${DESKTOP_ID}"
+        remove_legacy_desktop_alias "${app_dir}/${APP_WM_CLASS}.desktop"
     fi
     gtk-update-icon-cache -q -t -f "${icon_root}" >/dev/null 2>&1 || true
     update-desktop-database "${app_dir}" >/dev/null 2>&1 || true
+}
+
+remove_legacy_desktop_alias() {
+    local path="$1"
+    [[ -f "${path}" ]] || return 0
+
+    if grep -Fqx "Exec=${GUI_BIN}" "${path}" &&
+       grep -Fqx "StartupWMClass=${APP_WM_CLASS}" "${path}"; then
+        rm -f "${path}"
+    fi
 }
 
 install_dev_icon_sizes() {

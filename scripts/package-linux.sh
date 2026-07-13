@@ -378,6 +378,22 @@ StartupWMClass=${GUI_COMMAND}
 EOF
 }
 
+validate_desktop_files() {
+    local root="$1"
+    local app_dir="${root}/usr/share/applications"
+    local expected="${app_dir}/${DESKTOP_ID}.desktop"
+    local desktop_files=()
+
+    mapfile -t desktop_files < <(find "${app_dir}" -maxdepth 1 -type f -name '*.desktop' -print | sort)
+    if ((${#desktop_files[@]} != 1)) || [[ "${desktop_files[0]:-}" != "${expected}" ]]; then
+        echo "expected exactly one desktop entry: ${expected}" >&2
+        printf 'found desktop entry: %s\n' "${desktop_files[@]}" >&2
+        return 1
+    fi
+    grep -Fqx "Exec=${GUI_COMMAND}" "${expected}"
+    grep -Fqx "StartupWMClass=${GUI_COMMAND}" "${expected}"
+}
+
 write_wrappers() {
     local root="$1"
     local app_root="${root}${INSTALL_PREFIX}"
@@ -455,9 +471,7 @@ stage_common_root() {
     write_wrappers "${root}"
     write_icon_assets "${root}"
     write_desktop_file "${root}/usr/share/applications/${DESKTOP_ID}.desktop" "${GUI_COMMAND}"
-    if [[ "${GUI_COMMAND}" != "${DESKTOP_ID}" ]]; then
-        write_desktop_file "${root}/usr/share/applications/${GUI_COMMAND}.desktop" "${GUI_COMMAND}"
-    fi
+    validate_desktop_files "${root}"
 
     if command -v patchelf >/dev/null 2>&1; then
         patchelf --set-rpath '$ORIGIN/../qt/lib:$ORIGIN' "${root}${INSTALL_PREFIX}/bin/${GUI_COMMAND}.real"
@@ -552,9 +566,6 @@ ${INSTALL_PREFIX}
 /usr/bin/net-tunnel-cli
 /usr/share/applications/${DESKTOP_ID}.desktop
 EOF
-    if [[ "${GUI_COMMAND}" != "${DESKTOP_ID}" ]]; then
-        echo "/usr/share/applications/${GUI_COMMAND}.desktop" >> "${spec}"
-    fi
     cat >> "${spec}" <<EOF
 /usr/share/icons/hicolor/*/apps/${DESKTOP_ID}.*
 EOF
