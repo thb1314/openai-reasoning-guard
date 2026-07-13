@@ -522,6 +522,56 @@ EOF
     fi
 }
 
+detach_dmg_volume() {
+    local detach_target="$1"
+    local mount_dir="$2"
+    local attempt
+
+    for attempt in 1 2 3; do
+        if hdiutil detach "${detach_target}"; then
+            break
+        fi
+        sleep "${attempt}"
+    done
+
+    if [[ -d "${mount_dir}" ]]; then
+        for attempt in 1 2 3; do
+            if hdiutil detach "${detach_target}" -force || hdiutil detach "${mount_dir}" -force; then
+                break
+            fi
+            sleep "${attempt}"
+        done
+    fi
+
+    for attempt in 1 2 3 4 5; do
+        if [[ ! -d "${mount_dir}" ]]; then
+            return 0
+        fi
+        sleep 1
+    done
+
+    echo "unable to detach dmg volume: ${detach_target} (${mount_dir})" >&2
+    return 2
+}
+
+convert_dmg_with_retry() {
+    local source="$1"
+    local out="$2"
+    local attempt
+
+    for attempt in 1 2 3 4 5; do
+        rm -f "${out}"
+        if hdiutil convert "${source}" -format UDZO -imagekey zlib-level=9 -ov -o "${out}"; then
+            return 0
+        fi
+        echo "dmg conversion attempt ${attempt} failed; retrying" >&2
+        sleep "$((attempt * 2))"
+    done
+
+    echo "unable to convert dmg after 5 attempts: ${source}" >&2
+    return 2
+}
+
 create_drag_install_dmg() {
     local dmg_root="$1"
     local out="$2"
@@ -556,21 +606,12 @@ create_drag_install_dmg() {
     style_dmg_volume "${mount_dir}" || style_status=$?
     sync
     detach_target="${device:-${mount_dir}}"
-    hdiutil detach "${detach_target}" || {
-        sleep 2
-        if [[ -d "${mount_dir}" ]]; then
-            hdiutil detach "${detach_target}" -force || {
-                if [[ -d "${mount_dir}" ]]; then
-                    hdiutil detach "${mount_dir}" -force
-                fi
-            }
-        fi
-    }
+    detach_dmg_volume "${detach_target}" "${mount_dir}"
     if ((style_status != 0)); then
         exit "${style_status}"
     fi
 
-    hdiutil convert "${rw_dmg}" -format UDZO -imagekey zlib-level=9 -o "${out}"
+    convert_dmg_with_retry "${rw_dmg}" "${out}"
     rm -f "${rw_dmg}"
 }
 
@@ -769,6 +810,7 @@ EOF
     done
     write_first_run_helper "${dmg_root}"
     write_dmg_background "${dmg_root}/.background/background.png"
+    touch "${dmg_root}/.metadata_never_index"
     ln -s /Applications "${dmg_root}/Applications"
 
     rm -f "${dmg_out}" "${dmg_dist}" "${installer_out}"
