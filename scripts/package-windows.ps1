@@ -74,6 +74,39 @@ function Find-BuiltExe {
     throw "Built executable not found: $Name under $BuildDir"
 }
 
+function Get-PeMachine {
+    param([string]$Path)
+
+    [byte[]]$bytes = [System.IO.File]::ReadAllBytes($Path)
+    if ($bytes.Length -lt 64 -or [BitConverter]::ToUInt16($bytes, 0) -ne 0x5A4D) {
+        throw "Not a valid PE file (missing MZ header): $Path"
+    }
+
+    $peOffset = [BitConverter]::ToInt32($bytes, 0x3C)
+    if ($peOffset -lt 0 -or $peOffset -gt ($bytes.Length - 6) -or
+        [BitConverter]::ToUInt32($bytes, $peOffset) -ne 0x00004550) {
+        throw "Not a valid PE file (missing PE header): $Path"
+    }
+
+    return [BitConverter]::ToUInt16($bytes, $peOffset + 4)
+}
+
+function Assert-PeArchitecture {
+    param([string]$Path)
+
+    $expectedMachines = @{
+        "x86_32" = 0x014C
+        "x86_64" = 0x8664
+        "arm64" = 0xAA64
+    }
+    $expected = $expectedMachines[$Arch]
+    $actual = Get-PeMachine $Path
+    if ($actual -ne $expected) {
+        throw ("PE architecture mismatch for {0}: package arch {1} expects machine 0x{2:X4}, found 0x{3:X4}" -f
+            $Path, $Arch, $expected, $actual)
+    }
+}
+
 if ($Clean) {
     Remove-Item -Recurse -Force $StageDir -ErrorAction SilentlyContinue
     Remove-Item -Force $ZipPath -ErrorAction SilentlyContinue
@@ -104,10 +137,15 @@ if (-not $SkipBuild) {
 Remove-Item -Recurse -Force $StageDir -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $StageDir | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $StageDir "plugins/platforms") | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $StageDir "plugins/sqldrivers") | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $StageDir "fonts") | Out-Null
 
-Copy-Item (Find-BuiltExe "net-tunnel-gui.exe") (Join-Path $StageDir "$PackageId-gui.exe")
-Copy-Item (Find-BuiltExe "net-tunnel-cli.exe") (Join-Path $StageDir "$PackageId-cli.exe")
+$GuiExecutable = Find-BuiltExe "net-tunnel-gui.exe"
+$CliExecutable = Find-BuiltExe "net-tunnel-cli.exe"
+Assert-PeArchitecture $GuiExecutable
+Assert-PeArchitecture $CliExecutable
+Copy-Item $GuiExecutable (Join-Path $StageDir "$PackageId-gui.exe")
+Copy-Item $CliExecutable (Join-Path $StageDir "$PackageId-cli.exe")
 
 $IconFile = Join-Path $ProjectDir "assets/openai-reasoning-guard.ico"
 if (Test-Path $IconFile) {
@@ -121,11 +159,12 @@ foreach ($file in @("config.example.json", "README.md", "LICENSE", "THIRD_PARTY_
     }
 }
 
-foreach ($dll in @("Qt5Core.dll", "Qt5Network.dll", "Qt5Gui.dll", "Qt5Widgets.dll")) {
+foreach ($dll in @("Qt5Core.dll", "Qt5Network.dll", "Qt5Gui.dll", "Qt5Widgets.dll", "Qt5Sql.dll")) {
     $source = Join-Path $QtBin $dll
     if (-not (Test-Path $source)) {
         throw "Required Qt runtime DLL missing: $source"
     }
+    Assert-PeArchitecture $source
     Copy-Item $source $StageDir
 }
 
@@ -138,7 +177,15 @@ $qwindows = Join-Path $QtPlugins "platforms/qwindows.dll"
 if (-not (Test-Path $qwindows)) {
     throw "Required Qt platform plugin missing: $qwindows"
 }
+Assert-PeArchitecture $qwindows
 Copy-Item $qwindows (Join-Path $StageDir "plugins/platforms")
+
+$qsqlite = Join-Path $QtPlugins "sqldrivers/qsqlite.dll"
+if (-not (Test-Path $qsqlite)) {
+    throw "Required Qt SQLite driver missing: $qsqlite"
+}
+Assert-PeArchitecture $qsqlite
+Copy-Item $qsqlite (Join-Path $StageDir "plugins/sqldrivers")
 
 $fontDir = Join-Path $ProjectDir "third_party/fonts"
 if (Test-Path $fontDir) {
@@ -151,6 +198,10 @@ Set-Content -Encoding ASCII -Path (Join-Path $StageDir "qt.conf") -Value @"
 Prefix = .
 Plugins = plugins
 "@
+
+Get-ChildItem -Path $StageDir -Recurse -File |
+    Where-Object { $_.Extension -in @(".exe", ".dll") } |
+    ForEach-Object { Assert-PeArchitecture $_.FullName }
 
 Remove-Item -Force $ZipPath -ErrorAction SilentlyContinue
 Compress-Archive -Path (Join-Path $StageDir "*") -DestinationPath $ZipPath -Force

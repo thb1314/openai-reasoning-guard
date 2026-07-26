@@ -31,8 +31,9 @@ Cross-build Windows portable zip and installer exe packages with MinGW from Linu
 
 The Qt SDK must be a MinGW target SDK with Linux host Qt tools:
   bin/moc, bin/rcc, bin/uic
-  bin/Qt5Core.dll, bin/Qt5Network.dll, bin/Qt5Gui.dll, bin/Qt5Widgets.dll
-  plugins/platforms/qwindows.dll
+  bin/Qt5Core.dll, bin/Qt5Network.dll, bin/Qt5Gui.dll, bin/Qt5Widgets.dll,
+  bin/Qt5Sql.dll
+  plugins/platforms/qwindows.dll, plugins/sqldrivers/qsqlite.dll
   lib/cmake/Qt5/Qt5Config.cmake
 
 Environment overrides:
@@ -133,6 +134,39 @@ require_dir() {
     local path="$1"
     if [[ ! -d "${path}" ]]; then
         echo "required directory missing: ${path}" >&2
+        exit 2
+    fi
+}
+
+verify_pe_architecture() {
+    local path="$1"
+    local magic pe_offset signature actual expected
+
+    magic="$(od -An -tx1 -N2 "${path}" | tr -d '[:space:]')"
+    if [[ "${magic}" != "4d5a" ]]; then
+        echo "not a valid PE file (missing MZ header): ${path}" >&2
+        exit 2
+    fi
+
+    pe_offset="$(od -An -tu4 -j60 -N4 "${path}" | tr -d '[:space:]')"
+    if [[ ! "${pe_offset}" =~ ^[0-9]+$ ]]; then
+        echo "not a valid PE file (invalid PE header offset): ${path}" >&2
+        exit 2
+    fi
+    signature="$(od -An -tx1 -j"${pe_offset}" -N4 "${path}" | tr -d '[:space:]')"
+    if [[ "${signature}" != "50450000" ]]; then
+        echo "not a valid PE file (missing PE header): ${path}" >&2
+        exit 2
+    fi
+    actual="$(od -An -tx1 -j"$((pe_offset + 4))" -N2 "${path}" | tr -d '[:space:]')"
+
+    case "${PACKAGE_ARCH}" in
+        x86_32) expected="4c01" ;;
+        x86_64) expected="6486" ;;
+        arm64) expected="64aa" ;;
+    esac
+    if [[ "${actual}" != "${expected}" ]]; then
+        echo "PE architecture mismatch for ${path}: package arch ${PACKAGE_ARCH} expects machine bytes ${expected}, found ${actual}" >&2
         exit 2
     fi
 }
@@ -267,8 +301,11 @@ require_file "${QT_BIN}/Qt5Core.dll"
 require_file "${QT_BIN}/Qt5Network.dll"
 require_file "${QT_BIN}/Qt5Gui.dll"
 require_file "${QT_BIN}/Qt5Widgets.dll"
+require_file "${QT_BIN}/Qt5Sql.dll"
 require_file "${QT_PLUGINS}/platforms/qwindows.dll"
+require_file "${QT_PLUGINS}/sqldrivers/qsqlite.dll"
 require_file "${QT_ROOT}/lib/cmake/Qt5/Qt5Config.cmake"
+require_file "${QT_ROOT}/lib/cmake/Qt5Sql/Qt5SqlConfig.cmake"
 
 if [[ -z "${MINGW_BIN_DIR}" ]]; then
     cc_path="$(find_tool gcc-posix || find_tool gcc || true)"
@@ -314,7 +351,7 @@ stage_dir="${WORK_DIR}/${PACKAGE_ID}-windows-${PACKAGE_ARCH}"
 zip_path="${DIST_DIR}/${PACKAGE_ID}-windows-${PACKAGE_ARCH}-${VERSION}-portable.zip"
 installer_path="${DIST_DIR}/${PACKAGE_ID}-windows-${PACKAGE_ARCH}-${VERSION}-installer.exe"
 rm -rf "${stage_dir}"
-mkdir -p "${stage_dir}/plugins/platforms" "${stage_dir}/fonts"
+mkdir -p "${stage_dir}/plugins/platforms" "${stage_dir}/plugins/sqldrivers" "${stage_dir}/fonts"
 
 require_file "${BUILD_DIR}/net-tunnel-gui.exe"
 require_file "${BUILD_DIR}/net-tunnel-cli.exe"
@@ -330,7 +367,7 @@ for file in config.example.json README.md LICENSE THIRD_PARTY_NOTICES.md; do
     fi
 done
 
-for dll in Qt5Core.dll Qt5Network.dll Qt5Gui.dll Qt5Widgets.dll; do
+for dll in Qt5Core.dll Qt5Network.dll Qt5Gui.dll Qt5Widgets.dll Qt5Sql.dll; do
     cp -f "${QT_BIN}/${dll}" "${stage_dir}/"
 done
 copy_glob_optional "${stage_dir}" \
@@ -342,6 +379,7 @@ copy_glob_optional "${stage_dir}" \
     "${QT_BIN}/icu*.dll"
 
 cp -f "${QT_PLUGINS}/platforms/qwindows.dll" "${stage_dir}/plugins/platforms/"
+cp -f "${QT_PLUGINS}/sqldrivers/qsqlite.dll" "${stage_dir}/plugins/sqldrivers/"
 if [[ -d "${QT_PLUGINS}/imageformats" ]]; then
     mkdir -p "${stage_dir}/plugins/imageformats"
     copy_glob_optional "${stage_dir}/plugins/imageformats" "${QT_PLUGINS}/imageformats/*.dll"
@@ -382,6 +420,10 @@ cat > "${stage_dir}/qt.conf" <<'EOF'
 Prefix = .
 Plugins = plugins
 EOF
+
+while IFS= read -r -d '' pe_file; do
+    verify_pe_architecture "${pe_file}"
+done < <(find "${stage_dir}" -type f \( -iname '*.exe' -o -iname '*.dll' \) -print0)
 
 rm -f "${zip_path}"
 (

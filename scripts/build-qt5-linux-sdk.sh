@@ -1131,6 +1131,8 @@ build_qtbase() {
             -qt-libjpeg \
             -qt-freetype \
             -qt-harfbuzz \
+            -sql-sqlite \
+            -sqlite qt \
             -xcb \
             -openssl-runtime \
             -I "${PREFIX}/include" \
@@ -1164,8 +1166,11 @@ validate_sdk() {
         "${PREFIX}/lib/libQt5Network.so.5"
         "${PREFIX}/lib/libQt5Gui.so.5"
         "${PREFIX}/lib/libQt5Widgets.so.5"
+        "${PREFIX}/lib/libQt5Sql.so.5"
         "${PREFIX}/lib/libQt5Test.so.5"
         "${PREFIX}/plugins/platforms/libqxcb.so"
+        "${PREFIX}/plugins/sqldrivers/libqsqlite.so"
+        "${PREFIX}/lib/cmake/Qt5Sql/Qt5SqlConfig.cmake"
     )
     local path
     for path in "${required[@]}"; do

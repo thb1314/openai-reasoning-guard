@@ -2,6 +2,7 @@
 
 #include "core/app_config.h"
 #include "core/http_proxy_server.h"
+#include "core/upstream_profile.h"
 #include "quiwidget.h"
 
 #include <QtCore/QJsonObject>
@@ -41,6 +42,8 @@ private slots:
     void handleFailure(const QString &message);
     void switchToChinese();
     void switchToEnglish();
+    void openUpstreamProfiles();
+    void handleUpstreamProfileChanged(int index);
     void showFromTray();
     void handleTrayActivated(QSystemTrayIcon::ActivationReason reason);
 
@@ -64,6 +67,10 @@ private:
     QString currentLanguage() const;
     void setLanguage(const QString &lang);
     void loadSettingsToUi();
+    bool initializeUpstreamProfiles();
+    void refreshUpstreamProfiles();
+    void applyCurrentUpstreamProfile();
+    void clearCurrentUpstreamProfile();
     net_tunnel::AppConfig collectConfigFromUi() const;
     net_tunnel::ProxySettings collectProxySettings() const;
     void setProxyRunningUi(bool running);
@@ -79,6 +86,7 @@ private:
     QTimer statsTimer_;
 
     QMenuBar *menuBar_;
+    QAction *manageUpstreamProfilesAction_;
     QMenu *languageMenu_;
     QAction *zhAction_;
     QAction *enAction_;
@@ -104,6 +112,7 @@ private:
     QLineEdit *proxyHostEdit_;
     QSpinBox *proxyPortSpin_;
     QLineEdit *proxyPrefixEdit_;
+    QComboBox *upstreamProfileCombo_;
     QLineEdit *upstreamUrlEdit_;
     QLineEdit *apiKeyEdit_;
     QLineEdit *userAgentEdit_;
@@ -130,4 +139,11 @@ private:
 
     QPlainTextEdit *logEdit_;
     QJsonObject lastRuntimeSnapshot_;
+
+    net_tunnel::UpstreamProfileStore *upstreamProfileStore_;
+    net_tunnel::UpstreamProfileRunLock *upstreamProfileRunLock_;
+    net_tunnel::UpstreamProfile currentUpstreamProfile_;
+    bool legacyUpstreamMigrationComplete_;
+    bool upstreamProfilesReady_;
+    bool hasCurrentUpstreamProfile_;
 };

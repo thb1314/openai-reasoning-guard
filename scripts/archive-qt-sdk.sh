@@ -160,7 +160,10 @@ case "${TARGET}" in
     linux-*)
         require_path "${QT_ROOT}/bin/moc"
         require_path "${QT_ROOT}/lib/libQt5Core.so.5"
+        require_path "${QT_ROOT}/lib/libQt5Sql.so.5"
         require_path "${QT_ROOT}/plugins/platforms/libqxcb.so"
+        require_path "${QT_ROOT}/plugins/sqldrivers/libqsqlite.so"
+        require_path "${QT_ROOT}/lib/cmake/Qt5Sql/Qt5SqlConfig.cmake"
         ;;
     windows-*)
         require_path "${QT_ROOT}/bin/moc"
@@ -170,13 +173,20 @@ case "${TARGET}" in
         require_path "${QT_ROOT}/bin/Qt5Network.dll"
         require_path "${QT_ROOT}/bin/Qt5Gui.dll"
         require_path "${QT_ROOT}/bin/Qt5Widgets.dll"
+        require_path "${QT_ROOT}/bin/Qt5Sql.dll"
         require_path "${QT_ROOT}/plugins/platforms/qwindows.dll"
+        require_path "${QT_ROOT}/plugins/sqldrivers/qsqlite.dll"
         require_path "${QT_ROOT}/lib/cmake/Qt5/Qt5Config.cmake"
+        require_path "${QT_ROOT}/lib/cmake/Qt5Sql/Qt5SqlConfig.cmake"
         require_any_path "${QT_ROOT}/lib/libQt5Core.a" "${QT_ROOT}/lib/libQt5Core.dll.a"
+        require_any_path "${QT_ROOT}/lib/libQt5Sql.a" "${QT_ROOT}/lib/libQt5Sql.dll.a"
         ;;
     macos-*)
         require_path "${QT_ROOT}/bin/moc"
         require_path "${QT_ROOT}/bin/macdeployqt"
+        require_path "${QT_ROOT}/lib/QtSql.framework/QtSql"
+        require_path "${QT_ROOT}/plugins/sqldrivers/libqsqlite.dylib"
+        require_path "${QT_ROOT}/lib/cmake/Qt5Sql/Qt5SqlConfig.cmake"
         ;;
 esac
 

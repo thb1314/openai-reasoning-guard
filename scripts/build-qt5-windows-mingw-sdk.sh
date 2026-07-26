@@ -456,6 +456,8 @@ build_qtbase() {
             -qt-libjpeg \
             -qt-freetype \
             -qt-harfbuzz \
+            -sql-sqlite \
+            -sqlite qt \
             -openssl-runtime \
             -I "${OPENSSL_PREFIX}/include" \
             -L "${OPENSSL_PREFIX}/lib"
@@ -496,8 +498,11 @@ validate_sdk() {
         "${PREFIX}/bin/Qt5Network.dll"
         "${PREFIX}/bin/Qt5Gui.dll"
         "${PREFIX}/bin/Qt5Widgets.dll"
+        "${PREFIX}/bin/Qt5Sql.dll"
         "${PREFIX}/plugins/platforms/qwindows.dll"
+        "${PREFIX}/plugins/sqldrivers/qsqlite.dll"
         "${PREFIX}/lib/cmake/Qt5/Qt5Config.cmake"
+        "${PREFIX}/lib/cmake/Qt5Sql/Qt5SqlConfig.cmake"
     )
     local path
     for path in "${required[@]}"; do
@@ -506,6 +511,10 @@ validate_sdk() {
             exit 2
         fi
     done
+    if [[ ! -e "${PREFIX}/lib/libQt5Sql.a" && ! -e "${PREFIX}/lib/libQt5Sql.dll.a" ]]; then
+        echo "built SDK is missing the Qt5Sql import library" >&2
+        exit 2
+    fi
 }
 
 archive_and_maybe_upload() {

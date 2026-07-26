@@ -3,13 +3,17 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
-GUI_BIN="${GUI_BIN:-${PROJECT_DIR}/build/net-tunnel-gui}"
-LOG_FILE="${GUI_LOG:-${PROJECT_DIR}/build/net-tunnel-gui.restart.log}"
-PID_FILE="${GUI_PID_FILE:-${PROJECT_DIR}/build/net-tunnel-gui.pid}"
+GUI_BIN="${GUI_BIN:-${PROJECT_DIR}/build-profile/net-tunnel-gui}"
+LOG_FILE="${GUI_LOG:-${PROJECT_DIR}/build-profile/net-tunnel-gui.restart.log}"
+PID_FILE="${GUI_PID_FILE:-${PROJECT_DIR}/build-profile/net-tunnel-gui.pid}"
 DESKTOP_ID="${DESKTOP_ID:-openai-reasoning-guard}"
 APP_WM_CLASS="${APP_WM_CLASS:-openai-reasoning-guard-gui}"
 APP_NAME="${APP_NAME:-OpenAI Reasoning Guard}"
 ICON_SOURCE="${ICON_SOURCE:-${PROJECT_DIR}/assets/openai-reasoning-guard-icon-1024.png}"
+CONFIG_BASE="${XDG_CONFIG_HOME:-${HOME}/.config}"
+CONFIG_DIR="${CONFIG_BASE}/OpenAI Reasoning Guard"
+PREVIOUS_CONFIG_DIR="${CONFIG_BASE}/openai-reasoning-guard"
+LEGACY_CONFIG_DIR="${CONFIG_BASE}/net-tunnel-cpp-client"
 
 if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
     cat <<EOF
@@ -28,7 +32,7 @@ fi
 
 if [[ ! -x "${GUI_BIN}" ]]; then
     echo "GUI binary is not executable: ${GUI_BIN}" >&2
-    echo "Build it first with: cmake --build ${PROJECT_DIR}/build -j2" >&2
+    echo "Build it first with: cmake --build ${PROJECT_DIR}/build-profile -j2" >&2
     exit 1
 fi
 
@@ -62,22 +66,32 @@ install_dev_icon_sizes() {
     local icon_root="$1"
     local icon_id="$2"
     local size
-    for size in 16 24 32 48 64 128 256 512 1024; do
+    for size in 16 22 24 32 48 64 128 256 512 1024; do
         local icon_dir="${icon_root}/${size}x${size}/apps"
+        local sized_source="${PROJECT_DIR}/assets/openai-reasoning-guard-icon-${size}.png"
         mkdir -p "${icon_dir}"
-        if ! python3 - "${ICON_SOURCE}" "${icon_dir}/${icon_id}.png" "${size}" <<'PY'
-import sys
-try:
-    from PIL import Image
-except Exception:
-    sys.exit(2)
-src, dst, size = sys.argv[1], sys.argv[2], int(sys.argv[3])
-Image.open(src).convert("RGBA").resize((size, size), Image.LANCZOS).save(dst)
-PY
-        then
-            cp -f "${ICON_SOURCE}" "${icon_dir}/${icon_id}.png"
-        fi
+        [[ -f "${sized_source}" ]] || sized_source="${ICON_SOURCE}"
+        install -m 0644 "${sized_source}" "${icon_dir}/${icon_id}.png"
     done
+}
+
+prepare_default_config() {
+    umask 077
+    mkdir -p "${CONFIG_DIR}"
+    chmod 0700 "${CONFIG_DIR}"
+    if [[ ! -f "${CONFIG_DIR}/config.json" ]]; then
+        local source_dir
+        for source_dir in "${PREVIOUS_CONFIG_DIR}" "${LEGACY_CONFIG_DIR}"; do
+            if [[ -f "${source_dir}/config.json" ]]; then
+                cp "${source_dir}/config.json" "${CONFIG_DIR}/config.json"
+                break
+            fi
+        done
+    fi
+    if [[ -f "${CONFIG_DIR}/config.json" ]]; then
+        chmod 0600 "${CONFIG_DIR}/config.json"
+    fi
+    export NET_TUNNEL_CONFIG="${NET_TUNNEL_CONFIG:-${CONFIG_DIR}/config.json}"
 }
 
 write_dev_desktop_file() {
@@ -97,6 +111,7 @@ StartupWMClass=${APP_WM_CLASS}
 EOF
 }
 
+prepare_default_config
 install_dev_desktop_entry
 
 readarray -t OLD_PIDS < <(pgrep -u "$(id -u)" -x net-tunnel-gui || true)

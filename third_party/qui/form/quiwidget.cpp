@@ -1792,18 +1792,19 @@ bool QUIMessageBox::eventFilter(QObject *obj, QEvent *evt)
     static QPoint mousePoint;
     static bool mousePressed = false;
 
-    QMouseEvent *event = static_cast<QMouseEvent *>(evt);
-    if (event->type() == QEvent::MouseButtonPress) {
+    if (evt->type() == QEvent::MouseButtonPress) {
+        QMouseEvent *event = static_cast<QMouseEvent *>(evt);
         if (event->button() == Qt::LeftButton) {
             mousePressed = true;
             mousePoint = event->globalPos() - this->pos();
             return true;
         }
-    } else if (event->type() == QEvent::MouseButtonRelease) {
+    } else if (evt->type() == QEvent::MouseButtonRelease) {
         mousePressed = false;
         return true;
-    } else if (event->type() == QEvent::MouseMove) {
-        if (mousePressed && (event->buttons() && Qt::LeftButton)) {
+    } else if (evt->type() == QEvent::MouseMove) {
+        QMouseEvent *event = static_cast<QMouseEvent *>(evt);
+        if (mousePressed && (event->buttons() & Qt::LeftButton)) {
             this->move(event->globalPos() - mousePoint);
             return true;
         }
@@ -2083,18 +2084,19 @@ bool QUIInputBox::eventFilter(QObject *obj, QEvent *evt)
     static QPoint mousePoint;
     static bool mousePressed = false;
 
-    QMouseEvent *event = static_cast<QMouseEvent *>(evt);
-    if (event->type() == QEvent::MouseButtonPress) {
+    if (evt->type() == QEvent::MouseButtonPress) {
+        QMouseEvent *event = static_cast<QMouseEvent *>(evt);
         if (event->button() == Qt::LeftButton) {
             mousePressed = true;
             mousePoint = event->globalPos() - this->pos();
             return true;
         }
-    } else if (event->type() == QEvent::MouseButtonRelease) {
+    } else if (evt->type() == QEvent::MouseButtonRelease) {
         mousePressed = false;
         return true;
-    } else if (event->type() == QEvent::MouseMove) {
-        if (mousePressed && (event->buttons() && Qt::LeftButton)) {
+    } else if (evt->type() == QEvent::MouseMove) {
+        QMouseEvent *event = static_cast<QMouseEvent *>(evt);
+        if (mousePressed && (event->buttons() & Qt::LeftButton)) {
             this->move(event->globalPos() - mousePoint);
             return true;
         }

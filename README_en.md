@@ -68,7 +68,7 @@ References:
 
 - `openai-reasoning-guard-cli`: the installed headless command-line proxy entry point.
 - `openai-reasoning-guard-gui`: the installed Qt Widgets graphical interface entry point.
-- `net-tunnel-core`: the core library shared by CLI/GUI, including configuration, HTTP proxy, interception policy, and statistics logic.
+- `net-tunnel-core`: the core library shared by CLI/GUI, including global configuration, SQLite upstream profiles, HTTP proxy, interception policy, and statistics logic.
 
 Core capabilities:
 
@@ -80,7 +80,9 @@ Core capabilities:
 - Streaming SSE anomaly detection: if a `200` stream is incomplete, lacks a terminal event, lacks usage, or contains a failed/error event, it is not passed through as success.
 - Request body and response body resource limits, request/response buffer timeouts, streaming first-token timeout retries, and upstream request timeout.
 - Supports both `Content-Length` and `Transfer-Encoding: chunked` request bodies.
-- Supports a generic upstream proxy and split HTTP/HTTPS/SOCKS upstream proxy fields.
+- Multiple upstream profiles with GUI/CLI CRUD, pagination, search, sorting, selection, and JSON import/export.
+- Each upstream profile uses one HTTP or SOCKS5-family proxy address; an empty value means direct access.
+- SQLite transactions, WAL, and cross-process run locks prevent the active profile from being switched or corrupted while running.
 - Control endpoints: `/healthz`, `/status`, `/version`, `/props`.
 
 
@@ -117,19 +119,33 @@ The macOS shell installer will request `sudo` permission, install the app to `/A
 
 ## CLI
 
-Start the intelligent proxy:
+Create an upstream profile before the first run. The first profile automatically becomes current:
 
 ```bash
-openai-reasoning-guard-cli \
-  --proxy-host 127.0.0.1 \
-  --proxy-port 8010 \
-  --proxy-prefix /v1 \
-  --upstream-base-url https://api.openai.com/v1 \
-  --reasoning-equals 516,1034,1552 \
-  --guard-retry-attempts 3
+openai-reasoning-guard-cli profile add \
+  --name "Primary" \
+  --base-url https://api.openai.com/v1 \
+  --api-key sk-example
+
+openai-reasoning-guard-cli profile select "Primary"
 ```
 
-`--api-proxy` can still be passed as a compatibility flag, but the CLI currently always runs only in proxy mode. `--reasoning-516-retries` is a compatibility alias for `--guard-retry-attempts`.
+Then start the intelligent proxy with the current profile:
+
+```bash
+openai-reasoning-guard-cli --proxy-host 127.0.0.1 --proxy-port 8010
+```
+
+Without a `profile` subcommand, the CLI loads the last selected upstream profile from SQLite. If the selected UUID is missing or stale while profiles still exist and the selection lock is available, the most recently updated profile is selected automatically; startup fails only when no usable profile can be recovered. Legacy scripts can still start an ad-hoc run with `--upstream-base-url`; all legacy `--upstream-*` startup options override only the current run and never modify a saved profile. An ad-hoc run without a selected profile still holds the selection lock; profiles may be added while it runs, but none can become current until the proxy stops.
+
+Common management commands:
+
+```bash
+openai-reasoning-guard-cli profile list --page 1 --page-size 20
+openai-reasoning-guard-cli profile show "Primary"
+openai-reasoning-guard-cli profile update "Primary" --upstream-timeout 1200
+openai-reasoning-guard-cli profile delete "Backup"
+```
 
 Query the status of a running proxy:
 
@@ -143,23 +159,30 @@ You can also explicitly specify the full status URL:
 openai-reasoning-guard-cli --query-status --query-url http://127.0.0.1:8010/status
 ```
 
-Write the final startup configuration back to the configuration file:
+Write only global listen, buffer, and guard startup settings back to `config.json`:
 
 ```bash
 openai-reasoning-guard-cli --keep-config ...
 ```
 
-## GUI
+`--keep-config` does not persist `--upstream-base-url`, `--upstream-api-key`, the upstream proxy, User-Agent, or upstream timeouts. Use `profile update` for permanent changes. `--api-proxy` remains a compatibility flag; the CLI always runs proxy mode. `--reasoning-516-retries` is a compatibility alias for `--guard-retry-attempts`.
 
+## GUI
 
 The first GUI screen is divided into four areas:
 
 - Top runtime target overview.
-- Left-side intelligent interception and upstream forwarding configuration.
+- Left-side current upstream profile, read-only connection settings, and editable global protection settings.
 - Upper-right real-time statistics.
 - Right-side information panel and console logs.
 
-The information panel displays the current proxy listen address, upstream address, path prefix, control endpoints, buffer limit, first-token timeout, stream action, and reasoning guard policy. The GUI can directly edit `first_token_timeout_sec`, `request_body_limit_bytes`, `response_buffer_limit_bytes`, and `stream_action`.
+The Upstream Profiles menu opens a modal management window. It supports add, view, edit, delete, display-name or Base URL search, header sorting, and pagination at 10, 20, 50, or 100 rows per page. Selecting a table row only chooses an operation target. When selection is not run-locked, Set Current switches it explicitly. Adding or importing the first profile into an empty database selects it automatically; deleting the current profile selects the next item in descending update-time order, or the previous item when no next item exists.
+
+The main window keeps the original connection-field layout, but Base URL, API key, User-Agent, User-Agent forwarding, upstream proxy, upstream timeout, and first-token timeout are loaded from the selected profile and are read-only. Global settings such as the listen address, buffer limits, interception rules, and `stream_action` remain editable.
+
+While the proxy is running, the profile combo box cannot be switched and the active profile cannot be edited or deleted. Other unused profiles may still be added, viewed, and edited. Stop the proxy before changing the current profile. Start Proxy is disabled when no profile exists.
+
+The information panel displays the current profile name, proxy listen address, upstream address, path prefix, control endpoints, buffer limit, first-token timeout, stream action, and reasoning guard policy.
 
 The project provides a one-click restart script:
 
@@ -167,23 +190,35 @@ The project provides a one-click restart script:
 scripts/restart-gui.sh
 ```
 
-The script stops existing `net-tunnel-gui` processes under the current user, inherits the display environment from the old process, and then starts the new binary.
+The script stops existing GUI processes under the current user, inherits the display environment from the old process, and then starts the new binary.
 
-## Configuration File
+## Configuration and Data Files
 
-The default configuration file is located in the same directory as the executable. For development builds, it is usually:
+Global settings and upstream connection settings use two independent data sources:
 
-```text
-build/config.json
-```
+- `config.json`: global settings such as listening, buffer limits, guard policy, and UI language.
+- `upstream-profiles.sqlite3`: upstream profiles, API keys, and the last selected profile UUID.
 
-You can also explicitly specify a configuration:
+Default storage locations:
+
+| Platform | Example directory |
+| --- | --- |
+| Linux | `${XDG_CONFIG_HOME:-$HOME/.config}/OpenAI Reasoning Guard/` |
+| Windows | `%APPDATA%\OpenAI Reasoning Guard\` |
+| macOS | `~/Library/Application Support/OpenAI Reasoning Guard/` |
+
+You can explicitly choose the global JSON path; the database is automatically placed beside that JSON:
 
 ```bash
-openai-reasoning-guard-cli --config config.example.json --api-proxy
+NET_TUNNEL_CONFIG=/srv/reasoning-guard/config.json openai-reasoning-guard-cli
+openai-reasoning-guard-cli --config /srv/reasoning-guard/config.json
 ```
 
-Full example:
+Both forms use `/srv/reasoning-guard/upstream-profiles.sqlite3`. The application writes `config.json` atomically. On POSIX systems, directories created by the application and database, WAL/SHM, configuration, backup, and export files are restricted to the owner; permissions on existing custom directories are preserved and remain the administrator's responsibility. Windows relies on the current user's `%APPDATA%` ACL by default. When `--config` or `NET_TUNNEL_CONFIG` selects a custom or shared directory, its ACL isolation is the user's or administrator's responsibility.
+
+### Global Configuration Example
+
+`config.example.json` contains no upstream URL or key because SQLite upstream profiles manage those fields. Complete global example:
 
 ```json
 {
@@ -191,16 +226,6 @@ Full example:
   "proxy_host": "127.0.0.1",
   "proxy_port": "8010",
   "proxy_prefix": "/v1",
-  "upstream_base_url": "",
-  "upstream_api_key": "",
-  "upstream_user_agent": "curl/8.7.1",
-  "forward_user_agent": false,
-  "upstream_proxy": "",
-  "upstream_http_proxy": "",
-  "upstream_https_proxy": "",
-  "upstream_socks_proxy": "",
-  "upstream_timeout_sec": 1800,
-  "first_token_timeout_sec": 30,
   "buffer_timeout_sec": 180,
   "request_body_limit_bytes": 104857600,
   "response_buffer_limit_bytes": 104857600,
@@ -217,7 +242,13 @@ Full example:
 }
 ```
 
-## Configuration Options
+### Legacy Configuration Migration
+
+On the first upgrade, the application copies an old `config.json` beside the executable when the user configuration directory has no config yet. When the profile database is empty and the legacy fields form a valid upstream profile, the application backs it up as `config.json.pre-upstream-profiles.bak`, then creates and selects a profile named `已迁移配置` with the old API key, User-Agent, forwarding switch, upstream proxy, and both timeouts. Before migration, the Base URL, proxy, and both timeouts are validated with the current profile rules. On validation failure, the original JSON is left unchanged and must be corrected before retrying.
+
+Legacy `upstream_proxy`, `upstream_http_proxy`, `upstream_https_proxy`, and `upstream_socks_proxy` values are reduced to one effective proxy according to the Base URL scheme and the old precedence rules. The old `upstream_*` fields are removed from the current JSON only after the database transaction succeeds. When the Base URL is empty and every other legacy field is empty or still at its old default, the application first backs up the JSON and then atomically removes those placeholder fields without creating a profile. If an API key, proxy, non-default User-Agent, forwarding switch, timeout, or another meaningful value remains, migration fails and preserves the JSON unchanged until the user supplies a Base URL or resolves it manually. SQLite is therefore the only upstream-profile data source after the upgrade, while the backup remains available for manual recovery.
+
+## Global Configuration Options
 
 | Field | Default | Example | Description |
 | --- | --- | --- | --- |
@@ -225,16 +256,6 @@ Full example:
 | `proxy_host` | `127.0.0.1` | `"0.0.0.0"` | Local proxy listen address. Keep `127.0.0.1` when only local clients use it; set it to `0.0.0.0` when other machines on the LAN need access. |
 | `proxy_port` | `8010` | `8011` | Local proxy listen port. The client base URL needs to use this port, for example `http://127.0.0.1:8011/v1`. |
 | `proxy_prefix` | `/v1` | `""` or `"/api"` | Business path prefix used by clients to access the proxy. `"/v1"` means the client requests `/v1/responses`; an empty string means root proxy, and a request to `/responses` is forwarded directly. Under root proxy, `GET /` is forwarded to the upstream root path, and `/healthz` is used for health checks. |
-| `upstream_base_url` | empty | `"https://api.openai.com/v1"` | The real upstream OpenAI-compatible API base URL. The proxy appends the business path after removing `proxy_prefix` to this base URL. When empty, no built-in upstream address is used automatically, and it must be explicitly filled in the GUI, configuration file, or CLI before starting the proxy. |
-| `upstream_api_key` | empty | `"sk-..."` | Explicit upstream Bearer token. When non-empty, the upstream `Authorization` is fixed to `Bearer sk-...`; when empty, the client `Authorization` is passed through, which means Codex continues to use its own `auth.json`. |
-| `upstream_user_agent` | `curl/8.7.1` | `"codex-cli/0.1"` | Default `User-Agent` sent to the upstream service. This value is used when `forward_user_agent=false`. |
-| `forward_user_agent` | `false` | `true` | Whether to forward the `User-Agent` from the client request to the upstream service unchanged. When `false`, `upstream_user_agent` is used. |
-| `upstream_proxy` | empty | `"http://127.0.0.1:7890"` | Generic upstream proxy address. It can also be `"socks5://127.0.0.1:7890"`. When non-empty, it takes precedence over the split proxy fields. |
-| `upstream_http_proxy` | empty | `"http://127.0.0.1:7890"` | HTTP upstream proxy field. The current implementation also uses it as a fallback when the HTTPS upstream lacks `upstream_https_proxy`. It is not automatically folded into `upstream_proxy` when saving configuration. |
-| `upstream_https_proxy` | empty | `"http://127.0.0.1:7890"` | HTTPS upstream proxy field. It is used preferentially only when `upstream_proxy` is empty and the upstream base URL is HTTPS. |
-| `upstream_socks_proxy` | empty | `"127.0.0.1:7890"` or `"socks5://127.0.0.1:7890"` | SOCKS upstream proxy field. When no scheme is present, `socks5://` is added by default. It is the final fallback when the generic/protocol proxy fields are all empty. |
-| `upstream_timeout_sec` | `1800` | `600` | Maximum wait time in seconds for a single upstream request. Timeout returns `504`, and records `error_type=upstream_timeout` and `upstream_timeout_total`. Long reasoning scenarios should keep this value relatively large. |
-| `first_token_timeout_sec` | `30` | `10` or `0` | First-token timeout for streaming requests, measured at the proxy layer as the first non-empty upstream response body byte. It only applies when the request body contains `stream=true`; a timeout consumes the `guard_retry_attempts` retry budget, and exhaustion returns `504` with `error_type=first_token_timeout`. Set it to `0` to disable it. Configuration loading also accepts `upstream_first_byte_timeout_seconds`. |
 | `buffer_timeout_sec` | `180` | `360` | Wait time in seconds for request body buffering and upstream response buffering. If the request body is not fully received, `408` is returned; if response buffering times out, `502` is returned; both record `error_type=buffer_timeout`. |
 | `request_body_limit_bytes` | `104857600` | `10485760` | Maximum buffered byte count for the client request body. The example is 10MB; the default is 100MB. If exceeded, `413` is returned and the upstream service is not requested. |
 | `response_buffer_limit_bytes` | `104857600` | `209715200` | Maximum buffered byte count for the upstream response. The example is 200MB; the default is 100MB. Both strict streaming and non-streaming inspection are protected by this limit, and exceeding it returns `502`. |
@@ -249,33 +270,97 @@ Full example:
 | `non_stream_status_code` | `502` | `503` | Status code returned to the client after guard retries are exhausted or local interception finally happens. The field name keeps `non_stream`, but the current strict streaming mode also uses it. |
 | `stream_action` | `strict_502` | `"disconnect"` | Action after a streaming hit. `strict_502` buffers the whole stream, discards the entire response after a hit, and retries or returns an error; `disconnect` also discards the whole response and retries when retry budget remains, and only after the budget is exhausted does it pass through while scanning, discarding the hit chunk and disconnecting if a hit occurs after data has already been passed through. |
 
-## API Key Behavior
+## Upstream Profile Fields
 
-`upstream_api_key` is the explicit upstream key override for the local proxy.
+| Field | Default | Example | Description |
+| --- | --- | --- | --- |
+| `id` | generated | `"550e8400-e29b-41d4-a716-446655440000"` | Immutable UUID that keeps identifying a profile after it is renamed. The GUI never asks for it; CLI show/update/delete/select accept either a name or UUID. |
+| `display_name` | empty, required | `"Primary"` | Human-readable name. Leading and trailing whitespace is removed, and uniqueness is case-insensitive, so `Main` and `main` cannot coexist. It must contain no control characters and may be at most `512` UTF-8 bytes. |
+| `base_url` | empty, required | `"https://api.openai.com/v1"` | Complete HTTP/HTTPS upstream Base URL. A host is required and a path is allowed, but userinfo/credentials, query, and fragment are forbidden. Extra trailing `/` characters are removed on save. For example, `https://user:pass@api.example.com/v1` is rejected. |
+| `api_key` | empty | `"sk-..."` | Leading and trailing whitespace is removed on save. A non-empty trimmed value forces `Bearer <api_key>` and overrides client authorization; an empty trimmed value forwards the client `Authorization`. Key prefixes are not restricted, but the value must contain no control characters and may be at most `8192` UTF-8 bytes. |
+| `user_agent` | `curl/8.7.1` | `"codex-cli/0.1"` | User-Agent used when `forward_user_agent=false`. The stored value may be empty, but an empty or whitespace-only runtime value falls back to `curl/8.7.1`. A non-empty value must contain no control characters and may be at most `8192` UTF-8 bytes. |
+| `forward_user_agent` | `false` | `true` | When `true`, prefer the client request's `User-Agent`; when `false`, use this profile's `user_agent`. |
+| `upstream_proxy` | empty | `"http://127.0.0.1:7890"` or `"socks5://127.0.0.1:7890"` | The profile's only upstream proxy. Only the `http`, `socks`, `socks5`, and `socks5h` schemes are supported; HTTPS proxy schemes and SOCKS4 are unsupported, and userinfo/credentials, query, and fragment are forbidden. Empty means direct; a value without a scheme is normalized as an HTTP proxy. |
+| `upstream_timeout_sec` | `1800` | `600` | Maximum wait for one upstream request, in the range `1..86400`. Timeout returns `504` and records `error_type=upstream_timeout`. |
+| `first_token_timeout_sec` | `30` | `10` or `0` | Wait for the first non-empty upstream body byte in a streaming request, in the range `0..3600`. Timeout consumes the shared retry budget; `0` disables it. |
 
-- If `upstream_api_key` is non-empty, the `Authorization` sent by the proxy to the upstream service is fixed to `Bearer <upstream_api_key>`, even if the client request already contains `Authorization`.
-- If `upstream_api_key` is empty, the proxy does not generate a key itself, but passes through the `Authorization` from the client request. In Codex scenarios, this is usually the token Codex attaches according to its own `auth.json`.
+## API Keys and Import/Export
 
-Therefore: if you want to force a specific backup key, fill in `upstream_api_key`; if you want to continue using Codex's original `auth.json`, leave `upstream_api_key` empty.
+Profile API keys are stored as plaintext in the current user's `upstream-profiles.sqlite3`. User-private directories and file permissions reduce accidental exposure, but this is not a system keychain or encrypted vault: anyone who can read that user's files can still obtain the keys.
 
-## CLI Option Reference
+- The GUI editor masks the key by default and provides explicit reveal/hide and copy buttons. Lists only say "API key configured" or "Client passthrough."
+- CLI `profile list`, default `profile show`, logs, and status endpoints never output a complete key. `--json` alone does not disable redaction.
+- Only `profile show ... --show-secret` displays the complete key, including output that also uses `--json`.
+- With an empty API key, the proxy forwards the client `Authorization`. Codex may load that token from its own `auth.json` before sending the request; this application never reads `auth.json`.
+
+Both GUI and CLI support JSON import/export. A normal export omits the `api_key` field completely; only the explicit Include API Keys choice or `--include-secrets` exports plaintext keys. When a public export overwrites an existing profile, the database key is preserved; a newly imported profile gets an empty key. Import detects conflicts by UUID or case-insensitive display name and requires `skip` or `overwrite`; the whole import runs in one transaction. Exports do not include the current selection. Importing into a non-empty database keeps its selection; importing into an empty database selects the first added profile when the selection lock is available.
+
+Example export without secrets (`api_key_configured` reports only whether a key exists; it contains no key material):
+
+```json
+{
+  "schema_version": 1,
+  "exported_at_utc": "2026-07-25T12:00:00.000Z",
+  "secrets_included": false,
+  "profiles": [
+    {
+      "id": "550e8400-e29b-41d4-a716-446655440000",
+      "display_name": "Primary",
+      "base_url": "https://api.example.com/v1",
+      "user_agent": "curl/8.7.1",
+      "forward_user_agent": false,
+      "upstream_proxy": "",
+      "upstream_timeout_sec": 1800,
+      "first_token_timeout_sec": 30,
+      "created_at_utc": "2026-07-25T11:00:00.000Z",
+      "updated_at_utc": "2026-07-25T11:30:00.000Z",
+      "api_key_configured": true
+    }
+  ]
+}
+```
+
+```bash
+openai-reasoning-guard-cli profile export --output profiles.json
+openai-reasoning-guard-cli profile export --output profiles-with-keys.json --include-secrets
+openai-reasoning-guard-cli profile import --input profiles.json --conflict skip
+openai-reasoning-guard-cli profile import --input profiles.json --conflict overwrite
+```
+
+## CLI Upstream Profile Commands
+
+| Command | Example | Description |
+| --- | --- | --- |
+| `profile list` | `profile list --page 1 --page-size 20 --search openai --sort updated-at --order desc` | List a page. Page size must be `10`, `20`, `50`, or `100`; search covers display name and Base URL; sort fields are `name`, `base-url`, and `updated-at`. |
+| `profile show <name-or-UUID>` | `profile show "Primary" --json` | Show one profile. Only authorization status is shown by default; add `--show-secret` to output the complete key. |
+| `profile add` | `profile add --name "Primary" --base-url https://api.example.com/v1 --api-key sk-...` | Add a profile. Name and Base URL are required. The first profile becomes current when no run lock exists. |
+| `profile update <name-or-UUID>` | `profile update "Primary" --proxy http://127.0.0.1:7890 --no-forward-user-agent` | Update only explicitly supplied fields. Use `--api-key=` to clear the key and `--proxy=` to switch to direct access. |
+| `profile delete <name-or-UUID>` | `profile delete "Backup"` | Delete a profile. After deleting the current profile, select the next row in descending update-time order, or the previous row when no next row exists. An active profile cannot be deleted. |
+| `profile select <name-or-UUID>` | `profile select "Primary"` | Persist the last selection. Selection is locked while a proxy is running. |
+| `profile export` | `profile export --output profiles.json --include-secrets` | Export every profile. Keys are omitted by default; `--include-secrets` exports them as plaintext. |
+| `profile import` | `profile import --input profiles.json --conflict overwrite` | Import profiles. `--conflict skip|overwrite` is required. |
+
+Every management command accepts `--config <path>`, and `list/show/add/update/delete/select/import/export` support machine-readable `--json` output. Field options for add/update also include `--user-agent`, `--forward-user-agent`, `--no-forward-user-agent`, `--upstream-timeout`, and `--first-token-timeout`. The `--upstream-*` spellings remain accepted compatibility aliases for Base URL, key, User-Agent, and the single proxy.
+
+## CLI Startup Options
 
 | CLI option | Example | Description |
 | --- | --- | --- |
-| `--config <path>` | `--config build/config.json` | Specify the configuration file path. |
+| `--config <path>` | `--config /srv/guard/config.json` | Specify the global JSON; the profile database is `upstream-profiles.sqlite3` in the same directory. |
+| `--api-proxy` | `--api-proxy` | Compatibility flag; the CLI always runs in proxy mode and this option changes no configuration. |
 | `--proxy-host` | `--proxy-host 127.0.0.1` | Override `proxy_host`. |
 | `--proxy-port` | `--proxy-port 8011` | Override `proxy_port`. |
 | `--proxy-prefix` | `--proxy-prefix /v1` or `--proxy-prefix ""` | Override `proxy_prefix`; an empty string means root proxy. |
-| `--upstream-base-url` | `--upstream-base-url https://api.openai.com/v1` | Override `upstream_base_url`. |
-| `--upstream-api-key` | `--upstream-api-key sk-...` | Override `upstream_api_key`; when non-empty, it forcibly overrides the client Authorization. |
-| `--upstream-user-agent` | `--upstream-user-agent curl/8.7.1` | Override `upstream_user_agent`. |
-| `--forward-user-agent` | `--forward-user-agent` | Forward the client `User-Agent` to the upstream service. |
-| `--upstream-proxy` | `--upstream-proxy http://127.0.0.1:7890` | Override `upstream_proxy`. |
-| `--upstream-http-proxy` | `--upstream-http-proxy http://127.0.0.1:7890` | Override `upstream_http_proxy`. |
-| `--upstream-https-proxy` | `--upstream-https-proxy http://127.0.0.1:7890` | Override `upstream_https_proxy`. |
-| `--upstream-socks-proxy` | `--upstream-socks-proxy socks5://127.0.0.1:7890` | Override `upstream_socks_proxy`. |
-| `--upstream-timeout` | `--upstream-timeout 1800` | Override `upstream_timeout_sec`. |
-| `--first-token-timeout` | `--first-token-timeout 30` or `--first-token-timeout 0` | Override `first_token_timeout_sec`; `--upstream-first-byte-timeout` is a compatibility alias. |
+| `--upstream-base-url` | `--upstream-base-url https://api.openai.com/v1` | Temporarily override the current profile Base URL. It also permits an ad-hoc run without a profile and is never written to the database. |
+| `--upstream-api-key` | `--upstream-api-key sk-...` | Temporarily override the profile key. Runtime removes leading and trailing whitespace; a non-empty trimmed value overrides client authorization, while empty forwards it. |
+| `--upstream-user-agent` | `--upstream-user-agent curl/8.7.1` | Temporarily override the profile User-Agent. |
+| `--forward-user-agent` / `--no-forward-user-agent` | `--forward-user-agent` | Temporarily enable/disable client `User-Agent` forwarding. The two flags are mutually exclusive. |
+| `--upstream-proxy` | `--upstream-proxy http://127.0.0.1:7890` | Temporarily override the profile's single proxy; an empty value means direct. |
+| `--upstream-http-proxy` | `--upstream-http-proxy http://127.0.0.1:7890` | Per-run HTTP proxy field retained for legacy scripts; never persisted. |
+| `--upstream-https-proxy` | `--upstream-https-proxy http://127.0.0.1:7890` | Per-run HTTPS proxy field retained for legacy scripts; never persisted. |
+| `--upstream-socks-proxy` | `--upstream-socks-proxy socks5://127.0.0.1:7890` | Per-run SOCKS proxy field retained for legacy scripts; never persisted. |
+| `--upstream-timeout` | `--upstream-timeout 1800` | Temporarily override the profile upstream timeout. |
+| `--first-token-timeout` | `--first-token-timeout 30` or `--first-token-timeout 0` | Temporarily override the profile first-token timeout; `--upstream-first-byte-timeout` is a compatibility alias. |
 | `--buffer-timeout` | `--buffer-timeout 360` | Override `buffer_timeout_sec`. |
 | `--request-body-limit-bytes` | `--request-body-limit-bytes 104857600` | Override `request_body_limit_bytes`. |
 | `--response-buffer-limit-bytes` | `--response-buffer-limit-bytes 104857600` | Override `response_buffer_limit_bytes`. |
@@ -293,7 +378,7 @@ Therefore: if you want to force a specific backup key, fill in `upstream_api_key
 | `--query-status` | `--query-status` | Query a running proxy and exit. |
 | `--query-url` | `--query-url http://127.0.0.1:8010/status` | Specify the status query URL. |
 | `--status-json` | `--status-json` | Print status JSON once after startup. |
-| `--keep-config` | `--keep-config` | Write the final startup configuration back to `config.json`. |
+| `--keep-config` | `--keep-config` | Write only final global startup settings to `config.json`; no upstream override is persisted. |
 
 ## Control Endpoints
 
@@ -345,6 +430,7 @@ The live overview displays business, control, and in-flight requests separately.
 ```text
 CMakeLists.txt
 config.example.json
+CONTEXT.md
 scripts/
   archive-qt-sdk.sh
   archive-qt-sdk.ps1
@@ -358,13 +444,18 @@ scripts/
   package-windows.ps1
   restart-gui.sh
 src/
-  core/   # business core: configuration, HTTP proxy, interception policy, statistics
-  cli/    # command-line entry point
-  gui/    # Qt Widgets main window
+  core/   # global config, SQLite upstream profiles, HTTP proxy, interception, statistics
+  cli/    # command-line entry point and profile management commands
+  gui/    # Qt Widgets main window and upstream profile manager
 tests/
+  cli_profile_commands_test.cpp
   http_proxy_server_test.cpp
+  main_window_profile_test.cpp
+  upstream_profile_dialog_test.cpp
+  upstream_profile_store_test.cpp
 docs/
   ARCHITECTURE.md
+  adr/
 ```
 
 ## Verification
@@ -375,7 +466,7 @@ cd build
 ctest --output-on-failure
 ```
 
-The current QtTest coverage includes request body/response body limits, buffer timeouts, upstream timeout, chunked request body decoding, upstream cancellation after client disconnect, root proxy root-path forwarding, split proxy field round-trip, streaming guard retry, incomplete SSE response retry, and authorization priority.
+Current QtTest coverage includes request/response limits, buffer and upstream timeouts, chunked decoding, upstream cancellation after client disconnect, root proxy behavior, streaming guard retries, SSE completeness, and authorization priority. Upstream-profile tests cover CRUD, UUID/name uniqueness, URL validation, pagination/search/sorting, selection recovery, legacy-field migration and proxy reduction, run locks, secret redaction, transactional import/export, CLI management commands, and read-only main-window mapping. Package tests also verify that the QtSql runtime and QSQLITE driver are actually present.
 
 
 ## Build
@@ -385,10 +476,10 @@ cmake -S . -B build
 cmake --build build -j2
 ```
 
-By default, the build uses an explicit Qt 5 SDK from the current environment. CI uniformly produces SDK archives based on Qt 5.15.x:
+By default, the build uses an explicit Qt 5 SDK from the current environment. The project requires Qt Core, Network, Gui, Widgets, and Sql; test builds additionally require QtTest, and runtime requires the QSQLITE driver. CI uniformly produces SDK archives based on Qt 5.15.x:
 
 ```text
-/mnt/data/qt-2080ti-sync/qt5-openssl
+/mnt/data/qt-2080ti-sync/qt5.15.2-openssl
 ```
 
 To replace the Qt path:
@@ -400,6 +491,8 @@ cmake -S . -B build \
 
 Local development builds use the self-built Qt5 under `/mnt/data/qt-2080ti-sync` by default, and do not use the system Qt5.
 
+QSQLITE uses the SQLite driver shipped in the Qt SDK, so end users do not need to install the `sqlite3` command. A custom Qt SDK must provide the QtSql library, the Qt5Sql CMake package, and the platform's `sqldrivers` plugin.
+
 The CMake targets used in source development builds still keep historical names internally. The official user entry points in installation packages are `openai-reasoning-guard-cli` and `openai-reasoning-guard-gui`.
 
 ## Packaging
@@ -410,7 +503,7 @@ The project provides three local packaging entry points:
 - Windows: [scripts/package-windows-mingw.sh](scripts/package-windows-mingw.sh), cross-compiling with MinGW on Linux and producing installer `.exe` and portable `.zip`; [scripts/package-windows.ps1](scripts/package-windows.ps1) is kept for native Windows/MSVC builds.
 - macOS: [scripts/package-macos.sh](scripts/package-macos.sh), producing a self-extracting shell installer that contains the GUI app, CLI, and temporary DMG payload.
 
-All platforms handle Qt according to the same principle: build and package only with an explicit Qt SDK, and never automatically use the system Qt5. Local Linux searches the self-built Qt5 under `/mnt/data/qt-2080ti-sync` by default; CI must provide Qt through Qt SDK archive secrets for each architecture.
+All platforms handle Qt according to the same principle: build and package only with an explicit Qt SDK, and never automatically use the system Qt5. Local Linux searches the self-built Qt5 under `/mnt/data/qt-2080ti-sync` by default. CI obtains Qt from an architecture-specific SDK archive, preferring a secret URL and falling back to the standard SDK Release asset when no secret is configured. The SDK and final package must contain QtSql and the QSQLITE plugin, and both GUI and CLI AppImages use the same database runtime.
 
 ### Linux
 
@@ -452,7 +545,7 @@ Available environment variables:
 | `GUI_COMMAND` | `openai-reasoning-guard-gui` | Installed GUI command name. |
 | `CLI_COMMAND` | `openai-reasoning-guard-cli` | Installed CLI command name. |
 | `ICON_SOURCE` | `assets/openai-reasoning-guard-icon-1024.png` | Application icon used for packaging. If it does not exist, the script falls back to the built-in SVG. |
-| `QT_ROOT` | `/mnt/data/qt-2080ti-sync/qt5-openssl` | Qt SDK root directory, which must contain `bin/moc`, `lib/libQt5Core.so.5`, and `plugins/platforms/libqxcb.so`. |
+| `QT_ROOT` | `/mnt/data/qt-2080ti-sync/qt5.15.2-openssl` | Qt SDK root, which must contain `bin/moc`, `lib/libQt5Core.so.5`, `lib/libQt5Sql.so.5`, `plugins/platforms/libqxcb.so`, and `plugins/sqldrivers/libqsqlite.so`. |
 | `LOCAL_QT_BASE` | `/mnt/data/qt-2080ti-sync` | Local default Qt search root; used only when `QT_ROOT` is empty. |
 | `OPENSSL_ROOT` | `/path/to/openssl` | Optional OpenSSL runtime root; when unset, it is preferentially copied from Qt's `lib` directory. |
 | `DEB_ARCH` | `amd64` | Override the deb architecture name. Automatic values are usually `amd64`, `i386`, `arm64`, or `armhf`. |
@@ -470,27 +563,27 @@ Available environment variables:
 | `SKIP_BUILD` | `1` | Skip compilation and package directly with existing binaries in `BUILD_DIR`. |
 | `DOWNLOAD_PROXY` | `http://127.0.0.1:7890` | Proxy used when downloading `appimagetool`. |
 
-Runtime Qt libraries are packaged into `/opt/openai-reasoning-guard/qt`. The installed official entry points are `/usr/bin/openai-reasoning-guard-gui` and `/usr/bin/openai-reasoning-guard-cli`, while `/usr/bin/net-tunnel-gui` and `/usr/bin/net-tunnel-cli` are kept as compatibility symlinks. The package wrapper places the configuration file at `${XDG_CONFIG_HOME:-$HOME/.config}/openai-reasoning-guard/config.json`; if the old `${XDG_CONFIG_HOME:-$HOME/.config}/net-tunnel-cpp-client/config.json` exists, it is copied once automatically to avoid writing into `/opt`.
+Runtime Qt libraries are packaged into `/opt/openai-reasoning-guard/qt`, including `libQt5Sql.so.5` and `plugins/sqldrivers/libqsqlite.so`. The installed official entry points are `/usr/bin/openai-reasoning-guard-gui` and `/usr/bin/openai-reasoning-guard-cli`, while `/usr/bin/net-tunnel-gui` and `/usr/bin/net-tunnel-cli` remain compatibility symlinks. The wrapper uses `${XDG_CONFIG_HOME:-$HOME/.config}/OpenAI Reasoning Guard/` and copies `config.json` once from an old `openai-reasoning-guard` or `net-tunnel-cpp-client` directory; the SQLite database is then created in the new directory.
 
 ### Windows
 
 CI uses the MinGW route by default: it installs a MinGW compiler on Linux and cross-compiles with a Windows MinGW Qt SDK. The Qt SDK must contain both Linux-executable Qt host tools and Windows target libraries:
 
 - `bin/moc`, `bin/rcc`, `bin/uic`: Linux host tools used by CMake automoc/autorcc/autouic.
-- `bin/Qt5Core.dll`, `bin/Qt5Network.dll`, `bin/Qt5Gui.dll`, `bin/Qt5Widgets.dll`: Windows runtime DLLs.
-- `plugins/platforms/qwindows.dll`: Windows Qt platform plugin.
-- `lib/cmake/Qt5/Qt5Config.cmake` and `lib/libQt5Core.a` or `lib/libQt5Core.dll.a`: CMake package and MinGW import library.
+- `bin/Qt5Core.dll`, `bin/Qt5Network.dll`, `bin/Qt5Gui.dll`, `bin/Qt5Widgets.dll`, `bin/Qt5Sql.dll`: Windows runtime DLLs.
+- `plugins/platforms/qwindows.dll` and `plugins/sqldrivers/qsqlite.dll`: Windows platform and SQLite plugins.
+- `lib/cmake/Qt5/Qt5Config.cmake`, `lib/cmake/Qt5Sql/Qt5SqlConfig.cmake`, and matching Core/Sql MinGW import libraries.
 
 The packaging script generates two files:
 
 - installer `.exe`: NSIS installer.
-- portable `.zip`: single-file portable package, runnable directly after extraction.
+- portable `.zip`: self-contained portable archive, runnable directly after extraction.
 
 The package contains:
 
 - `openai-reasoning-guard-gui.exe`
 - `openai-reasoning-guard-cli.exe`
-- Qt DLLs, `plugins/platforms/qwindows.dll`, fonts, configuration example, and documentation files
+- Qt DLLs, `plugins/platforms/qwindows.dll`, `plugins/sqldrivers/qsqlite.dll`, fonts, configuration example, and documentation files
 
 Linux/MinGW example:
 
@@ -529,7 +622,7 @@ powershell -ExecutionPolicy Bypass -File scripts/package-windows.ps1 `
 
 ### macOS
 
-The macOS packaging script creates an `.app` bundle, uses `macdeployqt` to collect Qt frameworks, first generates a temporary DMG payload, and then embeds that DMG into a self-extracting shell installer. The final artifact released to users is `.sh`; when executed, it requests `sudo` permission, mounts the internal DMG, installs the app to `/Applications`, removes the app's quarantine marker, and installs the `/usr/local/bin/openai-reasoning-guard-cli` CLI wrapper script.
+The macOS packaging script creates an `.app` bundle and uses `macdeployqt` to collect Qt frameworks, `QtSql.framework`, and `PlugIns/sqldrivers/libqsqlite.dylib`. It first generates a temporary DMG payload and then embeds that DMG into a self-extracting shell installer. The final artifact released to users is `.sh`; when executed, it requests `sudo` permission, mounts the internal DMG, installs the app to `/Applications`, removes the app's quarantine marker, and installs the `/usr/local/bin/openai-reasoning-guard-cli` CLI wrapper script.
 
 Examples:
 
@@ -631,9 +724,9 @@ The value of each Qt SDK secret is a downloadable archive URL, supporting `tar`,
 
 After extraction, the archive needs to make the corresponding platform's Qt tools and runtime discoverable:
 
-- Linux archive: contains `bin/moc`, `lib/libQt5Core.so.5`, `plugins/platforms/libqxcb.so`, and preferably also `lib/cmake/Qt5`.
-- Windows MinGW archive: contains Linux host tools `bin/moc`, `bin/rcc`, `bin/uic`, Windows target runtime `bin/Qt5Core.dll`, `bin/Qt5Network.dll`, `bin/Qt5Gui.dll`, `bin/Qt5Widgets.dll`, `plugins/platforms/qwindows.dll`, `lib/cmake/Qt5`, and MinGW import libraries. It is recommended to put runtime DLLs matching the Qt builder into `runtime/mingw`; GCC MinGW usually needs `libgcc_s_*.dll`, `libstdc++-6.dll`, `libwinpthread-1.dll`, and Windows ARM64 llvm-mingw usually needs `libc++.dll`, `libc++abi.dll`, `libunwind.dll`, `libwinpthread-1.dll`.
-- macOS archive: contains `bin/moc`, `bin/macdeployqt`, and Qt frameworks/CMake package.
+- Linux archive: contains `bin/moc`, `lib/libQt5Core.so.5`, `lib/libQt5Sql.so.5`, `plugins/platforms/libqxcb.so`, `plugins/sqldrivers/libqsqlite.so`, and `lib/cmake/Qt5Sql`.
+- Windows MinGW archive: contains Linux host tools `bin/moc`, `bin/rcc`, `bin/uic`, Windows target runtime `bin/Qt5Core.dll`, `bin/Qt5Network.dll`, `bin/Qt5Gui.dll`, `bin/Qt5Widgets.dll`, `bin/Qt5Sql.dll`, `plugins/platforms/qwindows.dll`, `plugins/sqldrivers/qsqlite.dll`, Qt/QtSql CMake packages, and Core/Sql MinGW import libraries. It is recommended to put runtime DLLs matching the Qt builder into `runtime/mingw`; GCC MinGW usually needs `libgcc_s_*.dll`, `libstdc++-6.dll`, `libwinpthread-1.dll`, and Windows ARM64 llvm-mingw usually needs `libc++.dll`, `libc++abi.dll`, `libunwind.dll`, `libwinpthread-1.dll`.
+- macOS archive: contains `bin/moc`, `bin/macdeployqt`, `QtSql.framework`, `plugins/sqldrivers/libqsqlite.dylib`, and the Qt5Sql CMake package.
 
 Optional secret:
 

@@ -95,7 +95,9 @@ $configureArgs = @(
     "-make", "libs",
     "-make", "tools",
     "-opengl", "desktop",
-    "-no-icu"
+    "-no-icu",
+    "-sql-sqlite",
+    "-sqlite", "qt"
 )
 
 if ($NoOpenSsl) {
@@ -134,7 +136,11 @@ $required = @(
     "bin/Qt5Gui.dll",
     "bin/Qt5Widgets.dll",
     "bin/Qt5Test.dll",
-    "plugins/platforms/qwindows.dll"
+    "bin/Qt5Sql.dll",
+    "plugins/platforms/qwindows.dll",
+    "plugins/sqldrivers/qsqlite.dll",
+    "lib/cmake/Qt5Sql/Qt5SqlConfig.cmake",
+    "lib/Qt5Sql.lib"
 )
 foreach ($item in $required) {
     $path = Join-Path $Prefix $item

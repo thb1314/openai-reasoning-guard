@@ -68,7 +68,7 @@ Chat Completions API 则使用 `usage.completion_tokens_details.reasoning_tokens
 
 - `openai-reasoning-guard-cli`: 安装后的 headless 命令行代理入口。
 - `openai-reasoning-guard-gui`: 安装后的 Qt Widgets 图形界面入口。
-- `net-tunnel-core`: CLI/GUI 共用核心库，包含配置、HTTP 代理、拦截策略和统计逻辑。
+- `net-tunnel-core`: CLI/GUI 共用核心库，包含全局配置、SQLite 上游配置、HTTP 代理、拦截策略和统计逻辑。
 
 核心能力：
 
@@ -80,7 +80,9 @@ Chat Completions API 则使用 `usage.completion_tokens_details.reasoning_tokens
 - 流式 SSE 异常检测：`200` 但流不完整、缺 terminal event、缺 usage 或出现 failed/error event 时，不当作成功透传。
 - 请求体和响应体资源限制、请求/响应缓冲超时、流式首 token 超时重试、上游请求超时。
 - 支持 `Content-Length` 和 `Transfer-Encoding: chunked` 请求体。
-- 支持通用上游代理和 HTTP/HTTPS/SOCKS 拆分代理字段。
+- 多上游配置管理，支持 GUI/CLI 增删改查、分页、搜索、排序、选择和 JSON 导入导出。
+- 每条上游配置使用一个 HTTP 或 SOCKS5 系代理地址；留空表示直连。
+- SQLite 事务、WAL 和跨进程运行锁，防止运行期间切换或改坏当前配置。
 - 控制接口：`/healthz`、`/status`、`/version`、`/props`。
 
 
@@ -117,19 +119,33 @@ macOS shell installer 会请求 `sudo` 权限，把 app 安装到 `/Applications
 
 ## CLI
 
-启动智能代理：
+首次使用先创建上游配置。第一条配置会自动成为当前配置：
 
 ```bash
-openai-reasoning-guard-cli \
-  --proxy-host 127.0.0.1 \
-  --proxy-port 8010 \
-  --proxy-prefix /v1 \
-  --upstream-base-url https://api.openai.com/v1 \
-  --reasoning-equals 516,1034,1552 \
-  --guard-retry-attempts 3
+openai-reasoning-guard-cli profile add \
+  --name "主线路" \
+  --base-url https://api.openai.com/v1 \
+  --api-key sk-example
+
+openai-reasoning-guard-cli profile select "主线路"
 ```
 
-`--api-proxy` 作为兼容标记仍可传入，但 CLI 当前始终只运行代理模式。`--reasoning-516-retries` 是 `--guard-retry-attempts` 的兼容别名。
+然后使用当前配置启动智能代理：
+
+```bash
+openai-reasoning-guard-cli --proxy-host 127.0.0.1 --proxy-port 8010
+```
+
+不带 `profile` 子命令时，CLI 从 SQLite 加载最后选中的上游配置。如果已选 UUID 缺失或已失效，且数据库中仍有配置、选择锁也可用，程序会自动选中更新时间最新的一条；只有无法恢复出可用配置时才报错。旧脚本仍可通过 `--upstream-base-url` 临时启动，所有旧 `--upstream-*` 启动参数只覆盖本次运行，不会修改已保存的上游配置。无已选配置的一次性运行仍会持有选择锁；运行期间可以新增配置，但停止代理前不能把它设为当前。
+
+常用管理命令：
+
+```bash
+openai-reasoning-guard-cli profile list --page 1 --page-size 20
+openai-reasoning-guard-cli profile show "主线路"
+openai-reasoning-guard-cli profile update "主线路" --upstream-timeout 1200
+openai-reasoning-guard-cli profile delete "备用线路"
+```
 
 查询已运行代理的状态：
 
@@ -143,23 +159,30 @@ openai-reasoning-guard-cli --query-status --proxy-host 127.0.0.1 --proxy-port 80
 openai-reasoning-guard-cli --query-status --query-url http://127.0.0.1:8010/status
 ```
 
-把最终启动配置写回配置文件：
+只把监听、缓冲和 Guard 等全局启动设置写回 `config.json`：
 
 ```bash
 openai-reasoning-guard-cli --keep-config ...
 ```
 
-## GUI
+`--keep-config` 不保存 `--upstream-base-url`、`--upstream-api-key`、上游代理、User-Agent 或上游超时；永久修改这些字段必须使用 `profile update`。`--api-proxy` 仍是兼容标记，CLI 始终运行代理模式；`--reasoning-516-retries` 是 `--guard-retry-attempts` 的兼容别名。
 
+## GUI
 
 GUI 第一屏分为四块：
 
 - 顶部运行目标概览。
-- 左侧智能拦截与上游转发配置。
+- 左侧当前上游配置、只读连接参数和可编辑的全局防护设置。
 - 右上实时统计。
 - 右侧信息面板与控制台日志。
 
-信息面板会展示当前代理监听地址、上游地址、路径前缀、控制端点、buffer limit、首 token 超时、stream action 和 reasoning guard 策略。GUI 可直接编辑 `first_token_timeout_sec`、`request_body_limit_bytes`、`response_buffer_limit_bytes` 和 `stream_action`。
+菜单中的“上游配置”会打开模态管理窗口。窗口支持新增、查看、编辑、删除、按显示名称或 Base URL 搜索、表头排序，以及每页 10、20、50、100 条的分页。选中表格行只表示操作对象；选择未被运行锁占用时，可点击“设为当前”显式切换。空库新增或导入第一条配置时会自动设为当前；删除当前配置时会按更新时间倒序自动补选下一条，没有下一条则选择上一条。
+
+主窗口保留原连接字段布局，但 Base URL、API Key、User-Agent、转发 User-Agent、上游代理、上游超时和首 Token 超时均由下拉框中的配置载入并设为只读。监听地址、缓冲限制、拦截规则和 `stream_action` 等全局防护设置仍可直接编辑。
+
+代理运行时不能切换下拉框，也不能修改或删除正在使用的配置；仍可新增、查看和修改其它未使用配置。停止代理后才可切换当前配置。配置列表为空时，“启动代理”不可用。
+
+信息面板会展示当前配置名称、代理监听地址、上游地址、路径前缀、控制端点、buffer limit、首 Token 超时、stream action 和 reasoning guard 策略。
 
 项目提供一键重启脚本：
 
@@ -167,23 +190,35 @@ GUI 第一屏分为四块：
 scripts/restart-gui.sh
 ```
 
-脚本会停掉当前用户下已有的 `net-tunnel-gui`，继承旧进程的显示环境后启动新二进制。
+脚本会停掉当前用户下已有的 GUI 进程，继承旧进程的显示环境后启动新二进制。
 
-## 配置文件
+## 配置与数据文件
 
-默认配置文件位于可执行文件同级目录。开发构建通常是：
+全局设置与上游连接设置使用两个独立数据源：
 
-```text
-build/config.json
-```
+- `config.json`：监听、缓冲限制、Guard 和界面语言等全局设置。
+- `upstream-profiles.sqlite3`：上游配置、API Key 和最后选中的配置 UUID。
 
-也可以显式指定配置：
+默认存储位置：
+
+| 平台 | 目录示例 |
+| --- | --- |
+| Linux | `${XDG_CONFIG_HOME:-$HOME/.config}/OpenAI Reasoning Guard/` |
+| Windows | `%APPDATA%\OpenAI Reasoning Guard\` |
+| macOS | `~/Library/Application Support/OpenAI Reasoning Guard/` |
+
+可以显式指定全局 JSON；数据库会自动放在该 JSON 的同一目录：
 
 ```bash
-openai-reasoning-guard-cli --config config.example.json --api-proxy
+NET_TUNNEL_CONFIG=/srv/reasoning-guard/config.json openai-reasoning-guard-cli
+openai-reasoning-guard-cli --config /srv/reasoning-guard/config.json
 ```
 
-完整示例：
+两种写法都会使用 `/srv/reasoning-guard/upstream-profiles.sqlite3`。程序会原子写入 `config.json`。在 POSIX 系统上，本程序新建的配置目录，以及数据库、WAL/SHM、配置、备份和导出文件会限制为仅属主可访问；既有自定义目录的权限保持不变并由管理员负责。Windows 默认依赖当前用户 `%APPDATA%` 的 ACL；若通过 `--config` 或 `NET_TUNNEL_CONFIG` 使用自定义或共享目录，其 ACL 隔离由用户或管理员负责。
+
+### 全局配置示例
+
+`config.example.json` 不包含上游 URL 或密钥，因为这些字段由 SQLite 上游配置管理。完整全局示例：
 
 ```json
 {
@@ -191,16 +226,6 @@ openai-reasoning-guard-cli --config config.example.json --api-proxy
   "proxy_host": "127.0.0.1",
   "proxy_port": "8010",
   "proxy_prefix": "/v1",
-  "upstream_base_url": "",
-  "upstream_api_key": "",
-  "upstream_user_agent": "curl/8.7.1",
-  "forward_user_agent": false,
-  "upstream_proxy": "",
-  "upstream_http_proxy": "",
-  "upstream_https_proxy": "",
-  "upstream_socks_proxy": "",
-  "upstream_timeout_sec": 1800,
-  "first_token_timeout_sec": 30,
   "buffer_timeout_sec": 180,
   "request_body_limit_bytes": 104857600,
   "response_buffer_limit_bytes": 104857600,
@@ -217,7 +242,13 @@ openai-reasoning-guard-cli --config config.example.json --api-proxy
 }
 ```
 
-## 配置项说明
+### 旧配置迁移
+
+首次升级时，如果用户目录尚无配置，程序会先复制可执行文件旁的旧 `config.json`。当上游配置数据库为空且旧字段能够组成一条有效上游配置时，程序会把原文件备份为 `config.json.pre-upstream-profiles.bak`，再创建名为“已迁移配置”的配置并设为当前，同时写入旧 API Key、User-Agent、转发开关、上游代理和两个超时。迁移前会按当前上游配置规则校验 Base URL、代理和两个超时；校验失败时不会改写原 JSON，需修正旧字段后重试。
+
+旧版的 `upstream_proxy`、`upstream_http_proxy`、`upstream_https_proxy`、`upstream_socks_proxy` 会根据 Base URL 协议和旧优先级折算成一个实际代理。数据库事务成功后，旧 `upstream_*` 字段才会从当前 JSON 中移除。Base URL 为空且其余遗留字段均为空或保持旧默认值时，程序会先备份 JSON，再原子清理这些占位字段，不创建配置；如果 API Key、代理、非默认 User-Agent、转发开关或超时等仍有实际值，则迁移失败并原样保留 JSON，要求用户先补全 Base URL 或人工处理。这样升级后只有 SQLite 是上游配置的数据源，备份仍可用于人工恢复。
+
+## 全局配置项
 
 | 字段 | 默认值 | 示例 | 说明 |
 | --- | --- | --- | --- |
@@ -225,16 +256,6 @@ openai-reasoning-guard-cli --config config.example.json --api-proxy
 | `proxy_host` | `127.0.0.1` | `"0.0.0.0"` | 本地代理监听地址。只给本机客户端使用时保持 `127.0.0.1`；需要局域网其它机器访问时可设为 `0.0.0.0`。 |
 | `proxy_port` | `8010` | `8011` | 本地代理监听端口。客户端 base URL 需要使用这个端口，例如 `http://127.0.0.1:8011/v1`。 |
 | `proxy_prefix` | `/v1` | `""` 或 `"/api"` | 客户端访问代理的业务路径前缀。`"/v1"` 表示客户端请求 `/v1/responses`；空字符串表示 root proxy，请求 `/responses` 直接转发。root proxy 下 `GET /` 会转发上游根路径，健康检查用 `/healthz`。 |
-| `upstream_base_url` | 空 | `"https://api.openai.com/v1"` | 真实上游 OpenAI 兼容 API base URL。代理会把去掉 `proxy_prefix` 后的业务路径拼到这个 base URL 后面。为空时不会自动使用内置上游地址，启动代理前需要在 GUI、配置文件或 CLI 中显式填写。 |
-| `upstream_api_key` | 空 | `"sk-..."` | 显式上游 Bearer token。非空时上游 `Authorization` 固定为 `Bearer sk-...`；为空时透传客户端 `Authorization`，也就是让 Codex 继续使用自己的 `auth.json`。 |
-| `upstream_user_agent` | `curl/8.7.1` | `"codex-cli/0.1"` | 发往上游的默认 `User-Agent`。`forward_user_agent=false` 时使用该值。 |
-| `forward_user_agent` | `false` | `true` | 是否把客户端请求里的 `User-Agent` 原样转给上游。为 `false` 时使用 `upstream_user_agent`。 |
-| `upstream_proxy` | 空 | `"http://127.0.0.1:7890"` | 通用上游代理地址。也可填 `"socks5://127.0.0.1:7890"`。非空时优先于拆分代理字段。 |
-| `upstream_http_proxy` | 空 | `"http://127.0.0.1:7890"` | HTTP 上游代理字段。当前实现也会在 HTTPS 上游缺少 `upstream_https_proxy` 时作为备选使用。保存配置时不会自动折叠进 `upstream_proxy`。 |
-| `upstream_https_proxy` | 空 | `"http://127.0.0.1:7890"` | HTTPS 上游代理字段。仅在 `upstream_proxy` 为空且上游 base URL 是 HTTPS 时优先使用。 |
-| `upstream_socks_proxy` | 空 | `"127.0.0.1:7890"` 或 `"socks5://127.0.0.1:7890"` | SOCKS 上游代理字段。没有 scheme 时默认补 `socks5://`。作为通用/协议代理都为空时的最后备选。 |
-| `upstream_timeout_sec` | `1800` | `600` | 单次上游请求最长等待秒数。超时返回 `504`，记录 `error_type=upstream_timeout` 和 `upstream_timeout_total`。长推理场景建议保持较大值。 |
-| `first_token_timeout_sec` | `30` | `10` 或 `0` | 流式请求的首 token 超时，代理层按“收到首个非空上游响应 body 字节”计时。只对请求体中 `stream=true` 生效；超时会占用 `guard_retry_attempts` 预算重试，耗尽后返回 `504` 和 `error_type=first_token_timeout`。设为 `0` 可关闭。读取配置时也兼容 `upstream_first_byte_timeout_seconds`。 |
 | `buffer_timeout_sec` | `180` | `360` | 请求体缓冲和上游响应缓冲的等待秒数。请求体未收齐返回 `408`；响应缓冲超时返回 `502`；均记录 `error_type=buffer_timeout`。 |
 | `request_body_limit_bytes` | `104857600` | `10485760` | 客户端请求体最大缓冲字节数。示例为 10MB；默认 100MB。超限返回 `413`，不会请求上游。 |
 | `response_buffer_limit_bytes` | `104857600` | `209715200` | 上游响应最大缓冲字节数。示例为 200MB；默认 100MB。严格流式和非流式检查都受这个限制保护，超限返回 `502`。 |
@@ -249,33 +270,97 @@ openai-reasoning-guard-cli --config config.example.json --api-proxy
 | `non_stream_status_code` | `502` | `503` | guard 重试耗尽或本地拦截最终返回给客户端的状态码。字段名沿用 `non_stream`，当前流式严格模式也会使用它。 |
 | `stream_action` | `strict_502` | `"disconnect"` | 流式命中后的动作。`strict_502` 会整条缓冲、命中后整条丢弃并重试或返回错误；`disconnect` 在有 retry 预算时同样整条丢弃重试，预算耗尽后才边透传边扫描，若命中发生在已透传之后会丢弃命中 chunk 并断开连接。 |
 
-## API Key 行为
+## 上游配置字段
 
-`upstream_api_key` 是本地代理的显式上游密钥覆盖项。
+| 字段 | 默认值 | 示例 | 说明 |
+| --- | --- | --- | --- |
+| `id` | 自动生成 | `"550e8400-e29b-41d4-a716-446655440000"` | 不可变 UUID，用于在改名后仍稳定识别配置。GUI 不要求用户填写；CLI 的 show/update/delete/select 都可用名称或 UUID 定位。 |
+| `display_name` | 空，必填 | `"主线路"` | 给人看的名称。保存时去除首尾空格，并按不区分大小写规则保持唯一，例如 `Main` 与 `main` 不能并存；不能含控制字符，最长 `512` 个 UTF-8 字节。 |
+| `base_url` | 空，必填 | `"https://api.openai.com/v1"` | 完整的 HTTP/HTTPS 上游 Base URL，必须含主机名，可含路径，不能含 userinfo/凭据、query 或 fragment；保存时去除末尾多余 `/`。例如 `https://user:pass@api.example.com/v1` 会被拒绝。 |
+| `api_key` | 空 | `"sk-..."` | 保存时去除首尾空白；裁剪后非空时固定使用 `Bearer <api_key>` 覆盖客户端授权，裁剪后为空则透传客户端 `Authorization`。不限制 Key 前缀，但不能含控制字符，最长 `8192` 个 UTF-8 字节。 |
+| `user_agent` | `curl/8.7.1` | `"codex-cli/0.1"` | `forward_user_agent=false` 时使用本配置的 `User-Agent`。保存值允许为空，但运行时空值（包括仅空白）会回退为 `curl/8.7.1`；非空值不能含控制字符，最长 `8192` 个 UTF-8 字节。 |
+| `forward_user_agent` | `false` | `true` | 为 `true` 时优先透传客户端请求的 `User-Agent`；为 `false` 时使用本配置的 `user_agent`。 |
+| `upstream_proxy` | 空 | `"http://127.0.0.1:7890"` 或 `"socks5://127.0.0.1:7890"` | 当前配置唯一的上游代理。仅支持 `http`、`socks`、`socks5`、`socks5h` scheme；不支持 HTTPS proxy scheme 或 SOCKS4，也不允许 userinfo/凭据、query、fragment。留空表示直连，没有 scheme 时按 HTTP 代理规范化。 |
+| `upstream_timeout_sec` | `1800` | `600` | 单次上游请求最长等待秒数，范围 `1..86400`。超时返回 `504`，并记录 `error_type=upstream_timeout`。 |
+| `first_token_timeout_sec` | `30` | `10` 或 `0` | 流式请求收到首个非空上游 body 字节的等待时间，范围 `0..3600`。超时占用共享重试预算；`0` 表示禁用。 |
 
-- 如果 `upstream_api_key` 非空，代理发给上游的 `Authorization` 固定为 `Bearer <upstream_api_key>`，即使客户端请求里已经带了 `Authorization` 也会被覆盖。
-- 如果 `upstream_api_key` 为空，代理不会自己生成密钥，而是透传客户端请求里的 `Authorization`。Codex 场景下，这通常就是 Codex 根据自身 `auth.json` 带上的 token。
+## API Key 与导入导出
 
-因此：想强制走某个备用 key，就填写 `upstream_api_key`；想继续使用 Codex 原本的 `auth.json`，就把 `upstream_api_key` 留空。
+上游配置的 API Key 以明文保存在当前用户的 `upstream-profiles.sqlite3`。程序通过用户私有目录和文件权限降低误读风险，但这不是系统密钥链或加密保险库：拥有该用户文件读取权限的人仍能取得 Key。
 
-## CLI 参数对照
+- GUI 编辑框默认掩码，提供显式显示/隐藏和复制按钮；列表只显示“已配置 API Key”或“透传客户端授权”。
+- CLI `profile list`、默认 `profile show`、日志和状态接口均不输出完整 Key；`--json` 本身不会取消脱敏。
+- 只有 `profile show ... --show-secret` 才显示完整 Key，包括同时使用 `--json` 的输出。
+- API Key 为空时，代理透传客户端 `Authorization`。Codex 可以在发请求前从自身 `auth.json` 加载令牌，但本程序不会读取 `auth.json`。
+
+GUI 和 CLI 都支持 JSON 导入导出。默认导出完全省略 `api_key` 字段；只有显式选择“包含 API Key”或使用 `--include-secrets` 才会导出明文密钥。不含密钥的文件以 `overwrite` 覆盖已有配置时会保留数据库中的原 Key，新建配置则使用空 Key。导入按 UUID 或不区分大小写的显示名称检测冲突，并要求选择 `skip` 或 `overwrite`；整个导入使用单个事务。导出不包含当前选择；导入非空数据库不会切换当前配置，导入空数据库时若选择锁可用，会把第一条新增配置设为当前。
+
+不含密钥的导出结构示例（`api_key_configured` 只表示是否已配置，不包含 Key 内容）：
+
+```json
+{
+  "schema_version": 1,
+  "exported_at_utc": "2026-07-25T12:00:00.000Z",
+  "secrets_included": false,
+  "profiles": [
+    {
+      "id": "550e8400-e29b-41d4-a716-446655440000",
+      "display_name": "主线路",
+      "base_url": "https://api.example.com/v1",
+      "user_agent": "curl/8.7.1",
+      "forward_user_agent": false,
+      "upstream_proxy": "",
+      "upstream_timeout_sec": 1800,
+      "first_token_timeout_sec": 30,
+      "created_at_utc": "2026-07-25T11:00:00.000Z",
+      "updated_at_utc": "2026-07-25T11:30:00.000Z",
+      "api_key_configured": true
+    }
+  ]
+}
+```
+
+```bash
+openai-reasoning-guard-cli profile export --output profiles.json
+openai-reasoning-guard-cli profile export --output profiles-with-keys.json --include-secrets
+openai-reasoning-guard-cli profile import --input profiles.json --conflict skip
+openai-reasoning-guard-cli profile import --input profiles.json --conflict overwrite
+```
+
+## CLI 上游配置命令
+
+| 命令 | 示例 | 说明 |
+| --- | --- | --- |
+| `profile list` | `profile list --page 1 --page-size 20 --search openai --sort updated-at --order desc` | 分页列出配置。每页只允许 `10`、`20`、`50`、`100`；搜索显示名称和 Base URL；排序字段为 `name`、`base-url`、`updated-at`。 |
+| `profile show <名称或UUID>` | `profile show "主线路" --json` | 查看一条配置，默认只显示授权状态；加 `--show-secret` 才输出完整 Key。 |
+| `profile add` | `profile add --name "主线路" --base-url https://api.example.com/v1 --api-key sk-...` | 新增配置。名称和 Base URL 必填；第一条配置在没有运行锁时自动成为当前配置。 |
+| `profile update <名称或UUID>` | `profile update "主线路" --proxy http://127.0.0.1:7890 --no-forward-user-agent` | 只更新显式给出的字段。使用 `--api-key=` 清空 Key，使用 `--proxy=` 改为直连。 |
+| `profile delete <名称或UUID>` | `profile delete "备用线路"` | 删除配置。删除当前配置后按更新时间倒序选择下一条，没有下一条则选择上一条；正在运行的配置不能删除。 |
+| `profile select <名称或UUID>` | `profile select "主线路"` | 保存最后选择；代理运行期间不能切换。 |
+| `profile export` | `profile export --output profiles.json --include-secrets` | 导出全部配置；默认不含 Key，`--include-secrets` 明文导出。 |
+| `profile import` | `profile import --input profiles.json --conflict overwrite` | 导入全部配置；`--conflict skip|overwrite` 必须显式指定。 |
+
+所有管理命令都接受 `--config <path>`；`list/show/add/update/delete/select/import/export` 均支持 `--json` 机器可读输出。`add`/`update` 的字段选项还包括 `--user-agent`、`--forward-user-agent`、`--no-forward-user-agent`、`--upstream-timeout` 和 `--first-token-timeout`，其中 `--upstream-*` 拼写可作为 Base URL、Key、User-Agent 和单一代理的兼容别名。
+
+## CLI 启动参数
 
 | CLI 参数 | 示例 | 说明 |
 | --- | --- | --- |
-| `--config <path>` | `--config build/config.json` | 指定配置文件路径。 |
+| `--config <path>` | `--config /srv/guard/config.json` | 指定全局 JSON；profile 数据库使用同目录的 `upstream-profiles.sqlite3`。 |
+| `--api-proxy` | `--api-proxy` | 兼容标记；CLI 始终运行代理模式，不改变任何配置。 |
 | `--proxy-host` | `--proxy-host 127.0.0.1` | 覆盖 `proxy_host`。 |
 | `--proxy-port` | `--proxy-port 8011` | 覆盖 `proxy_port`。 |
 | `--proxy-prefix` | `--proxy-prefix /v1` 或 `--proxy-prefix ""` | 覆盖 `proxy_prefix`；空字符串表示 root proxy。 |
-| `--upstream-base-url` | `--upstream-base-url https://api.openai.com/v1` | 覆盖 `upstream_base_url`。 |
-| `--upstream-api-key` | `--upstream-api-key sk-...` | 覆盖 `upstream_api_key`；非空时强制覆盖客户端 Authorization。 |
-| `--upstream-user-agent` | `--upstream-user-agent curl/8.7.1` | 覆盖 `upstream_user_agent`。 |
-| `--forward-user-agent` | `--forward-user-agent` | 将客户端 `User-Agent` 转发给上游。 |
-| `--upstream-proxy` | `--upstream-proxy http://127.0.0.1:7890` | 覆盖 `upstream_proxy`。 |
-| `--upstream-http-proxy` | `--upstream-http-proxy http://127.0.0.1:7890` | 覆盖 `upstream_http_proxy`。 |
-| `--upstream-https-proxy` | `--upstream-https-proxy http://127.0.0.1:7890` | 覆盖 `upstream_https_proxy`。 |
-| `--upstream-socks-proxy` | `--upstream-socks-proxy socks5://127.0.0.1:7890` | 覆盖 `upstream_socks_proxy`。 |
-| `--upstream-timeout` | `--upstream-timeout 1800` | 覆盖 `upstream_timeout_sec`。 |
-| `--first-token-timeout` | `--first-token-timeout 30` 或 `--first-token-timeout 0` | 覆盖 `first_token_timeout_sec`；`--upstream-first-byte-timeout` 是兼容别名。 |
+| `--upstream-base-url` | `--upstream-base-url https://api.openai.com/v1` | 临时覆盖当前 profile 的 Base URL；没有 profile 时也可用于一次性启动。不会写入数据库。 |
+| `--upstream-api-key` | `--upstream-api-key sk-...` | 临时覆盖 profile Key；运行时去除首尾空白，裁剪后非空则强制覆盖客户端 Authorization，为空则透传。 |
+| `--upstream-user-agent` | `--upstream-user-agent curl/8.7.1` | 临时覆盖 profile User-Agent。 |
+| `--forward-user-agent` / `--no-forward-user-agent` | `--forward-user-agent` | 临时启用/关闭客户端 `User-Agent` 透传，两者互斥。 |
+| `--upstream-proxy` | `--upstream-proxy http://127.0.0.1:7890` | 临时覆盖 profile 的单一代理；空值表示直连。 |
+| `--upstream-http-proxy` | `--upstream-http-proxy http://127.0.0.1:7890` | 旧脚本兼容的本次运行 HTTP 代理字段，不持久化。 |
+| `--upstream-https-proxy` | `--upstream-https-proxy http://127.0.0.1:7890` | 旧脚本兼容的本次运行 HTTPS 代理字段，不持久化。 |
+| `--upstream-socks-proxy` | `--upstream-socks-proxy socks5://127.0.0.1:7890` | 旧脚本兼容的本次运行 SOCKS 代理字段，不持久化。 |
+| `--upstream-timeout` | `--upstream-timeout 1800` | 临时覆盖 profile 的上游超时。 |
+| `--first-token-timeout` | `--first-token-timeout 30` 或 `--first-token-timeout 0` | 临时覆盖 profile 的首 Token 超时；`--upstream-first-byte-timeout` 是兼容别名。 |
 | `--buffer-timeout` | `--buffer-timeout 360` | 覆盖 `buffer_timeout_sec`。 |
 | `--request-body-limit-bytes` | `--request-body-limit-bytes 104857600` | 覆盖 `request_body_limit_bytes`。 |
 | `--response-buffer-limit-bytes` | `--response-buffer-limit-bytes 104857600` | 覆盖 `response_buffer_limit_bytes`。 |
@@ -293,7 +378,7 @@ openai-reasoning-guard-cli --config config.example.json --api-proxy
 | `--query-status` | `--query-status` | 查询已运行代理并退出。 |
 | `--query-url` | `--query-url http://127.0.0.1:8010/status` | 指定查询状态 URL。 |
 | `--status-json` | `--status-json` | 启动后打印一次状态 JSON。 |
-| `--keep-config` | `--keep-config` | 把最终启动配置写回 `config.json`。 |
+| `--keep-config` | `--keep-config` | 只把最终全局启动设置写回 `config.json`，不保存任何上游临时覆盖。 |
 
 ## 控制接口
 
@@ -345,6 +430,7 @@ openai-reasoning-guard-cli --config config.example.json --api-proxy
 ```text
 CMakeLists.txt
 config.example.json
+CONTEXT.md
 scripts/
   archive-qt-sdk.sh
   archive-qt-sdk.ps1
@@ -358,13 +444,18 @@ scripts/
   package-windows.ps1
   restart-gui.sh
 src/
-  core/   # 业务核心：配置、HTTP 代理、拦截策略、统计
-  cli/    # 命令行入口
-  gui/    # Qt Widgets 主窗体
+  core/   # 全局配置、SQLite 上游配置、HTTP 代理、拦截与统计
+  cli/    # 命令行入口和 profile 管理命令
+  gui/    # Qt Widgets 主窗体和上游配置管理窗口
 tests/
+  cli_profile_commands_test.cpp
   http_proxy_server_test.cpp
+  main_window_profile_test.cpp
+  upstream_profile_dialog_test.cpp
+  upstream_profile_store_test.cpp
 docs/
   ARCHITECTURE.md
+  adr/
 ```
 
 ## 验证
@@ -375,7 +466,7 @@ cd build
 ctest --output-on-failure
 ```
 
-当前 QtTest 覆盖请求体/响应体限制、缓冲超时、上游超时、chunked 请求体解码、客户端断开取消上游、root proxy 根路径转发、拆分代理字段 round-trip、流式 guard 重试、SSE 不完整响应重试和授权优先级。
+当前 QtTest 覆盖请求体/响应体限制、缓冲与上游超时、chunked 解码、客户端断开取消上游、root proxy、流式 guard 重试、SSE 完整性和授权优先级；上游配置测试覆盖 CRUD、UUID/名称唯一性、URL 校验、分页/搜索/排序、选择恢复、旧字段迁移与代理折算、运行锁、密钥脱敏、事务导入导出、CLI 管理命令和主窗口只读映射。发布包测试还检查 QtSql runtime 与 QSQLITE driver 是否实际存在。
 
 
 ## 构建
@@ -385,10 +476,10 @@ cmake -S . -B build
 cmake --build build -j2
 ```
 
-默认使用当前环境里的显式 Qt 5 SDK。CI 统一按 Qt 5.15.x 生产 SDK archive：
+默认使用当前环境里的显式 Qt 5 SDK。项目需要 Qt Core、Network、Gui、Widgets 和 Sql；构建测试时还需要 QtTest，运行时必须包含 QSQLITE driver。CI 统一按 Qt 5.15.x 生产 SDK archive：
 
 ```text
-/mnt/data/qt-2080ti-sync/qt5-openssl
+/mnt/data/qt-2080ti-sync/qt5.15.2-openssl
 ```
 
 如需替换 Qt 路径：
@@ -400,6 +491,8 @@ cmake -S . -B build \
 
 本机开发构建默认使用 `/mnt/data/qt-2080ti-sync` 下的自编译 Qt5，不使用系统 Qt5。
 
+QSQLITE 使用 Qt SDK 随附的 SQLite driver，最终用户无需额外安装 `sqlite3` 命令。自定义 Qt SDK 必须同时提供 QtSql 库、Qt5Sql CMake package 和对应平台的 `sqldrivers` 插件。
+
 源码开发构建的 CMake target 内部仍保留历史名称。正式安装包里的用户入口是 `openai-reasoning-guard-cli` 和 `openai-reasoning-guard-gui`。
 
 ## 打包
@@ -410,7 +503,7 @@ cmake -S . -B build \
 - Windows: [scripts/package-windows-mingw.sh](scripts/package-windows-mingw.sh)，在 Linux 上用 MinGW 交叉编译并产出 installer `.exe` 和 portable `.zip`；[scripts/package-windows.ps1](scripts/package-windows.ps1) 保留给原生 Windows/MSVC 构建。
 - macOS: [scripts/package-macos.sh](scripts/package-macos.sh)，产出自解压 shell installer，内部包含 GUI app、CLI 和临时 DMG 载荷。
 
-所有平台都按同一个原则处理 Qt：构建和打包只使用显式 Qt SDK，不自动使用系统 Qt5。本机 Linux 默认搜索 `/mnt/data/qt-2080ti-sync` 下的自编译 Qt5；CI 必须通过各架构 Qt SDK archive secret 提供 Qt。
+所有平台都按同一个原则处理 Qt：构建和打包只使用显式 Qt SDK，不自动使用系统 Qt5。本机 Linux 默认搜索 `/mnt/data/qt-2080ti-sync` 下的自编译 Qt5；CI 通过各架构 Qt SDK archive 提供 Qt，优先使用 secret URL，未配置时回退到标准 SDK Release 资产。SDK 和最终包都必须包含 QtSql 及 QSQLITE 插件，GUI 与 CLI AppImage 使用同一套数据库运行时。
 
 ### Linux
 
@@ -452,7 +545,7 @@ QT_ROOT=/path/to/qt5 scripts/package-linux.sh --all --clean
 | `GUI_COMMAND` | `openai-reasoning-guard-gui` | 安装后的 GUI 命令名。 |
 | `CLI_COMMAND` | `openai-reasoning-guard-cli` | 安装后的 CLI 命令名。 |
 | `ICON_SOURCE` | `assets/openai-reasoning-guard-icon-1024.png` | 打包用应用图标。不存在时脚本会回退到内置 SVG。 |
-| `QT_ROOT` | `/mnt/data/qt-2080ti-sync/qt5-openssl` | Qt SDK 根目录，必须包含 `bin/moc`、`lib/libQt5Core.so.5` 和 `plugins/platforms/libqxcb.so`。 |
+| `QT_ROOT` | `/mnt/data/qt-2080ti-sync/qt5.15.2-openssl` | Qt SDK 根目录，必须包含 `bin/moc`、`lib/libQt5Core.so.5`、`lib/libQt5Sql.so.5`、`plugins/platforms/libqxcb.so` 和 `plugins/sqldrivers/libqsqlite.so`。 |
 | `LOCAL_QT_BASE` | `/mnt/data/qt-2080ti-sync` | 本机默认 Qt 搜索根目录；只有 `QT_ROOT` 为空时使用。 |
 | `OPENSSL_ROOT` | `/path/to/openssl` | 可选 OpenSSL runtime 根目录；未设置时优先从 Qt 的 `lib` 目录拷贝。 |
 | `DEB_ARCH` | `amd64` | 覆盖 deb 架构名。自动值通常是 `amd64`、`i386`、`arm64` 或 `armhf`。 |
@@ -470,27 +563,27 @@ QT_ROOT=/path/to/qt5 scripts/package-linux.sh --all --clean
 | `SKIP_BUILD` | `1` | 跳过编译，直接使用 `BUILD_DIR` 里的现有二进制出包。 |
 | `DOWNLOAD_PROXY` | `http://127.0.0.1:7890` | 下载 `appimagetool` 时使用的代理。 |
 
-运行时 Qt 库会被打进 `/opt/openai-reasoning-guard/qt`。安装后的正式入口是 `/usr/bin/openai-reasoning-guard-gui` 和 `/usr/bin/openai-reasoning-guard-cli`，同时保留 `/usr/bin/net-tunnel-gui` 和 `/usr/bin/net-tunnel-cli` 兼容 symlink。包内 wrapper 会把配置文件放到 `${XDG_CONFIG_HOME:-$HOME/.config}/openai-reasoning-guard/config.json`，旧版 `${XDG_CONFIG_HOME:-$HOME/.config}/net-tunnel-cpp-client/config.json` 存在时会自动复制一次，避免写入 `/opt`。
+运行时 Qt 库会被打进 `/opt/openai-reasoning-guard/qt`，其中包含 `libQt5Sql.so.5` 和 `plugins/sqldrivers/libqsqlite.so`。安装后的正式入口是 `/usr/bin/openai-reasoning-guard-gui` 和 `/usr/bin/openai-reasoning-guard-cli`，同时保留 `/usr/bin/net-tunnel-gui` 和 `/usr/bin/net-tunnel-cli` 兼容 symlink。包内 wrapper 使用 `${XDG_CONFIG_HOME:-$HOME/.config}/OpenAI Reasoning Guard/`，并会从旧的 `openai-reasoning-guard` 或 `net-tunnel-cpp-client` 目录复制一次 `config.json`；SQLite 数据库随后在新目录创建。
 
 ### Windows
 
 CI 默认使用 MinGW 路线：在 Linux 上安装 MinGW 编译器，配合 Windows MinGW Qt SDK 交叉编译。Qt SDK 必须同时包含 Linux 可执行的 Qt host tools 和 Windows 目标库：
 
 - `bin/moc`、`bin/rcc`、`bin/uic`：Linux host 工具，供 CMake 的 automoc/autorcc/autouic 使用。
-- `bin/Qt5Core.dll`、`bin/Qt5Network.dll`、`bin/Qt5Gui.dll`、`bin/Qt5Widgets.dll`：Windows runtime DLL。
-- `plugins/platforms/qwindows.dll`：Windows Qt platform plugin。
-- `lib/cmake/Qt5/Qt5Config.cmake` 和 `lib/libQt5Core.a` 或 `lib/libQt5Core.dll.a`：CMake package 和 MinGW import lib。
+- `bin/Qt5Core.dll`、`bin/Qt5Network.dll`、`bin/Qt5Gui.dll`、`bin/Qt5Widgets.dll`、`bin/Qt5Sql.dll`：Windows runtime DLL。
+- `plugins/platforms/qwindows.dll` 和 `plugins/sqldrivers/qsqlite.dll`：Windows 平台及 SQLite 插件。
+- `lib/cmake/Qt5/Qt5Config.cmake`、`lib/cmake/Qt5Sql/Qt5SqlConfig.cmake` 和对应 Core/Sql MinGW import lib。
 
 打包脚本会生成两个文件：
 
 - installer `.exe`：NSIS 安装包。
-- portable `.zip`：单文件便携包，解压后直接运行。
+- portable `.zip`：自包含便携归档，解压后直接运行。
 
 包内包含：
 
 - `openai-reasoning-guard-gui.exe`
 - `openai-reasoning-guard-cli.exe`
-- Qt DLL、`plugins/platforms/qwindows.dll`、字体、配置示例和说明文件
+- Qt DLL、`plugins/platforms/qwindows.dll`、`plugins/sqldrivers/qsqlite.dll`、字体、配置示例和说明文件
 
 Linux/MinGW 示例：
 
@@ -529,7 +622,7 @@ powershell -ExecutionPolicy Bypass -File scripts/package-windows.ps1 `
 
 ### macOS
 
-macOS 打包脚本会创建 `.app` bundle，使用 `macdeployqt` 收集 Qt frameworks，先生成临时 DMG 载荷，再把该 DMG 嵌入一个自解压 shell installer。最终发布给用户的是 `.sh`，执行后会请求 `sudo` 权限，挂载内部 DMG，把 app 安装到 `/Applications`，移除 app 的 quarantine 标记，并安装 `/usr/local/bin/openai-reasoning-guard-cli` CLI 包装脚本。
+macOS 打包脚本会创建 `.app` bundle，使用 `macdeployqt` 收集 Qt frameworks、`QtSql.framework` 和 `PlugIns/sqldrivers/libqsqlite.dylib`，先生成临时 DMG 载荷，再把该 DMG 嵌入一个自解压 shell installer。最终发布给用户的是 `.sh`，执行后会请求 `sudo` 权限，挂载内部 DMG，把 app 安装到 `/Applications`，移除 app 的 quarantine 标记，并安装 `/usr/local/bin/openai-reasoning-guard-cli` CLI 包装脚本。
 
 示例：
 
@@ -631,9 +724,9 @@ MACOS_NOTARY_PROFILE
 
 archive 解压后需要能找到对应平台的 Qt 工具和 runtime：
 
-- Linux archive：包含 `bin/moc`、`lib/libQt5Core.so.5`、`plugins/platforms/libqxcb.so`，建议同时包含 `lib/cmake/Qt5`。
-- Windows MinGW archive：包含 Linux host 工具 `bin/moc`、`bin/rcc`、`bin/uic`，Windows target runtime `bin/Qt5Core.dll`、`bin/Qt5Network.dll`、`bin/Qt5Gui.dll`、`bin/Qt5Widgets.dll`，`plugins/platforms/qwindows.dll`、`lib/cmake/Qt5` 和 MinGW import lib。建议把匹配 Qt 构建器的 runtime DLL 放进 `runtime/mingw`；GCC MinGW 通常是 `libgcc_s_*.dll`、`libstdc++-6.dll`、`libwinpthread-1.dll`，Windows ARM64 的 llvm-mingw 通常是 `libc++.dll`、`libc++abi.dll`、`libunwind.dll`、`libwinpthread-1.dll`。
-- macOS archive：包含 `bin/moc`、`bin/macdeployqt` 和 Qt frameworks/CMake package。
+- Linux archive：包含 `bin/moc`、`lib/libQt5Core.so.5`、`lib/libQt5Sql.so.5`、`plugins/platforms/libqxcb.so`、`plugins/sqldrivers/libqsqlite.so` 和 `lib/cmake/Qt5Sql`。
+- Windows MinGW archive：包含 Linux host 工具 `bin/moc`、`bin/rcc`、`bin/uic`，Windows target runtime `bin/Qt5Core.dll`、`bin/Qt5Network.dll`、`bin/Qt5Gui.dll`、`bin/Qt5Widgets.dll`、`bin/Qt5Sql.dll`，`plugins/platforms/qwindows.dll`、`plugins/sqldrivers/qsqlite.dll`、Qt/QtSql CMake package 和 Core/Sql MinGW import lib。建议把匹配 Qt 构建器的 runtime DLL 放进 `runtime/mingw`；GCC MinGW 通常是 `libgcc_s_*.dll`、`libstdc++-6.dll`、`libwinpthread-1.dll`，Windows ARM64 的 llvm-mingw 通常是 `libc++.dll`、`libc++abi.dll`、`libunwind.dll`、`libwinpthread-1.dll`。
+- macOS archive：包含 `bin/moc`、`bin/macdeployqt`、`QtSql.framework`、`plugins/sqldrivers/libqsqlite.dylib` 和 Qt5Sql CMake package。
 
 可选 secret：
 

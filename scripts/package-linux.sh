@@ -10,7 +10,8 @@ APP_NAME="${APP_NAME:-OpenAI Reasoning Guard}"
 GUI_COMMAND="${GUI_COMMAND:-${PACKAGE_ID}-gui}"
 CLI_COMMAND="${CLI_COMMAND:-${PACKAGE_ID}-cli}"
 DESKTOP_ID="${DESKTOP_ID:-${PACKAGE_ID}}"
-CONFIG_DIR_NAME="${CONFIG_DIR_NAME:-${PACKAGE_ID}}"
+CONFIG_DIR_NAME="${CONFIG_DIR_NAME:-OpenAI Reasoning Guard}"
+PREVIOUS_CONFIG_DIR_NAME="${PREVIOUS_CONFIG_DIR_NAME:-${PACKAGE_ID}}"
 LEGACY_CONFIG_DIR_NAME="${LEGACY_CONFIG_DIR_NAME:-net-tunnel-cpp-client}"
 ICON_SOURCE="${ICON_SOURCE:-${PROJECT_DIR}/assets/openai-reasoning-guard-icon-1024.png}"
 VERSION="${VERSION:-$(sed -n 's/^project([^ ]* VERSION \([^ ]*\).*/\1/p' "${PROJECT_DIR}/CMakeLists.txt")}"
@@ -137,15 +138,22 @@ detect_qt_root() {
     if [[ -f "${BUILD_DIR}/CMakeCache.txt" ]]; then
         local cached
         cached="$(sed -n 's/^NET_TUNNEL_QT_SDK_ROOT:PATH=//p' "${BUILD_DIR}/CMakeCache.txt" | tail -n 1)"
-        if [[ -n "${cached}" && "${cached}" == "${LOCAL_QT_BASE}/"* && -f "${cached}/lib/libQt5Core.so.5" ]]; then
+        if [[ -n "${cached}" \
+            && "${cached}" == "${LOCAL_QT_BASE}/"* \
+            && -f "${cached}/lib/libQt5Core.so.5" \
+            && -f "${cached}/lib/libQt5Sql.so.5" \
+            && -f "${cached}/plugins/sqldrivers/libqsqlite.so" ]]; then
             printf '%s\n' "${cached}"
             return
         fi
     fi
     for candidate in \
+        "${LOCAL_QT_BASE}"/qt5.15.*-openssl \
         "${LOCAL_QT_BASE}/qt5-openssl" \
         "${LOCAL_QT_BASE}/qt-5.9.6-linux-gcc"; do
-        if [[ -f "${candidate}/lib/libQt5Core.so.5" ]]; then
+        if [[ -f "${candidate}/lib/libQt5Core.so.5" \
+            && -f "${candidate}/lib/libQt5Sql.so.5" \
+            && -f "${candidate}/plugins/sqldrivers/libqsqlite.so" ]]; then
             printf '%s\n' "${candidate}"
             return
         fi
@@ -242,6 +250,7 @@ copy_qt_runtime() {
 
     mkdir -p "${app_root}/qt/lib" \
              "${app_root}/qt/plugins/platforms" \
+             "${app_root}/qt/plugins/sqldrivers" \
              "${app_root}/qt/fonts" \
              "${app_root}/share"
 
@@ -250,6 +259,7 @@ copy_qt_runtime() {
         libQt5Network.so.5
         libQt5Gui.so.5
         libQt5Widgets.so.5
+        libQt5Sql.so.5
         libQt5XcbQpa.so.5
     )
     local lib
@@ -289,6 +299,11 @@ copy_qt_runtime() {
     fi
 
     cp -a "${qt_root}/plugins/platforms/libqxcb.so" "${app_root}/qt/plugins/platforms/"
+    if [[ ! -f "${qt_root}/plugins/sqldrivers/libqsqlite.so" ]]; then
+        echo "missing Qt SQLite driver: ${qt_root}/plugins/sqldrivers/libqsqlite.so" >&2
+        exit 2
+    fi
+    cp -a "${qt_root}/plugins/sqldrivers/libqsqlite.so" "${app_root}/qt/plugins/sqldrivers/"
     if compgen -G "${PROJECT_DIR}/third_party/fonts/*.ttf" >/dev/null; then
         cp -a "${PROJECT_DIR}/third_party/fonts/"*.ttf "${app_root}/qt/fonts/"
     fi
@@ -402,17 +417,28 @@ write_wrappers() {
     cat > "${app_root}/bin/${GUI_COMMAND}" <<EOF
 #!/usr/bin/env bash
 set -e
+umask 077
 SELF="\$(readlink -f "\$0")"
 APP_ROOT="\$(cd -- "\$(dirname -- "\$SELF")/.." && pwd)"
 CONFIG_BASE="\${XDG_CONFIG_HOME:-\${HOME}/.config}"
 CONFIG_DIR="\${CONFIG_BASE}/${CONFIG_DIR_NAME}"
+PREVIOUS_CONFIG_DIR="\${CONFIG_BASE}/${PREVIOUS_CONFIG_DIR_NAME}"
 LEGACY_CONFIG_DIR="\${CONFIG_BASE}/${LEGACY_CONFIG_DIR_NAME}"
 mkdir -p "\$CONFIG_DIR"
-if [[ ! -f "\$CONFIG_DIR/config.json" && -f "\$LEGACY_CONFIG_DIR/config.json" ]]; then
-    cp "\$LEGACY_CONFIG_DIR/config.json" "\$CONFIG_DIR/config.json"
+chmod 0700 "\$CONFIG_DIR"
+if [[ ! -f "\$CONFIG_DIR/config.json" ]]; then
+    for SOURCE_CONFIG_DIR in "\$PREVIOUS_CONFIG_DIR" "\$LEGACY_CONFIG_DIR"; do
+        if [[ -f "\$SOURCE_CONFIG_DIR/config.json" ]]; then
+            cp "\$SOURCE_CONFIG_DIR/config.json" "\$CONFIG_DIR/config.json"
+            break
+        fi
+    done
 fi
 if [[ ! -f "\$CONFIG_DIR/config.json" && -f "\$APP_ROOT/share/config.example.json" ]]; then
     cp "\$APP_ROOT/share/config.example.json" "\$CONFIG_DIR/config.json"
+fi
+if [[ -f "\$CONFIG_DIR/config.json" ]]; then
+    chmod 0600 "\$CONFIG_DIR/config.json"
 fi
 export NET_TUNNEL_CONFIG="\${NET_TUNNEL_CONFIG:-\$CONFIG_DIR/config.json}"
 export LD_LIBRARY_PATH="\$APP_ROOT/qt/lib:\${LD_LIBRARY_PATH:-}"
@@ -425,17 +451,28 @@ EOF
     cat > "${app_root}/bin/${CLI_COMMAND}" <<EOF
 #!/usr/bin/env bash
 set -e
+umask 077
 SELF="\$(readlink -f "\$0")"
 APP_ROOT="\$(cd -- "\$(dirname -- "\$SELF")/.." && pwd)"
 CONFIG_BASE="\${XDG_CONFIG_HOME:-\${HOME}/.config}"
 CONFIG_DIR="\${CONFIG_BASE}/${CONFIG_DIR_NAME}"
+PREVIOUS_CONFIG_DIR="\${CONFIG_BASE}/${PREVIOUS_CONFIG_DIR_NAME}"
 LEGACY_CONFIG_DIR="\${CONFIG_BASE}/${LEGACY_CONFIG_DIR_NAME}"
 mkdir -p "\$CONFIG_DIR"
-if [[ ! -f "\$CONFIG_DIR/config.json" && -f "\$LEGACY_CONFIG_DIR/config.json" ]]; then
-    cp "\$LEGACY_CONFIG_DIR/config.json" "\$CONFIG_DIR/config.json"
+chmod 0700 "\$CONFIG_DIR"
+if [[ ! -f "\$CONFIG_DIR/config.json" ]]; then
+    for SOURCE_CONFIG_DIR in "\$PREVIOUS_CONFIG_DIR" "\$LEGACY_CONFIG_DIR"; do
+        if [[ -f "\$SOURCE_CONFIG_DIR/config.json" ]]; then
+            cp "\$SOURCE_CONFIG_DIR/config.json" "\$CONFIG_DIR/config.json"
+            break
+        fi
+    done
 fi
 if [[ ! -f "\$CONFIG_DIR/config.json" && -f "\$APP_ROOT/share/config.example.json" ]]; then
     cp "\$APP_ROOT/share/config.example.json" "\$CONFIG_DIR/config.json"
+fi
+if [[ -f "\$CONFIG_DIR/config.json" ]]; then
+    chmod 0600 "\$CONFIG_DIR/config.json"
 fi
 export NET_TUNNEL_CONFIG="\${NET_TUNNEL_CONFIG:-\$CONFIG_DIR/config.json}"
 export LD_LIBRARY_PATH="\$APP_ROOT/qt/lib:\${LD_LIBRARY_PATH:-}"
@@ -505,7 +542,7 @@ Section: net
 Priority: optional
 Architecture: ${DEB_ARCH}
 Maintainer: OpenAI Reasoning Guard maintainers <maintainers@example.invalid>
-Depends: libc6, libstdc++6, libgcc-s1 | libgcc1, zlib1g, libglib2.0-0, libx11-6, libxcb1, libxau6, libxdmcp6, libsm6, libice6, libuuid1, libbsd0, libmd0, libpcre2-8-0
+Depends: libc6, libstdc++6, libgcc-s1 | libgcc1, zlib1g, libglib2.0-0, libx11-6, libx11-xcb1, libxcb1, libxcb-icccm4, libxcb-image0, libxcb-keysyms1, libxcb-randr0, libxcb-render0, libxcb-render-util0, libxcb-shape0, libxcb-shm0, libxcb-sync1, libxcb-util1, libxcb-xfixes0, libxcb-xinerama0, libxcb-xkb1, libxkbcommon0, libxkbcommon-x11-0, libxau6, libxdmcp6, libsm6, libice6, libuuid1, libbsd0, libmd0, libpcre2-8-0
 Description: OpenAI-compatible reasoning degradation guard proxy
  A local Qt/C++ OpenAI-compatible proxy that guards against suspected degraded reasoning responses by inspecting usage reasoning token signals and retrying upstream requests.
 EOF

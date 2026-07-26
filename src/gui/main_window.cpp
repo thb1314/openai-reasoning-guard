@@ -1,9 +1,14 @@
 #include "gui/main_window.h"
 
 #include "gui/app_icon.h"
+#include "gui/upstream_profile_dialog.h"
 
 #include <QtCore/QDateTime>
+#include <QtCore/QFile>
+#include <QtCore/QJsonDocument>
 #include <QtCore/QJsonObject>
+#include <QtCore/QSet>
+#include <QtCore/QSignalBlocker>
 #include <QtCore/QSize>
 #include <QtWidgets/QAction>
 #include <QtGui/QClipboard>
@@ -64,12 +69,40 @@ static QString proxyTextWithDefaultScheme(const QString &text)
     return QString("http://%1").arg(trimmed);
 }
 
+static bool configHasLegacyUpstreamFields(const QString &path)
+{
+    QFile file(path);
+    if (!file.exists()) {
+        return false;
+    }
+    if (!file.open(QIODevice::ReadOnly)) {
+        return true;
+    }
+    const QJsonDocument document = QJsonDocument::fromJson(file.readAll());
+    if (!document.isObject()) {
+        return true;
+    }
+    const QJsonObject object = document.object();
+    const QStringList keys = QStringList()
+        << "upstream_base_url" << "upstream_api_key" << "upstream_user_agent"
+        << "forward_user_agent" << "upstream_proxy" << "upstream_http_proxy"
+        << "upstream_https_proxy" << "upstream_socks_proxy" << "upstream_timeout_sec"
+        << "first_token_timeout_sec" << "upstream_first_byte_timeout_seconds";
+    for (int i = 0; i < keys.size(); ++i) {
+        if (object.contains(keys.at(i))) {
+            return true;
+        }
+    }
+    return false;
+}
+
 MainWindow::MainWindow(QWidget *parent)
     : QUIWidget(parent),
       configPath_(defaultConfigPath()),
       config_(loadConfig(configPath_)),
       proxy_(this),
       menuBar_(0),
+      manageUpstreamProfilesAction_(0),
       languageMenu_(0),
       zhAction_(0),
       enAction_(0),
@@ -93,6 +126,7 @@ MainWindow::MainWindow(QWidget *parent)
       proxyHostEdit_(0),
       proxyPortSpin_(0),
       proxyPrefixEdit_(0),
+      upstreamProfileCombo_(0),
       upstreamUrlEdit_(0),
       apiKeyEdit_(0),
       userAgentEdit_(0),
@@ -116,11 +150,17 @@ MainWindow::MainWindow(QWidget *parent)
       stopProxyButton_(0),
       copyProxyButton_(0),
       saveButton_(0),
-      logEdit_(0)
+      logEdit_(0),
+      upstreamProfileStore_(new UpstreamProfileStore(upstreamProfileDatabasePath(configPath_))),
+      upstreamProfileRunLock_(new UpstreamProfileRunLock(upstreamProfileDatabasePath(configPath_))),
+      legacyUpstreamMigrationComplete_(!configHasLegacyUpstreamFields(configPath_)),
+      upstreamProfilesReady_(false),
+      hasCurrentUpstreamProfile_(false)
 {
     buildUi();
     setupTrayIcon();
     applyStyle();
+    initializeUpstreamProfiles();
     loadSettingsToUi();
     retranslateUi();
 
@@ -143,6 +183,9 @@ MainWindow::~MainWindow()
         trayIcon_->hide();
     }
     proxy_.stop();
+    upstreamProfileRunLock_->unlock();
+    delete upstreamProfileRunLock_;
+    delete upstreamProfileStore_;
 }
 
 void MainWindow::buildUi()
@@ -153,7 +196,7 @@ void MainWindow::buildUi()
     setBtnWidth(36);
     setTitleHeight(42);
     setWindowIcon(makeAppIcon());
-    setPixmap(QUIWidget::Lab_Ico, QStringLiteral(":/app-icon.png"), QSize(22, 22));
+    setPixmap(QUIWidget::Lab_Ico, QStringLiteral(":/app-icon-22.png"), QSize(22, 22));
     setMinimumSize(980, 580);
 
     QWidget *root = new QWidget;
@@ -223,6 +266,9 @@ QMenuBar *MainWindow::buildMenuBar()
     QMenuBar *bar = new QMenuBar(this);
     bar->setObjectName("customMenuBar");
     bar->setNativeMenuBar(false);
+    manageUpstreamProfilesAction_ = bar->addAction("");
+    manageUpstreamProfilesAction_->setObjectName("manageUpstreamProfilesAction");
+    connect(manageUpstreamProfilesAction_, SIGNAL(triggered()), this, SLOT(openUpstreamProfiles()));
     languageMenu_ = bar->addMenu("");
     zhAction_ = languageMenu_->addAction("");
     enAction_ = languageMenu_->addAction("");
@@ -285,20 +331,37 @@ QWidget *MainWindow::buildProxyPanel()
     grid->setColumnMinimumWidth(3, 145);
 
     proxyHostEdit_ = new QLineEdit(box);
+    proxyHostEdit_->setObjectName("proxyHostEdit");
     proxyPortSpin_ = new QSpinBox(box);
     proxyPortSpin_->setRange(1, 65535);
     proxyPrefixEdit_ = new QLineEdit(box);
+    upstreamProfileCombo_ = new QComboBox(box);
+    upstreamProfileCombo_->setObjectName("upstreamProfileCombo");
     upstreamUrlEdit_ = new QLineEdit(box);
+    upstreamUrlEdit_->setObjectName("upstreamBaseUrlEdit");
+    upstreamUrlEdit_->setReadOnly(true);
     apiKeyEdit_ = new QLineEdit(box);
+    apiKeyEdit_->setObjectName("upstreamApiKeyEdit");
     apiKeyEdit_->setEchoMode(QLineEdit::Password);
+    apiKeyEdit_->setReadOnly(true);
     userAgentEdit_ = new QLineEdit(box);
+    userAgentEdit_->setObjectName("upstreamUserAgentEdit");
+    userAgentEdit_->setReadOnly(true);
     upstreamProxyEdit_ = new QLineEdit(box);
+    upstreamProxyEdit_->setObjectName("upstreamProxyEdit");
+    upstreamProxyEdit_->setReadOnly(true);
     upstreamTimeoutSpin_ = new QSpinBox(box);
+    upstreamTimeoutSpin_->setObjectName("upstreamTimeoutSpin");
     upstreamTimeoutSpin_->setRange(1, 86400);
     upstreamTimeoutSpin_->setMinimumWidth(118);
+    upstreamTimeoutSpin_->setReadOnly(true);
+    upstreamTimeoutSpin_->setButtonSymbols(QAbstractSpinBox::NoButtons);
     firstTokenTimeoutSpin_ = new QSpinBox(box);
+    firstTokenTimeoutSpin_->setObjectName("firstTokenTimeoutSpin");
     firstTokenTimeoutSpin_->setRange(0, 3600);
     firstTokenTimeoutSpin_->setMinimumWidth(118);
+    firstTokenTimeoutSpin_->setReadOnly(true);
+    firstTokenTimeoutSpin_->setButtonSymbols(QAbstractSpinBox::NoButtons);
     bufferTimeoutSpin_ = new QSpinBox(box);
     bufferTimeoutSpin_->setRange(1, 86400);
     bufferTimeoutSpin_->setMinimumWidth(118);
@@ -329,54 +392,59 @@ QWidget *MainWindow::buildProxyPanel()
     retryCapacityCheck_ = new QCheckBox(box);
     retryCapacityCheck_->setProperty("i18n_key", "retry_upstream_capacity_errors");
     forwardUserAgentCheck_ = new QCheckBox(box);
+    forwardUserAgentCheck_->setObjectName("forwardUserAgentCheck");
     forwardUserAgentCheck_->setProperty("i18n_key", "forward_user_agent");
+    forwardUserAgentCheck_->setEnabled(false);
 
-    grid->addWidget(makeFormLabel("listen_host", box), 0, 0);
-    grid->addWidget(proxyHostEdit_, 0, 1);
-    grid->addWidget(makeFormLabel("listen_port", box), 0, 2);
-    grid->addWidget(proxyPortSpin_, 0, 3);
-    grid->addWidget(makeFormLabel("path_prefix", box), 1, 0);
-    grid->addWidget(proxyPrefixEdit_, 1, 1);
-    grid->addWidget(makeFormLabel("upstream_base_url", box), 1, 2);
-    grid->addWidget(upstreamUrlEdit_, 1, 3);
-    grid->addWidget(makeFormLabel("fallback_api_key", box), 2, 0);
-    grid->addWidget(apiKeyEdit_, 2, 1);
-    grid->addWidget(makeFormLabel("user_agent", box), 2, 2);
-    grid->addWidget(userAgentEdit_, 2, 3);
-    grid->addWidget(makeFormLabel("upstream_proxy", box), 3, 0);
-    grid->addWidget(upstreamProxyEdit_, 3, 1, 1, 3);
-    grid->addWidget(makeFormLabel("upstream_timeout_sec", box), 4, 0);
-    grid->addWidget(upstreamTimeoutSpin_, 4, 1);
-    grid->addWidget(makeFormLabel("buffer_timeout_sec", box), 4, 2);
-    grid->addWidget(bufferTimeoutSpin_, 4, 3);
-    grid->addWidget(makeFormLabel("first_token_timeout_sec", box), 5, 0);
-    grid->addWidget(firstTokenTimeoutSpin_, 5, 1);
-    grid->addWidget(makeFormLabel("request_body_limit_bytes", box), 6, 0);
-    grid->addWidget(requestBodyLimitSpin_, 6, 1);
-    grid->addWidget(makeFormLabel("response_buffer_limit_bytes", box), 6, 2);
-    grid->addWidget(responseBufferLimitSpin_, 6, 3);
-    grid->addWidget(makeFormLabel("stream_action", box), 7, 0);
-    grid->addWidget(streamActionCombo_, 7, 1, 1, 3);
-    grid->addWidget(makeFormLabel("intercept_rule_mode", box), 8, 0);
-    grid->addWidget(interceptRuleModeCombo_, 8, 1, 1, 3);
-    grid->addWidget(makeFormLabel("guard_values", box), 9, 0);
-    grid->addWidget(reasoningEqualsEdit_, 9, 1);
-    grid->addWidget(makeFormLabel("guard_retries", box), 9, 2);
-    grid->addWidget(reasoning516RetrySpin_, 9, 3);
-    grid->addWidget(makeFormLabel("guard_endpoints", box), 10, 0);
-    grid->addWidget(guardEndpointsEdit_, 10, 1, 1, 3);
-    grid->addWidget(makeFormLabel("block_status_code", box), 11, 0);
-    grid->addWidget(nonStreamStatusCodeSpin_, 11, 1);
-    grid->addWidget(interceptStreamingCheck_, 12, 0, 1, 2);
-    grid->addWidget(interceptNonStreamingCheck_, 12, 2, 1, 2);
-    grid->addWidget(retryCapacityCheck_, 13, 0, 1, 2);
-    grid->addWidget(forwardUserAgentCheck_, 13, 2, 1, 2);
+    grid->addWidget(makeFormLabel("upstream_profile", box), 0, 0);
+    grid->addWidget(upstreamProfileCombo_, 0, 1, 1, 3);
+    grid->addWidget(makeFormLabel("listen_host", box), 1, 0);
+    grid->addWidget(proxyHostEdit_, 1, 1);
+    grid->addWidget(makeFormLabel("listen_port", box), 1, 2);
+    grid->addWidget(proxyPortSpin_, 1, 3);
+    grid->addWidget(makeFormLabel("path_prefix", box), 2, 0);
+    grid->addWidget(proxyPrefixEdit_, 2, 1);
+    grid->addWidget(makeFormLabel("upstream_base_url", box), 2, 2);
+    grid->addWidget(upstreamUrlEdit_, 2, 3);
+    grid->addWidget(makeFormLabel("fallback_api_key", box), 3, 0);
+    grid->addWidget(apiKeyEdit_, 3, 1);
+    grid->addWidget(makeFormLabel("user_agent", box), 3, 2);
+    grid->addWidget(userAgentEdit_, 3, 3);
+    grid->addWidget(makeFormLabel("upstream_proxy", box), 4, 0);
+    grid->addWidget(upstreamProxyEdit_, 4, 1, 1, 3);
+    grid->addWidget(makeFormLabel("upstream_timeout_sec", box), 5, 0);
+    grid->addWidget(upstreamTimeoutSpin_, 5, 1);
+    grid->addWidget(makeFormLabel("buffer_timeout_sec", box), 5, 2);
+    grid->addWidget(bufferTimeoutSpin_, 5, 3);
+    grid->addWidget(makeFormLabel("first_token_timeout_sec", box), 6, 0);
+    grid->addWidget(firstTokenTimeoutSpin_, 6, 1);
+    grid->addWidget(makeFormLabel("request_body_limit_bytes", box), 7, 0);
+    grid->addWidget(requestBodyLimitSpin_, 7, 1);
+    grid->addWidget(makeFormLabel("response_buffer_limit_bytes", box), 7, 2);
+    grid->addWidget(responseBufferLimitSpin_, 7, 3);
+    grid->addWidget(makeFormLabel("stream_action", box), 8, 0);
+    grid->addWidget(streamActionCombo_, 8, 1, 1, 3);
+    grid->addWidget(makeFormLabel("intercept_rule_mode", box), 9, 0);
+    grid->addWidget(interceptRuleModeCombo_, 9, 1, 1, 3);
+    grid->addWidget(makeFormLabel("guard_values", box), 10, 0);
+    grid->addWidget(reasoningEqualsEdit_, 10, 1);
+    grid->addWidget(makeFormLabel("guard_retries", box), 10, 2);
+    grid->addWidget(reasoning516RetrySpin_, 10, 3);
+    grid->addWidget(makeFormLabel("guard_endpoints", box), 11, 0);
+    grid->addWidget(guardEndpointsEdit_, 11, 1, 1, 3);
+    grid->addWidget(makeFormLabel("block_status_code", box), 12, 0);
+    grid->addWidget(nonStreamStatusCodeSpin_, 12, 1);
+    grid->addWidget(interceptStreamingCheck_, 13, 0, 1, 2);
+    grid->addWidget(interceptNonStreamingCheck_, 13, 2, 1, 2);
+    grid->addWidget(retryCapacityCheck_, 14, 0, 1, 2);
+    grid->addWidget(forwardUserAgentCheck_, 14, 2, 1, 2);
     grid->setColumnStretch(1, 2);
     grid->setColumnStretch(3, 3);
     contentLayout->addLayout(grid);
 
     QHBoxLayout *buttons = new QHBoxLayout();
     startProxyButton_ = new QPushButton(box);
+    startProxyButton_->setObjectName("startProxyButton");
     startProxyButton_->setProperty("i18n_key", "start_proxy");
     stopProxyButton_ = new QPushButton(box);
     stopProxyButton_->setProperty("i18n_key", "stop_proxy");
@@ -405,6 +473,8 @@ QWidget *MainWindow::buildProxyPanel()
     connect(stopProxyButton_, SIGNAL(clicked()), this, SLOT(stopProxy()));
     connect(copyProxyButton_, SIGNAL(clicked()), this, SLOT(copyProxyUrl()));
     connect(saveButton_, SIGNAL(clicked()), this, SLOT(saveSettings()));
+    connect(upstreamProfileCombo_, SIGNAL(currentIndexChanged(int)),
+            this, SLOT(handleUpstreamProfileChanged(int)));
     connect(proxyHostEdit_, SIGNAL(textChanged(QString)), this, SLOT(updateProxyStats()));
     connect(proxyPortSpin_, SIGNAL(valueChanged(int)), this, SLOT(updateProxyStats()));
     connect(proxyPrefixEdit_, SIGNAL(textChanged(QString)), this, SLOT(updateProxyStats()));
@@ -602,6 +672,7 @@ QString MainWindow::textFor(const QString &key) const
     const bool en = currentLanguage() == "en";
     if (key == "window_title") return "OpenAI Reasoning Guard";
     if (key == "window_subtitle") return en ? "Qt + C++11 intelligent OpenAI-compatible proxy" : "Qt + C++11 智能拦截 / OpenAI 兼容转发";
+    if (key == "menu_upstream_profiles") return en ? "Upstream Profiles" : "上游配置";
     if (key == "menu_language") return en ? "Language" : "语言";
     if (key == "lang_zh") return en ? "Chinese" : "中文";
     if (key == "lang_en") return en ? "English" : "英文";
@@ -613,8 +684,10 @@ QString MainWindow::textFor(const QString &key) const
     if (key == "listen_host") return en ? "Listen Host" : "监听 Host";
     if (key == "listen_port") return en ? "Listen Port" : "监听端口";
     if (key == "path_prefix") return en ? "Path Prefix" : "路径前缀";
+    if (key == "upstream_profile") return en ? "Upstream Profile" : "上游配置";
+    if (key == "no_upstream_profiles") return en ? "No upstream profiles" : "暂无上游配置";
     if (key == "upstream_base_url") return en ? "Upstream Base URL" : "上游 Base URL";
-    if (key == "fallback_api_key") return en ? "Fallback API Key" : "备用 API Key";
+    if (key == "fallback_api_key") return en ? "Profile API Key" : "API Key";
     if (key == "user_agent") return "User-Agent";
     if (key == "upstream_proxy") return en ? "Upstream Proxy" : "上游代理";
     if (key == "upstream_proxy_placeholder") return en
@@ -654,6 +727,10 @@ QString MainWindow::textFor(const QString &key) const
     if (key == "metric_uptime") return en ? "Uptime" : "运行时间";
     if (key == "group_info") return en ? "Info Panel" : "信息面板";
     if (key == "info_listen_url") return en ? "Listen URL" : "监听地址";
+    if (key == "info_upstream_profile") return en ? "Upstream Profile" : "上游配置";
+    if (key == "info_auth_mode") return en ? "Authorization" : "授权模式";
+    if (key == "info_auth_configured") return en ? "Profile API key" : "配置 API Key";
+    if (key == "info_auth_passthrough") return en ? "Forward client Authorization" : "透传客户端 Authorization";
     if (key == "info_upstream_url") return en ? "Upstream URL" : "上游地址";
     if (key == "info_prefix") return en ? "Path Prefix" : "路径前缀";
     if (key == "info_control_endpoints") return en ? "Control Endpoints" : "控制端点";
@@ -685,7 +762,16 @@ QString MainWindow::textFor(const QString &key) const
     if (key == "tray_tooltip") return en ? "OpenAI Reasoning Guard" : "OpenAI Reasoning Guard";
     if (key == "state_running") return en ? "Running" : "运行中";
     if (key == "state_stopped") return en ? "Stopped" : "已停止";
+    if (key == "error_profile_database") return en ? "Open upstream profile database failed: %1" : "打开上游配置数据库失败: %1";
+    if (key == "error_profile_migration") return en ? "Migrate legacy upstream settings failed: %1" : "迁移旧上游配置失败: %1";
+    if (key == "error_profile_load") return en ? "Load upstream profiles failed: %1" : "加载上游配置失败: %1";
+    if (key == "error_profile_select") return en ? "Select upstream profile failed: %1" : "选择上游配置失败: %1";
+    if (key == "error_profile_required") return en ? "Create and select an upstream profile before starting the proxy." : "请先创建并选择一个上游配置，再启动代理。";
+    if (key == "error_profile_lock") return en ? "Lock upstream profile failed: %1" : "锁定上游配置失败: %1";
+    if (key == "error_profile_selection_changed") return en ? "The selected upstream profile was changed by another process. The list has been refreshed; start the proxy again." : "其他进程已切换当前上游配置，列表已刷新，请重新启动代理。";
+    if (key == "error_profile_not_ready") return en ? "Upstream profiles are unavailable until database initialization and legacy migration succeed." : "数据库初始化和旧配置迁移成功前，上游配置不可用。";
     if (key == "error_save_config_failed") return en ? "Save config failed: %1" : "保存配置失败: %1";
+    if (key == "log_profile_migrated") return en ? "legacy upstream settings migrated to profile database" : "旧上游设置已迁移到上游配置数据库";
     if (key == "log_saved_config") return en ? "saved config: %1" : "已保存配置: %1";
     if (key == "log_proxy_url_copied") return en ? "proxy url copied" : "已复制代理地址";
     if (key == "log_console_copied") return en ? "console copied to clipboard" : "已复制控制台内容";
@@ -722,6 +808,9 @@ QString MainWindow::infoIndentedItem(const QString &value) const
 void MainWindow::retranslateUi()
 {
     setTitle(textFor("window_title"));
+    if (manageUpstreamProfilesAction_) {
+        manageUpstreamProfilesAction_->setText(textFor("menu_upstream_profiles"));
+    }
     if (languageMenu_) {
         languageMenu_->setTitle(textFor("menu_language"));
     }
@@ -753,6 +842,10 @@ void MainWindow::retranslateUi()
     if (interceptRuleModeCombo_) {
         interceptRuleModeCombo_->setItemText(0, textFor("rule_mode_reasoning_tokens"));
         interceptRuleModeCombo_->setItemText(1, textFor("rule_mode_final_only"));
+    }
+    if (upstreamProfileCombo_ && upstreamProfileCombo_->count() == 1 &&
+        upstreamProfileCombo_->itemData(0).toString().isEmpty()) {
+        upstreamProfileCombo_->setItemText(0, textFor("no_upstream_profiles"));
     }
 
     const QList<QWidget *> widgets = findChildren<QWidget *>();
@@ -799,8 +892,10 @@ void MainWindow::setLanguage(const QString &lang)
     }
     config_ = collectConfigFromUi();
     config_.lang = normalized;
-    QString error;
-    saveConfig(config_, configPath_, &error);
+    if (legacyUpstreamMigrationComplete_) {
+        QString error;
+        saveConfig(config_, configPath_, &error);
+    }
     retranslateUi();
 }
 
@@ -831,17 +926,270 @@ void MainWindow::handleTrayActivated(QSystemTrayIcon::ActivationReason reason)
     }
 }
 
+bool MainWindow::initializeUpstreamProfiles()
+{
+    upstreamProfilesReady_ = false;
+    QString error;
+    if (!upstreamProfileStore_->open(&error)) {
+        handleFailure(textFor("error_profile_database").arg(error));
+        if (!hasCurrentUpstreamProfile_) {
+            QSignalBlocker blocker(upstreamProfileCombo_);
+            upstreamProfileCombo_->clear();
+            upstreamProfileCombo_->addItem(textFor("no_upstream_profiles"), QString());
+            clearCurrentUpstreamProfile();
+        }
+        setProxyRunningUi(proxy_.isRunning());
+        return false;
+    }
+
+    bool migrated = false;
+    if (!migrateLegacyUpstreamConfig(configPath_, &config_, upstreamProfileStore_, &migrated, &error)) {
+        handleFailure(textFor("error_profile_migration").arg(error));
+        if (!hasCurrentUpstreamProfile_) {
+            QSignalBlocker blocker(upstreamProfileCombo_);
+            upstreamProfileCombo_->clear();
+            upstreamProfileCombo_->addItem(textFor("no_upstream_profiles"), QString());
+            clearCurrentUpstreamProfile();
+        }
+        setProxyRunningUi(proxy_.isRunning());
+        return false;
+    } else if (migrated) {
+        appendLog(textFor("log_profile_migrated"));
+    }
+    legacyUpstreamMigrationComplete_ = true;
+    upstreamProfilesReady_ = true;
+    refreshUpstreamProfiles();
+    return upstreamProfilesReady_;
+}
+
+void MainWindow::refreshUpstreamProfiles()
+{
+    if (!upstreamProfileCombo_) {
+        return;
+    }
+
+    QSignalBlocker blocker(upstreamProfileCombo_);
+    if (!upstreamProfileStore_->isOpen()) {
+        upstreamProfilesReady_ = false;
+        if (!hasCurrentUpstreamProfile_) {
+            upstreamProfileCombo_->clear();
+            upstreamProfileCombo_->addItem(textFor("no_upstream_profiles"), QString());
+        }
+        setProxyRunningUi(proxy_.isRunning());
+        return;
+    }
+
+    QString error;
+    QList<UpstreamProfile> profiles;
+    QSet<QString> profileIds;
+    int pageNumber = 1;
+    int totalPages = 1;
+    do {
+        UpstreamProfilePage page;
+        if (!upstreamProfileStore_->listProfiles(QString(), pageNumber, 100,
+                                                  SortByDisplayName, Qt::AscendingOrder,
+                                                  &page, &error)) {
+            handleFailure(textFor("error_profile_load").arg(error));
+            upstreamProfilesReady_ = false;
+            if (!hasCurrentUpstreamProfile_) {
+                upstreamProfileCombo_->clear();
+                upstreamProfileCombo_->addItem(textFor("no_upstream_profiles"), QString());
+            }
+            setProxyRunningUi(proxy_.isRunning());
+            return;
+        }
+        for (int i = 0; i < page.items.size(); ++i) {
+            const UpstreamProfile &profile = page.items.at(i);
+            if (!profileIds.contains(profile.id)) {
+                profileIds.insert(profile.id);
+                profiles.append(profile);
+            }
+        }
+        totalPages = qMax(1, page.totalPages);
+        ++pageNumber;
+    } while (pageNumber <= totalPages);
+
+    if (profiles.isEmpty()) {
+        if (proxy_.isRunning() && hasCurrentUpstreamProfile_) {
+            upstreamProfilesReady_ = false;
+            setProxyRunningUi(true);
+            return;
+        }
+        upstreamProfileCombo_->clear();
+        upstreamProfileCombo_->addItem(textFor("no_upstream_profiles"), QString());
+        clearCurrentUpstreamProfile();
+        setProxyRunningUi(proxy_.isRunning());
+        return;
+    }
+
+    error.clear();
+    QString selectedId = proxy_.isRunning() && hasCurrentUpstreamProfile_
+        ? currentUpstreamProfile_.id
+        : upstreamProfileStore_->selectedProfileId(&error);
+    if (!error.isEmpty()) {
+        handleFailure(textFor("error_profile_load").arg(error));
+        upstreamProfilesReady_ = false;
+        setProxyRunningUi(proxy_.isRunning());
+        return;
+    }
+    int selectedIndex = -1;
+    for (int i = 0; i < profiles.size(); ++i) {
+        if (profiles.at(i).id == selectedId) {
+            selectedIndex = i;
+            break;
+        }
+    }
+    if (selectedIndex < 0) {
+        if (proxy_.isRunning() && hasCurrentUpstreamProfile_) {
+            upstreamProfilesReady_ = false;
+            setProxyRunningUi(true);
+            return;
+        }
+        if (!selectedId.isEmpty()) {
+            UpstreamProfile selectedOutsidePage;
+            error.clear();
+            if (upstreamProfileStore_->profileById(selectedId, &selectedOutsidePage, &error)) {
+                profiles.append(selectedOutsidePage);
+                profileIds.insert(selectedOutsidePage.id);
+                selectedIndex = profiles.size() - 1;
+            } else if (!error.isEmpty()) {
+                handleFailure(textFor("error_profile_load").arg(error));
+                upstreamProfilesReady_ = false;
+                setProxyRunningUi(false);
+                return;
+            }
+        }
+    }
+    if (selectedIndex < 0) {
+        selectedIndex = 0;
+        selectedId = profiles.at(selectedIndex).id;
+        error.clear();
+        if (!upstreamProfileStore_->setSelectedProfileId(selectedId, &error)) {
+            handleFailure(textFor("error_profile_select").arg(error));
+            upstreamProfilesReady_ = false;
+            setProxyRunningUi(proxy_.isRunning());
+            return;
+        }
+    }
+
+    UpstreamProfile selected;
+    error.clear();
+    if (!upstreamProfileStore_->profileById(selectedId, &selected, &error)) {
+        handleFailure(textFor("error_profile_load").arg(error));
+        upstreamProfilesReady_ = false;
+        setProxyRunningUi(proxy_.isRunning());
+        return;
+    }
+
+    upstreamProfileCombo_->clear();
+    for (int i = 0; i < profiles.size(); ++i) {
+        upstreamProfileCombo_->addItem(profiles.at(i).displayName, profiles.at(i).id);
+    }
+    upstreamProfileCombo_->setCurrentIndex(selectedIndex);
+    currentUpstreamProfile_ = selected;
+    hasCurrentUpstreamProfile_ = true;
+    upstreamProfilesReady_ = true;
+    applyCurrentUpstreamProfile();
+    setProxyRunningUi(proxy_.isRunning());
+}
+
+void MainWindow::applyCurrentUpstreamProfile()
+{
+    if (!hasCurrentUpstreamProfile_) {
+        clearCurrentUpstreamProfile();
+        return;
+    }
+    upstreamUrlEdit_->setText(currentUpstreamProfile_.baseUrl);
+    apiKeyEdit_->setText(currentUpstreamProfile_.apiKey);
+    userAgentEdit_->setText(currentUpstreamProfile_.userAgent);
+    upstreamProxyEdit_->setText(currentUpstreamProfile_.upstreamProxy);
+    upstreamTimeoutSpin_->setSpecialValueText(QString());
+    upstreamTimeoutSpin_->setValue(currentUpstreamProfile_.upstreamTimeoutSec);
+    firstTokenTimeoutSpin_->setSpecialValueText(QString());
+    firstTokenTimeoutSpin_->setValue(currentUpstreamProfile_.firstTokenTimeoutSec);
+    forwardUserAgentCheck_->setChecked(currentUpstreamProfile_.forwardUserAgent);
+    refreshInfoPanel();
+}
+
+void MainWindow::clearCurrentUpstreamProfile()
+{
+    hasCurrentUpstreamProfile_ = false;
+    currentUpstreamProfile_ = UpstreamProfile();
+    if (!upstreamUrlEdit_) {
+        return;
+    }
+    upstreamUrlEdit_->clear();
+    apiKeyEdit_->clear();
+    userAgentEdit_->clear();
+    upstreamProxyEdit_->clear();
+    upstreamTimeoutSpin_->setSpecialValueText("-");
+    upstreamTimeoutSpin_->setValue(upstreamTimeoutSpin_->minimum());
+    firstTokenTimeoutSpin_->setSpecialValueText("-");
+    firstTokenTimeoutSpin_->setValue(firstTokenTimeoutSpin_->minimum());
+    forwardUserAgentCheck_->setChecked(false);
+    refreshInfoPanel();
+}
+
+void MainWindow::handleUpstreamProfileChanged(int index)
+{
+    if (!upstreamProfilesReady_ || !upstreamProfileStore_->isOpen()) {
+        QSignalBlocker blocker(upstreamProfileCombo_);
+        upstreamProfileCombo_->setCurrentIndex(
+            hasCurrentUpstreamProfile_
+                ? upstreamProfileCombo_->findData(currentUpstreamProfile_.id)
+                : -1);
+        return;
+    }
+    if (proxy_.isRunning()) {
+        QSignalBlocker blocker(upstreamProfileCombo_);
+        upstreamProfileCombo_->setCurrentIndex(
+            upstreamProfileCombo_->findData(currentUpstreamProfile_.id));
+        return;
+    }
+    const QString id = upstreamProfileCombo_->itemData(index).toString();
+    if (id.isEmpty()) {
+        clearCurrentUpstreamProfile();
+        setProxyRunningUi(false);
+        return;
+    }
+
+    QString error;
+    UpstreamProfile profile;
+    if (!upstreamProfileStore_->profileById(id, &profile, &error) ||
+        !upstreamProfileStore_->setSelectedProfileId(id, &error)) {
+        handleFailure(textFor("error_profile_select").arg(error));
+        QSignalBlocker blocker(upstreamProfileCombo_);
+        upstreamProfileCombo_->setCurrentIndex(
+            hasCurrentUpstreamProfile_
+                ? upstreamProfileCombo_->findData(currentUpstreamProfile_.id)
+                : -1);
+        return;
+    }
+    currentUpstreamProfile_ = profile;
+    hasCurrentUpstreamProfile_ = true;
+    applyCurrentUpstreamProfile();
+    setProxyRunningUi(false);
+}
+
+void MainWindow::openUpstreamProfiles()
+{
+    if (!upstreamProfilesReady_ && !initializeUpstreamProfiles()) {
+        return;
+    }
+    const QString activeProfileId = proxy_.isRunning() && hasCurrentUpstreamProfile_
+        ? currentUpstreamProfile_.id
+        : QString();
+    UpstreamProfileDialog dialog(upstreamProfileStore_, currentLanguage(), activeProfileId,
+                                 proxy_.isRunning(), this);
+    dialog.exec();
+    refreshUpstreamProfiles();
+}
+
 void MainWindow::loadSettingsToUi()
 {
     proxyHostEdit_->setText(config_.proxyHost);
     proxyPortSpin_->setValue(config_.proxyPort);
     proxyPrefixEdit_->setText(config_.proxyPrefix);
-    upstreamUrlEdit_->setText(config_.upstreamBaseUrl);
-    apiKeyEdit_->setText(config_.upstreamApiKey);
-    userAgentEdit_->setText(config_.upstreamUserAgent);
-    upstreamProxyEdit_->setText(config_.upstreamProxy);
-    upstreamTimeoutSpin_->setValue(config_.upstreamTimeoutSec);
-    firstTokenTimeoutSpin_->setValue(config_.firstTokenTimeoutSec);
     bufferTimeoutSpin_->setValue(config_.bufferTimeoutSec);
     requestBodyLimitSpin_->setValue(int(qMin(config_.requestBodyLimitBytes, qint64(0x7fffffff))));
     responseBufferLimitSpin_->setValue(int(qMin(config_.responseBufferLimitBytes, qint64(0x7fffffff))));
@@ -856,7 +1204,6 @@ void MainWindow::loadSettingsToUi()
     nonStreamStatusCodeSpin_->setValue(config_.nonStreamStatusCode);
     interceptStreamingCheck_->setChecked(config_.interceptStreaming);
     interceptNonStreamingCheck_->setChecked(config_.interceptNonStreaming);
-    forwardUserAgentCheck_->setChecked(config_.forwardUserAgent);
     proxyUrl_->setText(QString("http://%1:%2%3")
         .arg(config_.proxyHost)
         .arg(config_.proxyPort)
@@ -869,13 +1216,6 @@ AppConfig MainWindow::collectConfigFromUi() const
     config.proxyHost = proxyHostEdit_->text().trimmed();
     config.proxyPort = proxyPortSpin_->value();
     config.proxyPrefix = proxyPrefixEdit_->text().trimmed();
-    config.upstreamBaseUrl = upstreamUrlEdit_->text().trimmed();
-    config.upstreamApiKey = apiKeyEdit_->text().trimmed();
-    config.upstreamUserAgent = userAgentEdit_->text().trimmed();
-    config.forwardUserAgent = forwardUserAgentCheck_->isChecked();
-    config.upstreamProxy = proxyTextWithDefaultScheme(upstreamProxyEdit_->text());
-    config.upstreamTimeoutSec = upstreamTimeoutSpin_->value();
-    config.firstTokenTimeoutSec = firstTokenTimeoutSpin_->value();
     config.bufferTimeoutSec = bufferTimeoutSpin_->value();
     config.requestBodyLimitBytes = requestBodyLimitSpin_->value();
     config.responseBufferLimitBytes = responseBufferLimitSpin_->value();
@@ -898,16 +1238,18 @@ ProxySettings MainWindow::collectProxySettings() const
     settings.listenHost = proxyHostEdit_->text().trimmed();
     settings.listenPort = proxyPortSpin_->value();
     settings.proxyPrefix = proxyPrefixEdit_->text().trimmed();
-    settings.upstreamBaseUrl = upstreamUrlEdit_->text().trimmed();
-    settings.upstreamApiKey = apiKeyEdit_->text().trimmed();
-    settings.upstreamUserAgent = userAgentEdit_->text().trimmed();
-    settings.forwardUserAgent = forwardUserAgentCheck_->isChecked();
-    settings.upstreamProxy = proxyTextWithDefaultScheme(upstreamProxyEdit_->text());
-    settings.upstreamHttpProxy = config_.upstreamHttpProxy;
-    settings.upstreamHttpsProxy = config_.upstreamHttpsProxy;
-    settings.upstreamSocksProxy = config_.upstreamSocksProxy;
-    settings.upstreamTimeoutSec = upstreamTimeoutSpin_->value();
-    settings.firstTokenTimeoutSec = firstTokenTimeoutSpin_->value();
+    if (hasCurrentUpstreamProfile_) {
+        settings.upstreamBaseUrl = currentUpstreamProfile_.baseUrl;
+        settings.upstreamApiKey = currentUpstreamProfile_.apiKey;
+        settings.upstreamUserAgent = currentUpstreamProfile_.userAgent;
+        settings.forwardUserAgent = currentUpstreamProfile_.forwardUserAgent;
+        settings.upstreamProxy = proxyTextWithDefaultScheme(currentUpstreamProfile_.upstreamProxy);
+        settings.upstreamTimeoutSec = currentUpstreamProfile_.upstreamTimeoutSec;
+        settings.firstTokenTimeoutSec = currentUpstreamProfile_.firstTokenTimeoutSec;
+    }
+    settings.upstreamHttpProxy.clear();
+    settings.upstreamHttpsProxy.clear();
+    settings.upstreamSocksProxy.clear();
     settings.bufferTimeoutSec = bufferTimeoutSpin_->value();
     settings.requestBodyLimitBytes = requestBodyLimitSpin_->value();
     settings.responseBufferLimitBytes = responseBufferLimitSpin_->value();
@@ -942,8 +1284,44 @@ QString MainWindow::selectedStreamAction() const
 
 void MainWindow::startProxy()
 {
+    if (!upstreamProfilesReady_ || !upstreamProfileStore_->isOpen()) {
+        handleFailure(textFor("error_profile_not_ready"));
+        return;
+    }
+    if (!hasCurrentUpstreamProfile_) {
+        handleFailure(textFor("error_profile_required"));
+        return;
+    }
     QString error;
+    if (!upstreamProfileRunLock_->tryLock(currentUpstreamProfile_.id, &error)) {
+        handleFailure(textFor("error_profile_lock").arg(error));
+        return;
+    }
+    error.clear();
+    const QString selectedId = upstreamProfileStore_->selectedProfileId(&error);
+    if (!error.isEmpty()) {
+        upstreamProfileRunLock_->unlock();
+        handleFailure(textFor("error_profile_load").arg(error));
+        return;
+    }
+    if (selectedId != currentUpstreamProfile_.id) {
+        upstreamProfileRunLock_->unlock();
+        refreshUpstreamProfiles();
+        handleFailure(textFor("error_profile_selection_changed"));
+        return;
+    }
+    UpstreamProfile latestProfile;
+    error.clear();
+    if (!upstreamProfileStore_->profileById(currentUpstreamProfile_.id, &latestProfile, &error)) {
+        upstreamProfileRunLock_->unlock();
+        handleFailure(textFor("error_profile_load").arg(error));
+        refreshUpstreamProfiles();
+        return;
+    }
+    currentUpstreamProfile_ = latestProfile;
+    applyCurrentUpstreamProfile();
     if (!proxy_.start(collectProxySettings(), &error)) {
+        upstreamProfileRunLock_->unlock();
         handleFailure(error);
         return;
     }
@@ -956,6 +1334,10 @@ void MainWindow::stopProxy()
 
 void MainWindow::saveSettings()
 {
+    if (!legacyUpstreamMigrationComplete_) {
+        handleFailure(textFor("error_profile_not_ready"));
+        return;
+    }
     config_ = collectConfigFromUi();
     QString error;
     if (!saveConfig(config_, configPath_, &error)) {
@@ -1031,6 +1413,7 @@ void MainWindow::handleProxyStarted(const QString &url)
 
 void MainWindow::handleProxyStopped()
 {
+    upstreamProfileRunLock_->unlock();
     setProxyRunningUi(false);
     refreshInfoPanel();
     updateProxyStats();
@@ -1045,9 +1428,16 @@ void MainWindow::handleFailure(const QString &message)
 void MainWindow::setProxyRunningUi(bool running)
 {
     setStatus(proxyState_, running ? textFor("state_running") : textFor("state_stopped"), running ? "ok" : "idle");
-    startProxyButton_->setEnabled(!running);
+    startProxyButton_->setEnabled(!running && upstreamProfilesReady_ &&
+                                  hasCurrentUpstreamProfile_ && upstreamProfileStore_->isOpen());
     stopProxyButton_->setEnabled(running);
     copyProxyButton_->setEnabled(running);
+    saveButton_->setEnabled(legacyUpstreamMigrationComplete_);
+    if (upstreamProfileCombo_) {
+        upstreamProfileCombo_->setEnabled(!running && upstreamProfilesReady_ &&
+                                          hasCurrentUpstreamProfile_ &&
+                                          upstreamProfileStore_->isOpen());
+    }
 }
 
 void MainWindow::setStatus(QLabel *label, const QString &text, const QString &state)
@@ -1077,7 +1467,13 @@ void MainWindow::refreshInfoPanel()
 
     QStringList lines;
     lines << infoLine("info_listen_url", listenUrl);
+    lines << infoLine("info_upstream_profile", hasCurrentUpstreamProfile_
+        ? currentUpstreamProfile_.displayName
+        : textFor("no_upstream_profiles"));
     lines << infoLine("info_upstream_url", settings.upstreamBaseUrl);
+    lines << infoLine("info_auth_mode", hasCurrentUpstreamProfile_ && !currentUpstreamProfile_.apiKey.isEmpty()
+        ? textFor("info_auth_configured")
+        : textFor("info_auth_passthrough"));
     lines << infoLine("info_prefix", prefix);
     lines << infoLine("info_control_endpoints", textFor("info_control_endpoints_value"));
     lines << infoLine("info_upstream_proxy", settings.upstreamProxy.isEmpty() ? textFor("info_proxy_unset") : settings.upstreamProxy);

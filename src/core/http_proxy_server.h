@@ -11,6 +11,8 @@
 
 namespace net_tunnel {
 
+class ProxyConnection;
+
 struct ProxySettings {
     QString listenHost;
     int listenPort;
@@ -105,6 +107,7 @@ private:
     QUrl upstreamBase_;
     QString upstreamBasePath_;
     QString proxyPrefix_;
+    QSet<ProxyConnection *> activeConnections_;
 
     qint64 startedAtMs_;
     qint64 requestsTotal_;

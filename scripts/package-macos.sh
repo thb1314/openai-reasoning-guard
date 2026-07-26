@@ -13,9 +13,9 @@ ICON_SOURCE="${ICON_SOURCE:-${PROJECT_DIR}/assets/openai-reasoning-guard-icon-10
 VERSION="${VERSION:-$(sed -n 's/^project([^ ]* VERSION \([^ ]*\).*/\1/p' "${PROJECT_DIR}/CMakeLists.txt")}"
 VERSION="${VERSION:-0.1.0}"
 ARCH="${PACKAGE_ARCH:-$(uname -m)}"
-BUILD_DIR="${BUILD_DIR:-${PROJECT_DIR}/build-package-macos-${ARCH}}"
+BUILD_DIR="${BUILD_DIR:-}"
 DIST_DIR="${DIST_DIR:-${PROJECT_DIR}/dist}"
-WORK_DIR="${WORK_DIR:-${PROJECT_DIR}/.package-work/macos-${ARCH}}"
+WORK_DIR="${WORK_DIR:-}"
 QT_ROOT="${QT_ROOT:-}"
 BUILD_TESTS="${BUILD_TESTS:-OFF}"
 JOBS="${JOBS:-$(sysctl -n hw.ncpu 2>/dev/null || echo 2)}"
@@ -27,6 +27,7 @@ MACOS_CODESIGN_OPTIONS="${MACOS_CODESIGN_OPTIONS:-}"
 MACOS_CODESIGN_ENTITLEMENTS="${MACOS_CODESIGN_ENTITLEMENTS:-}"
 MACOS_NOTARIZE="${MACOS_NOTARIZE:-0}"
 MACOS_NOTARY_PROFILE="${MACOS_NOTARY_PROFILE:-}"
+MACOS_NOTARY_KEYCHAIN="${MACOS_NOTARY_KEYCHAIN:-}"
 MACOS_NOTARY_APPLE_ID="${MACOS_NOTARY_APPLE_ID:-}"
 MACOS_NOTARY_TEAM_ID="${MACOS_NOTARY_TEAM_ID:-}"
 MACOS_NOTARY_PASSWORD="${MACOS_NOTARY_PASSWORD:-}"
@@ -48,9 +49,9 @@ Environment overrides:
   QT_ROOT=/path/to/qt5
   PACKAGE_ARCH=x86_64
   CMAKE_OSX_ARCHITECTURES=x86_64
-  BUILD_DIR=${BUILD_DIR}
+  BUILD_DIR=${BUILD_DIR:-${PROJECT_DIR}/build-package-macos-${ARCH}}
   DIST_DIR=${DIST_DIR}
-  WORK_DIR=${WORK_DIR}
+  WORK_DIR=${WORK_DIR:-${PROJECT_DIR}/.package-work/macos-${ARCH}}
   MACDEPLOYQT=/path/to/macdeployqt
   MACOS_CODESIGN=1
   MACOS_CODESIGN_IDENTITY=-          # ad-hoc signing by default
@@ -59,6 +60,7 @@ Environment overrides:
   MACOS_CODESIGN_ENTITLEMENTS=/path/to/entitlements.plist
   MACOS_NOTARIZE=1
   MACOS_NOTARY_PROFILE=notary-profile
+  MACOS_NOTARY_KEYCHAIN=/path/to/signing.keychain-db
   MACOS_NOTARY_APPLE_ID=apple@example.com
   MACOS_NOTARY_TEAM_ID=TEAMID
   MACOS_NOTARY_PASSWORD=app-specific-password
@@ -97,6 +99,9 @@ done
 case "${ARCH}" in
     arm64) ARCH="aarch64" ;;
 esac
+
+BUILD_DIR="${BUILD_DIR:-${PROJECT_DIR}/build-package-macos-${ARCH}}"
+WORK_DIR="${WORK_DIR:-${PROJECT_DIR}/.package-work/macos-${ARCH}}"
 
 cmake_arch_for() {
     case "$1" in
@@ -260,6 +265,21 @@ deploy_qt() {
         "-executable=${app_bundle}/Contents/Resources/bin/${CLI_COMMAND}"
 }
 
+validate_deployed_qt_sql() {
+    local app_bundle="$1"
+    local required=(
+        "${app_bundle}/Contents/Frameworks/QtSql.framework/QtSql"
+        "${app_bundle}/Contents/PlugIns/sqldrivers/libqsqlite.dylib"
+    )
+    local path
+    for path in "${required[@]}"; do
+        if [[ ! -e "${path}" ]]; then
+            echo "macdeployqt did not deploy required Qt SQL artifact: ${path}" >&2
+            exit 2
+        fi
+    done
+}
+
 sign_path() {
     local path="$1"
     if [[ ! -e "${path}" ]]; then
@@ -318,6 +338,10 @@ sign_app_bundle() {
     fi
     codesign "${bundle_args[@]}" --deep "${app_bundle}"
     codesign --verify --deep --strict --verbose=2 "${app_bundle}"
+    codesign --verify --strict --verbose=2 \
+        "${app_bundle}/Contents/Frameworks/QtSql.framework"
+    codesign --verify --strict --verbose=2 \
+        "${app_bundle}/Contents/PlugIns/sqldrivers/libqsqlite.dylib"
 }
 
 write_first_run_helper() {
@@ -630,6 +654,9 @@ notarize_dmg() {
     local submit_args=(notarytool submit "${dmg_path}" --wait)
     if [[ -n "${MACOS_NOTARY_PROFILE}" ]]; then
         submit_args+=(--keychain-profile "${MACOS_NOTARY_PROFILE}")
+        if [[ -n "${MACOS_NOTARY_KEYCHAIN}" ]]; then
+            submit_args+=(--keychain "${MACOS_NOTARY_KEYCHAIN}")
+        fi
     else
         if [[ -z "${MACOS_NOTARY_APPLE_ID}" || -z "${MACOS_NOTARY_TEAM_ID}" || -z "${MACOS_NOTARY_PASSWORD}" ]]; then
             echo "MACOS_NOTARIZE=1 requires MACOS_NOTARY_PROFILE or Apple ID/team/password variables" >&2
@@ -789,6 +816,7 @@ build_dmg() {
 
     stage_app_bundle "${app_bundle}"
     deploy_qt "${app_bundle}"
+    validate_deployed_qt_sql "${app_bundle}"
     sign_app_bundle "${app_bundle}"
 
     rm -rf "${dmg_root}"
@@ -833,10 +861,23 @@ fi
 mkdir -p "${DIST_DIR}" "${WORK_DIR}"
 
 QT_ROOT_RESOLVED="$(detect_qt_root)"
-if [[ ! -x "${QT_ROOT_RESOLVED}/bin/moc" ]]; then
-    echo "Qt moc not found: ${QT_ROOT_RESOLVED}/bin/moc" >&2
-    exit 2
-fi
+for executable in \
+    "${QT_ROOT_RESOLVED}/bin/moc" \
+    "${QT_ROOT_RESOLVED}/bin/macdeployqt"; do
+    if [[ ! -x "${executable}" ]]; then
+        echo "required Qt SDK executable not found: ${executable}" >&2
+        exit 2
+    fi
+done
+for path in \
+    "${QT_ROOT_RESOLVED}/lib/QtSql.framework/QtSql" \
+    "${QT_ROOT_RESOLVED}/plugins/sqldrivers/libqsqlite.dylib" \
+    "${QT_ROOT_RESOLVED}/lib/cmake/Qt5Sql/Qt5SqlConfig.cmake"; do
+    if [[ ! -e "${path}" ]]; then
+        echo "required Qt SDK artifact not found: ${path}" >&2
+        exit 2
+    fi
+done
 
 echo "Package: ${PACKAGE_ID}"
 echo "Version: ${VERSION}"

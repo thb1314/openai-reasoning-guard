@@ -10,6 +10,7 @@
 #include <QtCore/QJsonDocument>
 #include <QtCore/QJsonObject>
 #include <QtCore/QRegExp>
+#include <QtCore/QSaveFile>
 
 namespace net_tunnel {
 
@@ -137,6 +138,129 @@ static QString proxyTextWithDefaultScheme(const QString &text, bool socksFallbac
     return QString("%1://%2").arg(socksFallback ? QString("socks5") : QString("http"), trimmed);
 }
 
+static QString userConfigDirectory()
+{
+#if defined(Q_OS_WIN)
+    QString basePath = QString::fromLocal8Bit(qgetenv("APPDATA")).trimmed();
+    if (basePath.isEmpty()) {
+        basePath = QDir(QDir::homePath()).filePath("AppData/Roaming");
+    }
+#elif defined(Q_OS_MACOS) || defined(Q_OS_MAC)
+    const QString basePath = QDir(QDir::homePath()).filePath("Library/Application Support");
+#else
+    QString basePath = QString::fromLocal8Bit(qgetenv("XDG_CONFIG_HOME")).trimmed();
+    if (basePath.isEmpty()) {
+        basePath = QDir(QDir::homePath()).filePath(".config");
+    }
+#endif
+    return QDir(basePath).filePath("OpenAI Reasoning Guard");
+}
+
+static bool ensureConfigDirectory(const QString &filePath, QString *error)
+{
+    const QFileInfo fileInfo(filePath);
+    QDir dir = fileInfo.dir();
+    const bool existed = dir.exists();
+    if (!existed && !dir.mkpath(".")) {
+        if (error) {
+            *error = QString("failed to create config directory: %1").arg(dir.absolutePath());
+        }
+        return false;
+    }
+
+    if (!existed) {
+        const QFileDevice::Permissions permissions = QFileDevice::ReadOwner |
+            QFileDevice::WriteOwner | QFileDevice::ExeOwner;
+        if (!QFile::setPermissions(dir.absolutePath(), permissions)) {
+            if (error) {
+                *error = QString("failed to restrict config directory permissions: %1")
+                             .arg(dir.absolutePath());
+            }
+            return false;
+        }
+#if !defined(Q_OS_WIN)
+        const QFileDevice::Permissions actual = QFileInfo(dir.absolutePath()).permissions();
+        const QFileDevice::Permissions exposed = QFileDevice::ReadGroup |
+            QFileDevice::WriteGroup | QFileDevice::ExeGroup | QFileDevice::ReadOther |
+            QFileDevice::WriteOther | QFileDevice::ExeOther;
+        if (actual & exposed) {
+            if (error) {
+                *error = QString("owner-only config directory permissions are not enforceable: %1")
+                             .arg(dir.absolutePath());
+            }
+            return false;
+        }
+#endif
+    }
+    return true;
+}
+
+static bool writePrivateFileAtomically(const QString &path,
+                                       const QByteArray &contents,
+                                       QString *error)
+{
+    if (!ensureConfigDirectory(path, error)) {
+        return false;
+    }
+
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly)) {
+        if (error) {
+            *error = file.errorString();
+        }
+        return false;
+    }
+
+    if (!file.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner)) {
+        if (error) {
+            *error = QString("failed to restrict config permissions: %1").arg(path);
+        }
+        file.cancelWriting();
+        return false;
+    }
+
+    if (file.write(contents) != contents.size()) {
+        if (error) {
+            *error = file.errorString();
+        }
+        file.cancelWriting();
+        return false;
+    }
+
+    if (!file.commit()) {
+        if (error) {
+            *error = file.errorString();
+        }
+        return false;
+    }
+    return true;
+}
+
+static void copyLegacyConfigIfNeeded(const QString &targetPath)
+{
+    if (QFileInfo::exists(targetPath)) {
+        return;
+    }
+
+    const QString legacyPath = QDir(QCoreApplication::applicationDirPath()).filePath("config.json");
+    if (QDir::cleanPath(QFileInfo(legacyPath).absoluteFilePath()) ==
+            QDir::cleanPath(QFileInfo(targetPath).absoluteFilePath()) ||
+        !QFileInfo::exists(legacyPath)) {
+        return;
+    }
+
+    QFile legacyFile(legacyPath);
+    if (!legacyFile.open(QIODevice::ReadOnly)) {
+        return;
+    }
+    const QByteArray contents = legacyFile.readAll();
+    if (legacyFile.error() != QFileDevice::NoError) {
+        return;
+    }
+
+    writePrivateFileAtomically(targetPath, contents, 0);
+}
+
 AppConfig::AppConfig()
     : lang("zh"),
       proxyHost("127.0.0.1"),
@@ -169,24 +293,15 @@ QString defaultConfigPath()
     if (!envPath.isEmpty()) {
         return envPath;
     }
-    return QDir(QCoreApplication::applicationDirPath()).filePath("config.json");
+
+    const QString path = QDir(userConfigDirectory()).filePath("config.json");
+    copyLegacyConfigIfNeeded(path);
+    return path;
 }
 
-AppConfig loadConfig(const QString &path)
+AppConfig appConfigFromJsonObject(const QJsonObject &object)
 {
     AppConfig config;
-    const QString resolvedPath = path.isEmpty() ? defaultConfigPath() : path;
-    QFile file(resolvedPath);
-    if (!file.exists() || !file.open(QIODevice::ReadOnly)) {
-        return config;
-    }
-
-    const QJsonDocument document = QJsonDocument::fromJson(file.readAll());
-    if (!document.isObject()) {
-        return config;
-    }
-
-    const QJsonObject object = document.object();
     config.lang = readString(object, "lang", config.lang);
     config.proxyHost = readString(object, "proxy_host", config.proxyHost);
     config.proxyPort = readInt(object, "proxy_port", config.proxyPort);
@@ -225,24 +340,32 @@ AppConfig loadConfig(const QString &path)
     return config;
 }
 
+AppConfig loadConfig(const QString &path)
+{
+    const QString resolvedPath = path.isEmpty() ? defaultConfigPath() : path;
+    QFile file(resolvedPath);
+    if (!file.exists() || !file.open(QIODevice::ReadOnly)) {
+        return AppConfig();
+    }
+
+    const QJsonDocument document = QJsonDocument::fromJson(file.readAll());
+    if (!document.isObject()) {
+        return AppConfig();
+    }
+    return appConfigFromJsonObject(document.object());
+}
+
 bool saveConfig(const AppConfig &config, const QString &path, QString *error)
 {
+    if (error) {
+        error->clear();
+    }
     const QString resolvedPath = path.isEmpty() ? defaultConfigPath() : path;
     QJsonObject object;
     object.insert("lang", config.lang);
     object.insert("proxy_host", config.proxyHost);
     object.insert("proxy_port", QString::number(config.proxyPort));
     object.insert("proxy_prefix", config.proxyPrefix);
-    object.insert("upstream_base_url", config.upstreamBaseUrl);
-    object.insert("upstream_api_key", config.upstreamApiKey);
-    object.insert("upstream_user_agent", config.upstreamUserAgent);
-    object.insert("forward_user_agent", config.forwardUserAgent);
-    object.insert("upstream_proxy", proxyTextWithDefaultScheme(config.upstreamProxy, false));
-    object.insert("upstream_http_proxy", proxyTextWithDefaultScheme(config.upstreamHttpProxy, false));
-    object.insert("upstream_https_proxy", proxyTextWithDefaultScheme(config.upstreamHttpsProxy, false));
-    object.insert("upstream_socks_proxy", proxyTextWithDefaultScheme(config.upstreamSocksProxy, true));
-    object.insert("upstream_timeout_sec", config.upstreamTimeoutSec);
-    object.insert("first_token_timeout_sec", config.firstTokenTimeoutSec);
     object.insert("buffer_timeout_sec", config.bufferTimeoutSec);
     object.insert("request_body_limit_bytes", double(config.requestBodyLimitBytes));
     object.insert("response_buffer_limit_bytes", double(config.responseBufferLimitBytes));
@@ -257,25 +380,8 @@ bool saveConfig(const AppConfig &config, const QString &path, QString *error)
     object.insert("non_stream_status_code", config.nonStreamStatusCode);
     object.insert("stream_action", config.streamAction);
 
-    const QFileInfo fileInfo(resolvedPath);
-    QDir dir = fileInfo.dir();
-    if (!dir.exists() && !dir.mkpath(".")) {
-        if (error) {
-            *error = QString("failed to create config directory: %1").arg(dir.absolutePath());
-        }
-        return false;
-    }
-
-    QFile file(resolvedPath);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        if (error) {
-            *error = file.errorString();
-        }
-        return false;
-    }
-
-    file.write(QJsonDocument(object).toJson(QJsonDocument::Indented));
-    return true;
+    return writePrivateFileAtomically(
+        resolvedPath, QJsonDocument(object).toJson(QJsonDocument::Indented), error);
 }
 
 } // namespace net_tunnel

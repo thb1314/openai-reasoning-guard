@@ -1,0 +1,3 @@
+# Store upstream profiles in SQLite
+
+Upstream profiles and the last selected profile ID are stored in SQLite so CRUD, pagination, constraints, and selection updates can be handled transactionally. Profile validation is shared by GUI, CLI, import, migration, and runtime loading: Base URLs forbid userinfo, query, and fragment; proxies are limited to HTTP and SOCKS5-family schemes without credentials, query, or fragment; display names and outbound header values reject control characters and enforce byte limits. Global proxy and reasoning-guard settings remain in `config.json` to preserve existing CLI overrides, manual configuration, and upgrade compatibility rather than migrating the entire application configuration into the database.

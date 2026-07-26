@@ -1,5 +1,13 @@
 <RCC>
     <qresource prefix="/">
-        <file alias="app-icon.png">openai-reasoning-guard-icon-1024.png</file>
+        <file alias="app-icon-16.png">openai-reasoning-guard-icon-16.png</file>
+        <file alias="app-icon-22.png">openai-reasoning-guard-icon-22.png</file>
+        <file alias="app-icon-24.png">openai-reasoning-guard-icon-24.png</file>
+        <file alias="app-icon-32.png">openai-reasoning-guard-icon-32.png</file>
+        <file alias="app-icon-48.png">openai-reasoning-guard-icon-48.png</file>
+        <file alias="app-icon-64.png">openai-reasoning-guard-icon-64.png</file>
+        <file alias="app-icon-128.png">openai-reasoning-guard-icon-128.png</file>
+        <file alias="app-icon-256.png">openai-reasoning-guard-icon-256.png</file>
+        <file alias="app-icon-512.png">openai-reasoning-guard-icon-512.png</file>
     </qresource>
 </RCC>

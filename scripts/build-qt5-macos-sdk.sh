@@ -253,6 +253,8 @@ mac_arch="$(mac_arch_for_target "${TARGET}")"
         -no-dbus \
         -no-cups \
         -no-icu \
+        -sql-sqlite \
+        -sqlite qt \
         -securetransport \
         QMAKE_MACOSX_DEPLOYMENT_TARGET="${deployment_target}" \
         QMAKE_APPLE_DEVICE_ARCHS="${mac_arch}"
@@ -283,7 +285,10 @@ mac_arch="$(mac_arch_for_target "${TARGET}")"
 for path in \
     "${PREFIX}/bin/moc" \
     "${PREFIX}/bin/macdeployqt" \
-    "${PREFIX}/lib/cmake/Qt5/Qt5Config.cmake"; do
+    "${PREFIX}/lib/cmake/Qt5/Qt5Config.cmake" \
+    "${PREFIX}/lib/cmake/Qt5Sql/Qt5SqlConfig.cmake" \
+    "${PREFIX}/lib/QtSql.framework/QtSql" \
+    "${PREFIX}/plugins/sqldrivers/libqsqlite.dylib"; do
     if [[ ! -e "${path}" ]]; then
         echo "built SDK is missing required artifact: ${path}" >&2
         exit 2

@@ -75,9 +75,11 @@ public:
         responseStatusSequences_.clear();
         streamChunkSequences_.clear();
         streamFirstChunkDelaySequencesMs_.clear();
+        lastTarget_.clear();
         lastPath_.clear();
         lastBody_.clear();
         lastAuthorization_.clear();
+        lastUserAgent_.clear();
         requestCount_ = 0;
         disconnectedCount_ = 0;
         return server_.listen(QHostAddress::LocalHost, 0);
@@ -93,9 +95,11 @@ public:
         streamChunks_.clear();
         streamChunkSequences_.clear();
         streamFirstChunkDelaySequencesMs_.clear();
+        lastTarget_.clear();
         lastPath_.clear();
         lastBody_.clear();
         lastAuthorization_.clear();
+        lastUserAgent_.clear();
         requestCount_ = 0;
         disconnectedCount_ = 0;
         return server_.listen(QHostAddress::LocalHost, 0);
@@ -111,9 +115,11 @@ public:
         streamChunks_.clear();
         streamChunkSequences_ = streamChunkSequences;
         streamFirstChunkDelaySequencesMs_ = firstChunkDelaySequencesMs;
+        lastTarget_.clear();
         lastPath_.clear();
         lastBody_.clear();
         lastAuthorization_.clear();
+        lastUserAgent_.clear();
         requestCount_ = 0;
         disconnectedCount_ = 0;
         return server_.listen(QHostAddress::LocalHost, 0);
@@ -139,6 +145,11 @@ public:
         return lastPath_;
     }
 
+    QString lastTarget() const
+    {
+        return lastTarget_;
+    }
+
     QByteArray lastBody() const
     {
         return lastBody_;
@@ -147,6 +158,11 @@ public:
     QByteArray lastAuthorization() const
     {
         return lastAuthorization_;
+    }
+
+    QByteArray lastUserAgent() const
+    {
+        return lastUserAgent_;
     }
 
 signals:
@@ -198,12 +214,14 @@ private slots:
                 const QByteArray requestLine = buffer.left(buffer.indexOf('\n')).trimmed();
                 const QList<QByteArray> parts = requestLine.split(' ');
                 if (parts.size() >= 2) {
-                    QString path = QString::fromLatin1(parts.at(1));
+                    lastTarget_ = QString::fromLatin1(parts.at(1));
+                    QString path = lastTarget_;
                     const int question = path.indexOf('?');
                     lastPath_ = question >= 0 ? path.left(question) : path;
                 }
                 lastBody_ = buffer.mid(headerEnd + terminatorLength, contentLength);
                 lastAuthorization_ = headers.value("authorization");
+                lastUserAgent_ = headers.value("user-agent");
                 emit requestReceived();
 
                 if (mode_ == LargeResponse || mode_ == JsonResponse) {
@@ -284,9 +302,11 @@ private:
     QList<QByteArray> streamChunks_;
     QList<QList<QByteArray> > streamChunkSequences_;
     QList<int> streamFirstChunkDelaySequencesMs_;
+    QString lastTarget_;
     QString lastPath_;
     QByteArray lastBody_;
     QByteArray lastAuthorization_;
+    QByteArray lastUserAgent_;
     int requestCount_;
     int disconnectedCount_;
     int streamChunkDelayMs_;
@@ -599,6 +619,102 @@ private slots:
         QCOMPARE(upstream.lastAuthorization(), QByteArray("Bearer auth-json-key"));
     }
 
+    void whitespaceOnlyApiKeyForwardsIncomingAuthorization()
+    {
+        TestUpstream upstream;
+        QVERIFY(upstream.start(TestUpstream::JsonResponse, "{\"ok\":true}"));
+
+        HttpProxyServer proxy;
+        ProxySettings settings = baseSettings(reserveFreePort(), upstream.port());
+        settings.upstreamApiKey = "   ";
+        QString error;
+        QVERIFY2(proxy.start(settings, &error), qPrintable(error));
+
+        const QByteArray body = "{\"stream\":false}";
+        QByteArray request;
+        request += "POST /v1/responses HTTP/1.1\r\n";
+        request += "Host: 127.0.0.1\r\n";
+        request += "Content-Type: application/json\r\n";
+        request += "Authorization: Bearer client-key\r\n";
+        request += "Content-Length: " + QByteArray::number(body.size()) + "\r\n\r\n";
+        request += body;
+
+        const QByteArray response = sendRequest(settings.listenPort, request, 2500);
+        QVERIFY(response.contains("200 OK"));
+        QCOMPARE(upstream.lastAuthorization(), QByteArray("Bearer client-key"));
+    }
+
+    void paddedConfiguredApiKeyUsesTrimmedBearerToken()
+    {
+        TestUpstream upstream;
+        QVERIFY(upstream.start(TestUpstream::JsonResponse, "{\"ok\":true}"));
+
+        HttpProxyServer proxy;
+        ProxySettings settings = baseSettings(reserveFreePort(), upstream.port());
+        settings.upstreamApiKey = "  padded-key  ";
+        QString error;
+        QVERIFY2(proxy.start(settings, &error), qPrintable(error));
+
+        const QByteArray body = "{\"stream\":false}";
+        QByteArray request;
+        request += "POST /v1/responses HTTP/1.1\r\n";
+        request += "Host: 127.0.0.1\r\n";
+        request += "Content-Type: application/json\r\n";
+        request += "Authorization: Bearer client-key\r\n";
+        request += "Content-Length: " + QByteArray::number(body.size()) + "\r\n\r\n";
+        request += body;
+
+        const QByteArray response = sendRequest(settings.listenPort, request, 2500);
+        QVERIFY(response.contains("200 OK"));
+        QCOMPARE(upstream.lastAuthorization(), QByteArray("Bearer padded-key"));
+    }
+
+    void configuredUserAgentOverridesIncomingWhenForwardingIsDisabled()
+    {
+        TestUpstream upstream;
+        QVERIFY(upstream.start(TestUpstream::JsonResponse, "{\"ok\":true}"));
+
+        HttpProxyServer proxy;
+        ProxySettings settings = baseSettings(reserveFreePort(), upstream.port());
+        settings.upstreamUserAgent = "profile-agent/1.0";
+        settings.forwardUserAgent = false;
+        QString error;
+        QVERIFY2(proxy.start(settings, &error), qPrintable(error));
+
+        QList<QPair<QByteArray, QByteArray> > headers;
+        headers.append(qMakePair(QByteArray("User-Agent"), QByteArray("client-agent/2.0")));
+        const QByteArray response = sendRequest(
+            settings.listenPort,
+            postRequestToPathWithHeaders("/v1/responses", "{\"stream\":false}", headers),
+            2500);
+
+        QVERIFY(response.contains("200 OK"));
+        QCOMPARE(upstream.lastUserAgent(), QByteArray("profile-agent/1.0"));
+    }
+
+    void forwardUserAgentUsesIncomingValue()
+    {
+        TestUpstream upstream;
+        QVERIFY(upstream.start(TestUpstream::JsonResponse, "{\"ok\":true}"));
+
+        HttpProxyServer proxy;
+        ProxySettings settings = baseSettings(reserveFreePort(), upstream.port());
+        settings.upstreamUserAgent = "profile-agent/1.0";
+        settings.forwardUserAgent = true;
+        QString error;
+        QVERIFY2(proxy.start(settings, &error), qPrintable(error));
+
+        QList<QPair<QByteArray, QByteArray> > headers;
+        headers.append(qMakePair(QByteArray("User-Agent"), QByteArray("client-agent/2.0")));
+        const QByteArray response = sendRequest(
+            settings.listenPort,
+            postRequestToPathWithHeaders("/v1/responses", "{\"stream\":false}", headers),
+            2500);
+
+        QVERIFY(response.contains("200 OK"));
+        QCOMPARE(upstream.lastUserAgent(), QByteArray("client-agent/2.0"));
+    }
+
     void upstreamTimeoutHasDedicatedErrorType()
     {
         TestUpstream upstream;
@@ -696,6 +812,46 @@ private slots:
         QCOMPARE(runtime.value("upstream_http_error_total").toInt(), 0);
         QCOMPARE(runtime.value("last_failure").toObject().value("error_type").toString(),
                  QString("first_token_timeout"));
+    }
+
+    void upstreamTimeoutFromPreviousAttemptDoesNotAbortRetry()
+    {
+        QList<QByteArray> matchedChunks;
+        matchedChunks << "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"output_tokens_details\":{\"reasoning_tokens\":516}}}}\n\n";
+
+        QList<QByteArray> recoveredChunks;
+        recoveredChunks << "data: {\"type\":\"response.output_text.delta\",\"delta\":\"recovered\"}\n\n";
+        recoveredChunks << "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"output_tokens_details\":{\"reasoning_tokens\":367}}}}\n\n";
+        recoveredChunks << "data: [DONE]\n\n";
+
+        QList<QList<QByteArray> > sequences;
+        sequences << matchedChunks << recoveredChunks;
+        QList<int> firstChunkDelays;
+        firstChunkDelays << 650 << 650;
+        TestUpstream upstream;
+        QVERIFY(upstream.startStreamingSequences(sequences, firstChunkDelays));
+
+        HttpProxyServer proxy;
+        ProxySettings settings = baseSettings(reserveFreePort(), upstream.port());
+        settings.upstreamTimeoutSec = 1;
+        settings.bufferTimeoutSec = 3;
+        settings.guardRetryAttempts = 1;
+        QString error;
+        QVERIFY2(proxy.start(settings, &error), qPrintable(error));
+
+        const QByteArray response = sendRequest(settings.listenPort,
+                                                postRequest("{\"stream\":true}"),
+                                                4000);
+        QVERIFY2(response.contains("200 OK"), response.constData());
+        QVERIFY2(response.contains("recovered"), response.constData());
+        QVERIFY2(response.contains("data: [DONE]"), response.constData());
+        QCOMPARE(upstream.requestCount(), 2);
+
+        const QJsonObject runtime = runtimeOf(&proxy);
+        QCOMPARE(runtime.value("guard_retry_total").toInt(), 1);
+        QCOMPARE(runtime.value("upstream_timeout_total").toInt(), 0);
+        QCOMPARE(runtime.value("successful_requests_total").toInt(), 1);
+        QCOMPARE(runtime.value("failed_requests_total").toInt(), 0);
     }
 
     void capacityRetryExhaustionForwardsFinalUpstreamError()
@@ -806,6 +962,85 @@ private slots:
         QCOMPARE(upstream.requestCount(), 1);
         QCOMPARE(upstream.lastPath(), QString("/v1/responses"));
         QCOMPARE(proxy.statusPayload().value("proxy_prefix").toString(), QString("/"));
+    }
+
+    void encodedBaseAndRequestTargetsRemainEncoded()
+    {
+        TestUpstream upstream;
+        QVERIFY(upstream.start(TestUpstream::JsonResponse, "{\"ok\":true}"));
+
+        HttpProxyServer proxy;
+        ProxySettings settings = baseSettings(reserveFreePort(), upstream.port());
+        settings.upstreamBaseUrl = QString("http://127.0.0.1:%1/v1%2Ftenant/"
+                                           "%E4%B8%AD%E6%96%87%3Fscope")
+                                       .arg(upstream.port());
+        QString error;
+        QVERIFY2(proxy.start(settings, &error), qPrintable(error));
+
+        const QByteArray response = sendRequest(
+            settings.listenPort,
+            postRequestToPath("/v1/responses%2Fspecial?cursor=a%2Fb", "{}"),
+            2500);
+        QVERIFY(response.contains("200 OK"));
+        QCOMPARE(upstream.requestCount(), 1);
+        QCOMPARE(upstream.lastPath(),
+                 QString("/v1%2Ftenant/%E4%B8%AD%E6%96%87%3Fscope/responses%2Fspecial"));
+        QCOMPARE(upstream.lastTarget(),
+                 QString("/v1%2Ftenant/%E4%B8%AD%E6%96%87%3Fscope/"
+                         "responses%2Fspecial?cursor=a%2Fb"));
+    }
+
+    void rejectsUnsafeUpstreamHeadersUrlsAndProxySchemesBeforeListening()
+    {
+        TestUpstream upstream;
+        QVERIFY(upstream.start(TestUpstream::JsonResponse, "{\"ok\":true}"));
+        const ProxySettings baseline = baseSettings(reserveFreePort(), upstream.port());
+        QString error;
+
+        {
+            HttpProxyServer proxy;
+            ProxySettings settings = baseline;
+            settings.upstreamBaseUrl = QString("http://user:secret@127.0.0.1:%1/v1?token=query-secret")
+                                           .arg(upstream.port());
+            QVERIFY(!proxy.start(settings, &error));
+            QVERIFY(error.contains("unsupported upstream base URL"));
+            QVERIFY(!error.contains("user:secret"));
+            QVERIFY(!error.contains("query-secret"));
+            QVERIFY(!proxy.isRunning());
+        }
+        {
+            HttpProxyServer proxy;
+            ProxySettings settings = baseline;
+            settings.upstreamApiKey = "safe\r\nX-Injected: yes";
+            QVERIFY(!proxy.start(settings, &error));
+            QVERIFY(error.contains("invalid upstream API key"));
+            QVERIFY(!proxy.isRunning());
+        }
+        {
+            HttpProxyServer proxy;
+            ProxySettings settings = baseline;
+            settings.upstreamUserAgent = "safe\nX-Injected: yes";
+            QVERIFY(!proxy.start(settings, &error));
+            QVERIFY(error.contains("invalid upstream User-Agent"));
+            QVERIFY(!proxy.isRunning());
+        }
+        const QStringList invalidProxies = QStringList()
+            << "https://127.0.0.1:7890"
+            << "socks4://127.0.0.1:1080"
+            << "http://user:secret@127.0.0.1:7890"
+            << "http://127.0.0.1:7890/proxy-path"
+            << "http://127.0.0.1:7890?mode=tunnel"
+            << "http://127.0.0.1:7890#fragment"
+            << "http://";
+        for (int i = 0; i < invalidProxies.size(); ++i) {
+            HttpProxyServer proxy;
+            ProxySettings settings = baseline;
+            settings.upstreamProxy = invalidProxies.at(i);
+            QVERIFY2(!proxy.start(settings, &error), qPrintable(invalidProxies.at(i)));
+            QVERIFY2(error.contains("invalid upstream proxy"), qPrintable(error));
+            QVERIFY(!proxy.isRunning());
+        }
+        QCOMPARE(upstream.requestCount(), 0);
     }
 
     void emptyProxyPrefixForwardsRootPath()
@@ -987,7 +1222,7 @@ private slots:
         QVERIFY(!lastResult.contains("intercept_exempt_reason"));
     }
 
-    void configSavePreservesProtocolProxyFields()
+    void configSaveSeparatesGlobalSettingsFromProfiles()
     {
         QTemporaryDir dir;
         QVERIFY(dir.isValid());
@@ -1009,23 +1244,28 @@ private slots:
         QFile file(path);
         QVERIFY(file.open(QIODevice::ReadOnly));
         const QJsonObject object = QJsonDocument::fromJson(file.readAll()).object();
-        QCOMPARE(object.value("upstream_proxy").toString(), config.upstreamProxy);
-        QCOMPARE(object.value("upstream_http_proxy").toString(), config.upstreamHttpProxy);
-        QCOMPARE(object.value("upstream_https_proxy").toString(), config.upstreamHttpsProxy);
-        QCOMPARE(object.value("upstream_socks_proxy").toString(), config.upstreamSocksProxy);
+        QVERIFY(!object.contains("upstream_base_url"));
+        QVERIFY(!object.contains("upstream_api_key"));
+        QVERIFY(!object.contains("upstream_user_agent"));
+        QVERIFY(!object.contains("forward_user_agent"));
+        QVERIFY(!object.contains("upstream_proxy"));
+        QVERIFY(!object.contains("upstream_http_proxy"));
+        QVERIFY(!object.contains("upstream_https_proxy"));
+        QVERIFY(!object.contains("upstream_socks_proxy"));
+        QVERIFY(!object.contains("upstream_timeout_sec"));
+        QVERIFY(!object.contains("first_token_timeout_sec"));
         QCOMPARE(qint64(object.value("request_body_limit_bytes").toDouble()), config.requestBodyLimitBytes);
         QCOMPARE(qint64(object.value("response_buffer_limit_bytes").toDouble()), config.responseBufferLimitBytes);
-        QCOMPARE(object.value("first_token_timeout_sec").toInt(), config.firstTokenTimeoutSec);
         QCOMPARE(object.value("stream_action").toString(), config.streamAction);
 
         const AppConfig loaded = loadConfig(path);
-        QCOMPARE(loaded.upstreamProxy, config.upstreamProxy);
-        QCOMPARE(loaded.upstreamHttpProxy, config.upstreamHttpProxy);
-        QCOMPARE(loaded.upstreamHttpsProxy, config.upstreamHttpsProxy);
-        QCOMPARE(loaded.upstreamSocksProxy, config.upstreamSocksProxy);
+        QVERIFY(loaded.upstreamProxy.isEmpty());
+        QVERIFY(loaded.upstreamHttpProxy.isEmpty());
+        QVERIFY(loaded.upstreamHttpsProxy.isEmpty());
+        QVERIFY(loaded.upstreamSocksProxy.isEmpty());
         QCOMPARE(loaded.requestBodyLimitBytes, config.requestBodyLimitBytes);
         QCOMPARE(loaded.responseBufferLimitBytes, config.responseBufferLimitBytes);
-        QCOMPARE(loaded.firstTokenTimeoutSec, config.firstTokenTimeoutSec);
+        QCOMPARE(loaded.firstTokenTimeoutSec, 30);
         QCOMPARE(loaded.streamAction, config.streamAction);
     }
 
@@ -1072,31 +1312,30 @@ private slots:
         QCOMPARE(loaded.firstTokenTimeoutSec, 17);
     }
 
-    void splitOnlyProxyFieldsStaySplitOnRoundTrip()
+    void legacySplitProxyFieldsLoadButAreNotSavedAgain()
     {
         QTemporaryDir dir;
         QVERIFY(dir.isValid());
         const QString path = dir.filePath("config.json");
 
-        AppConfig config;
-        config.upstreamProxy.clear();
-        config.upstreamHttpProxy.clear();
-        config.upstreamHttpsProxy = "http://127.0.0.1:8443";
-        config.upstreamSocksProxy.clear();
-
-        QString error;
-        QVERIFY2(saveConfig(config, path, &error), qPrintable(error));
+        QFile legacyFile(path);
+        QVERIFY(legacyFile.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        QJsonObject legacyObject;
+        legacyObject.insert("upstream_https_proxy", "http://127.0.0.1:8443");
+        legacyFile.write(QJsonDocument(legacyObject).toJson(QJsonDocument::Indented));
+        legacyFile.close();
 
         const AppConfig loaded = loadConfig(path);
         QVERIFY(loaded.upstreamProxy.isEmpty());
-        QCOMPARE(loaded.upstreamHttpsProxy, config.upstreamHttpsProxy);
+        QCOMPARE(loaded.upstreamHttpsProxy, QString("http://127.0.0.1:8443"));
 
+        QString error;
         QVERIFY2(saveConfig(loaded, path, &error), qPrintable(error));
         QFile file(path);
         QVERIFY(file.open(QIODevice::ReadOnly));
         const QJsonObject object = QJsonDocument::fromJson(file.readAll()).object();
-        QCOMPARE(object.value("upstream_proxy").toString(), QString());
-        QCOMPARE(object.value("upstream_https_proxy").toString(), config.upstreamHttpsProxy);
+        QVERIFY(!object.contains("upstream_proxy"));
+        QVERIFY(!object.contains("upstream_https_proxy"));
     }
 
     void streamActionDisconnectDropsConnectionAfterPassThrough()

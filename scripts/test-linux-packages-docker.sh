@@ -256,13 +256,21 @@ runtime_apt_install+=$'  patchelf \\\n  xz-utils\n'
 
 prepare_runtime_image "${runtime_apt_install}"
 
-script_prefix=$'set -euo pipefail\n'
+script_prefix=$'set -euxo pipefail\n'
 
 deb_test_script="${script_prefix}
 dpkg -i /packages/$(basename "${DEB_PATH}")
 command -v openai-reasoning-guard-cli
 command -v openai-reasoning-guard-gui
+test -f /opt/openai-reasoning-guard/qt/lib/libQt5Sql.so.5
+test -f /opt/openai-reasoning-guard/qt/plugins/sqldrivers/libqsqlite.so
 openai-reasoning-guard-cli --help >/tmp/cli-help.txt
+openai-reasoning-guard-cli profile add --config /tmp/profile-smoke/config.json \
+  --name smoke --base-url https://example.com/v1 --json >/tmp/profile-add.json
+openai-reasoning-guard-cli profile list --config /tmp/profile-smoke/config.json \
+  --json >/tmp/profile-list.json
+test -f /tmp/profile-smoke/upstream-profiles.sqlite3
+grep -Fq '\"display_name\": \"smoke\"' /tmp/profile-list.json
 timeout 5 xvfb-run -a openai-reasoning-guard-gui >/tmp/gui.log 2>&1 || code=\$?
 if [[ \${code:-0} -ne 0 && \${code:-0} -ne 124 ]]; then
   cat /tmp/gui.log >&2
@@ -275,7 +283,15 @@ rpm_test_script="${script_prefix}
 rpm -i --nodeps /packages/$(basename "${RPM_PATH}")
 test -x /usr/bin/openai-reasoning-guard-cli
 test -x /usr/bin/openai-reasoning-guard-gui
+test -f /opt/openai-reasoning-guard/qt/lib/libQt5Sql.so.5
+test -f /opt/openai-reasoning-guard/qt/plugins/sqldrivers/libqsqlite.so
 /usr/bin/openai-reasoning-guard-cli --help >/tmp/cli-help.txt
+/usr/bin/openai-reasoning-guard-cli profile add --config /tmp/profile-smoke/config.json \
+  --name smoke --base-url https://example.com/v1 --json >/tmp/profile-add.json
+/usr/bin/openai-reasoning-guard-cli profile list --config /tmp/profile-smoke/config.json \
+  --json >/tmp/profile-list.json
+test -f /tmp/profile-smoke/upstream-profiles.sqlite3
+grep -Fq '\"display_name\": \"smoke\"' /tmp/profile-list.json
 timeout 5 xvfb-run -a /usr/bin/openai-reasoning-guard-gui >/tmp/gui.log 2>&1 || code=\$?
 if [[ \${code:-0} -ne 0 && \${code:-0} -ne 124 ]]; then
   cat /tmp/gui.log >&2
@@ -303,6 +319,13 @@ cli_appimage_test_script="${script_prefix}
 cp /packages/$(basename "${CLI_APPIMAGE}") /tmp/cli-appimage
 chmod +x /tmp/cli-appimage
 APPIMAGE_EXTRACT_AND_RUN=1 /tmp/cli-appimage --help >/tmp/cli-appimage-help.txt
+APPIMAGE_EXTRACT_AND_RUN=1 /tmp/cli-appimage profile add \
+  --config /tmp/profile-smoke/config.json --name smoke \
+  --base-url https://example.com/v1 --json >/tmp/profile-add.json
+APPIMAGE_EXTRACT_AND_RUN=1 /tmp/cli-appimage profile list \
+  --config /tmp/profile-smoke/config.json --json >/tmp/profile-list.json
+test -f /tmp/profile-smoke/upstream-profiles.sqlite3
+grep -Fq '\"display_name\": \"smoke\"' /tmp/profile-list.json
 test -s /tmp/cli-appimage-help.txt
 "
 

@@ -3,6 +3,8 @@
 #include <QtCore/QString>
 #include <QtCore/QStringList>
 
+class QJsonObject;
+
 namespace net_tunnel {
 
 struct AppConfig {
@@ -39,6 +41,7 @@ struct AppConfig {
 };
 
 QString defaultConfigPath();
+AppConfig appConfigFromJsonObject(const QJsonObject &object);
 AppConfig loadConfig(const QString &path = QString());
 bool saveConfig(const AppConfig &config, const QString &path = QString(), QString *error = 0);
 

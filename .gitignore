@@ -17,9 +17,11 @@ Makefile
 
 # Packaging outputs
 dist/
+dist-*/
 .package-work/
 *.AppImage
 *.deb
+*.rpm
 
 # Local evaluation and agent scratch data
 .agents/

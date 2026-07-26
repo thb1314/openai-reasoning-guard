@@ -12,7 +12,7 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 option(NET_TUNNEL_BUILD_TESTS "Build QtTest-based tests" ON)
 
-set(NET_TUNNEL_QT_SDK_ROOT "/mnt/data/qt-2080ti-sync/qt5-openssl" CACHE PATH "Qt 5 SDK root")
+set(NET_TUNNEL_QT_SDK_ROOT "/mnt/data/qt-2080ti-sync/qt5.15.2-openssl" CACHE PATH "Qt 5 SDK root")
 set(NET_TUNNEL_QT_PREFIX_ROOT "/mnt/data/qt-2080ti-sync/qt-5.9.6-linux-gcc" CACHE PATH "Fallback Qt 5 prefix root")
 
 if(EXISTS "${NET_TUNNEL_QT_SDK_ROOT}/bin/moc")
@@ -41,12 +41,19 @@ list(PREPEND CMAKE_PREFIX_PATH
     "${_qt_root}/lib/cmake"
 )
 
-set(_qt_components Core Network Gui Widgets)
+set(_qt_components Core Network Gui Widgets Sql)
 if(NET_TUNNEL_BUILD_TESTS)
     list(APPEND _qt_components Test)
 endif()
 
-find_package(Qt5 COMPONENTS ${_qt_components} QUIET CONFIG)
+unset(Qt5_DIR CACHE)
+foreach(_qt_component IN LISTS _qt_components)
+    unset("Qt5${_qt_component}_DIR" CACHE)
+endforeach()
+find_package(Qt5 COMPONENTS ${_qt_components} QUIET CONFIG
+    PATHS "${_qt_root}/lib/cmake/Qt5"
+    NO_DEFAULT_PATH
+)
 
 if(Qt5_FOUND)
     message(STATUS "Using Qt CMake package from ${_qt_root}")
@@ -62,10 +69,13 @@ else()
         "${_qt_include_dir}/QtGui"
         "${_qt_include_dir}/QtWidgets"
         "${_qt_include_dir}/QtNetwork"
+        "${_qt_include_dir}/QtSql"
         "${_qt_lib_dir}/libQt5Core.so.5"
         "${_qt_lib_dir}/libQt5Gui.so.5"
         "${_qt_lib_dir}/libQt5Widgets.so.5"
         "${_qt_lib_dir}/libQt5Network.so.5"
+        "${_qt_lib_dir}/libQt5Sql.so.5"
+        "${_qt_root}/plugins/sqldrivers/libqsqlite.so"
         "${_qt_root}/bin/moc"
         "${_qt_root}/bin/uic"
         "${_qt_root}/bin/rcc"
@@ -114,6 +124,7 @@ else()
     add_qt5_imported_library(Network)
     add_qt5_imported_library(Gui)
     add_qt5_imported_library(Widgets)
+    add_qt5_imported_library(Sql)
     if(NET_TUNNEL_BUILD_TESTS)
         add_qt5_imported_library(Test)
     endif()
@@ -121,6 +132,7 @@ else()
     set_property(TARGET Qt5::Network APPEND PROPERTY INTERFACE_LINK_LIBRARIES Qt5::Core)
     set_property(TARGET Qt5::Gui APPEND PROPERTY INTERFACE_LINK_LIBRARIES Qt5::Core)
     set_property(TARGET Qt5::Widgets APPEND PROPERTY INTERFACE_LINK_LIBRARIES "Qt5::Gui;Qt5::Core")
+    set_property(TARGET Qt5::Sql APPEND PROPERTY INTERFACE_LINK_LIBRARIES Qt5::Core)
     if(NET_TUNNEL_BUILD_TESTS)
         set_property(TARGET Qt5::Test APPEND PROPERTY INTERFACE_LINK_LIBRARIES Qt5::Core)
     endif()
@@ -139,6 +151,8 @@ add_library(net-tunnel-core STATIC
     src/core/http_proxy_server.cpp
     src/core/json_utils.h
     src/core/json_utils.cpp
+    src/core/upstream_profile.h
+    src/core/upstream_profile.cpp
 )
 target_include_directories(net-tunnel-core PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
@@ -146,6 +160,7 @@ target_include_directories(net-tunnel-core PUBLIC
 target_link_libraries(net-tunnel-core PUBLIC
     Qt5::Core
     Qt5::Network
+    Qt5::Sql
 )
 
 set(NET_TUNNEL_WINDOWS_ICON_RESOURCE)
@@ -164,6 +179,8 @@ endif()
 
 add_executable(net-tunnel-cli
     src/cli/main.cpp
+    src/cli/profile_commands.h
+    src/cli/profile_commands.cpp
     ${NET_TUNNEL_WINDOWS_ICON_RESOURCE}
 )
 net_tunnel_add_private_compile_options(net-tunnel-cli)
@@ -177,6 +194,8 @@ add_executable(net-tunnel-gui
     src/gui/main.cpp
     src/gui/main_window.h
     src/gui/main_window.cpp
+    src/gui/upstream_profile_dialog.h
+    src/gui/upstream_profile_dialog.cpp
     assets/app_resources.qrc
     ${NET_TUNNEL_WINDOWS_ICON_RESOURCE}
     third_party/qui/form/quiwidget.h
@@ -221,6 +240,86 @@ if(NET_TUNNEL_BUILD_TESTS)
     )
     add_test(NAME http-proxy-server-test COMMAND http-proxy-server-test)
 
+    add_executable(http-proxy-server-stop-test
+        tests/http_proxy_server_stop_test.cpp
+    )
+    net_tunnel_add_private_compile_options(http-proxy-server-stop-test)
+    target_link_libraries(http-proxy-server-stop-test PRIVATE
+        net-tunnel-core
+        Qt5::Core
+        Qt5::Network
+        Qt5::Test
+    )
+    add_test(NAME http-proxy-server-stop-test COMMAND http-proxy-server-stop-test)
+
+    add_executable(upstream-profile-store-test
+        tests/upstream_profile_store_test.cpp
+    )
+    net_tunnel_add_private_compile_options(upstream-profile-store-test)
+    target_link_libraries(upstream-profile-store-test PRIVATE
+        net-tunnel-core
+        Qt5::Core
+        Qt5::Sql
+        Qt5::Test
+    )
+    add_test(NAME upstream-profile-store-test COMMAND upstream-profile-store-test)
+
+    add_executable(upstream-profile-dialog-test
+        tests/upstream_profile_dialog_test.cpp
+        src/gui/upstream_profile_dialog.h
+        src/gui/upstream_profile_dialog.cpp
+    )
+    net_tunnel_add_private_compile_options(upstream-profile-dialog-test)
+    target_link_libraries(upstream-profile-dialog-test PRIVATE
+        net-tunnel-core
+        Qt5::Core
+        Qt5::Gui
+        Qt5::Widgets
+        Qt5::Sql
+        Qt5::Test
+    )
+    add_test(NAME upstream-profile-dialog-test COMMAND upstream-profile-dialog-test -platform offscreen)
+
+    add_executable(main-window-profile-test
+        tests/main_window_profile_test.cpp
+        src/gui/main_window.h
+        src/gui/main_window.cpp
+        src/gui/upstream_profile_dialog.h
+        src/gui/upstream_profile_dialog.cpp
+        assets/app_resources.qrc
+        third_party/qui/form/quiwidget.h
+        third_party/qui/form/quiwidget.cpp
+        third_party/qui/qui_resources.qrc
+    )
+    net_tunnel_add_private_compile_options(main-window-profile-test)
+    target_include_directories(main-window-profile-test PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/qui"
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/qui/form"
+    )
+    target_link_libraries(main-window-profile-test PRIVATE
+        net-tunnel-core
+        Qt5::Core
+        Qt5::Gui
+        Qt5::Widgets
+        Qt5::Network
+        Qt5::Sql
+        Qt5::Test
+    )
+    add_test(NAME main-window-profile-test COMMAND main-window-profile-test -platform offscreen)
+
+    add_executable(cli-profile-commands-test
+        tests/cli_profile_commands_test.cpp
+    )
+    net_tunnel_add_private_compile_options(cli-profile-commands-test)
+    target_link_libraries(cli-profile-commands-test PRIVATE
+        net-tunnel-core
+        Qt5::Core
+        Qt5::Sql
+        Qt5::Test
+    )
+    add_dependencies(cli-profile-commands-test net-tunnel-cli)
+    add_test(NAME cli-profile-commands-test COMMAND cli-profile-commands-test)
+
     add_executable(qui-widget-test
         tests/qui_widget_test.cpp
         third_party/qui/form/quiwidget.h
@@ -240,6 +339,17 @@ if(NET_TUNNEL_BUILD_TESTS)
         Qt5::Test
     )
     add_test(NAME qui-widget-test COMMAND qui-widget-test -platform offscreen)
+
+    set_tests_properties(
+        http-proxy-server-test
+        http-proxy-server-stop-test
+        upstream-profile-store-test
+        upstream-profile-dialog-test
+        main-window-profile-test
+        cli-profile-commands-test
+        qui-widget-test
+        PROPERTIES ENVIRONMENT "QT_PLUGIN_PATH=${_qt_root}/plugins"
+    )
 endif()
 
 install(TARGETS net-tunnel-cli net-tunnel-gui RUNTIME DESTINATION bin)

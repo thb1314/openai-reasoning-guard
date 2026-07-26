@@ -44,7 +44,11 @@ on:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-release-${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+  cancel-in-progress: false
 
 jobs:
   plan:
@@ -55,6 +59,8 @@ jobs:
       linux_matrix: ${{ steps.matrix.outputs.linux_matrix }}
       windows_enabled: ${{ steps.matrix.outputs.windows_enabled }}
       windows_matrix: ${{ steps.matrix.outputs.windows_matrix }}
+      windows_smoke_enabled: ${{ steps.matrix.outputs.windows_smoke_enabled }}
+      windows_smoke_matrix: ${{ steps.matrix.outputs.windows_smoke_matrix }}
       macos_enabled: ${{ steps.matrix.outputs.macos_enabled }}
       macos_matrix: ${{ steps.matrix.outputs.macos_matrix }}
     steps:
@@ -62,8 +68,14 @@ jobs:
         shell: bash
         env:
           REQUESTED_TARGET: ${{ github.event_name == 'workflow_dispatch' && inputs.target || 'all' }}
+          PUBLISH_RELEASE: ${{ github.event_name == 'push' || inputs.publish_release == 'true' }}
         run: |
           set -euo pipefail
+
+          if [[ "${PUBLISH_RELEASE}" == "true" && "${REQUESTED_TARGET}" != "all" ]]; then
+            echo "Release publication requires target=all" >&2
+            exit 2
+          fi
 
           linux_x86_64='{"arch":"x86_64","platform":"linux/amd64","image":"debian:bookworm","qt_secret":"QT_LINUX_X86_64_URL","sdk_release_tag":"qt-sdk-linux-x86_64","sdk_asset":"qt5-linux-x86_64.tar.xz","appimage_arch":"x86_64","appimage_runtime_asset":"runtime-x86_64"}'
           linux_x86_32='{"arch":"x86_32","platform":"linux/386","image":"i386/debian:bookworm","qt_secret":"QT_LINUX_X86_32_URL","sdk_release_tag":"qt-sdk-linux-x86_32","sdk_asset":"qt5-linux-x86_32.tar.xz","appimage_arch":"i686","appimage_runtime_asset":"runtime-i686"}'
@@ -77,19 +89,27 @@ jobs:
 
           linux='[]'
           windows='[]'
+          windows_smoke='[]'
           macos='[]'
           case "${REQUESTED_TARGET}" in
             all)
               linux="[${linux_x86_64},${linux_x86_32},${linux_arm64},${linux_arm32}]"
               windows="[${windows_x86_64},${windows_x86_32},${windows_arm64}]"
+              windows_smoke='[{"arch":"x86_64"},{"arch":"x86_32"}]'
               macos="[${macos_x86_64},${macos_aarch64}]"
               ;;
             linux-x86_64) linux="[${linux_x86_64}]" ;;
             linux-x86_32) linux="[${linux_x86_32}]" ;;
             linux-arm64) linux="[${linux_arm64}]" ;;
             linux-arm32) linux="[${linux_arm32}]" ;;
-            windows-x86_64) windows="[${windows_x86_64}]" ;;
-            windows-x86_32) windows="[${windows_x86_32}]" ;;
+            windows-x86_64)
+              windows="[${windows_x86_64}]"
+              windows_smoke='[{"arch":"x86_64"}]'
+              ;;
+            windows-x86_32)
+              windows="[${windows_x86_32}]"
+              windows_smoke='[{"arch":"x86_32"}]'
+              ;;
             windows-arm64) windows="[${windows_arm64}]" ;;
             macos-x86_64) macos="[${macos_x86_64}]" ;;
             macos-aarch64) macos="[${macos_aarch64}]" ;;
@@ -108,6 +128,8 @@ jobs:
             echo "linux_matrix={\"include\":${linux}}"
             echo "windows_enabled=$(enabled "${windows}")"
             echo "windows_matrix={\"include\":${windows}}"
+            echo "windows_smoke_enabled=$(enabled "${windows_smoke}")"
+            echo "windows_smoke_matrix={\"include\":${windows_smoke}}"
             echo "macos_enabled=$(enabled "${macos}")"
             echo "macos_matrix={\"include\":${macos}}"
           } >> "${GITHUB_OUTPUT}"
@@ -253,6 +275,9 @@ jobs:
               chmod +x "${moc_path}" || true
               qt_root="$(cd -- "$(dirname -- "${moc_path}")/.." && pwd)"
               test -f "${qt_root}/lib/libQt5Core.so.5"
+              test -f "${qt_root}/lib/libQt5Sql.so.5"
+              test -f "${qt_root}/plugins/sqldrivers/libqsqlite.so"
+              test -f "${qt_root}/lib/cmake/Qt5Sql/Qt5SqlConfig.cmake"
               echo "Using Qt root: ${qt_root}"
 
               build_dir="/workspace/build-ci-${PACKAGE_ARCH}"
@@ -272,6 +297,29 @@ jobs:
               DIST_DIR="/workspace/dist/${PACKAGE_ARCH}" \
               WORK_DIR="/workspace/.package-work/${PACKAGE_ARCH}" \
               scripts/package-linux.sh "${package_args[@]}"
+
+              for package_root in \
+                "/workspace/.package-work/${PACKAGE_ARCH}/debroot" \
+                "/workspace/.package-work/${PACKAGE_ARCH}/rpmroot" \
+                "/workspace/.package-work/${PACKAGE_ARCH}/AppDir-gui" \
+                "/workspace/.package-work/${PACKAGE_ARCH}/AppDir-cli"; do
+                  test -f "${package_root}/opt/openai-reasoning-guard/qt/lib/libQt5Sql.so.5"
+                  test -f "${package_root}/opt/openai-reasoning-guard/qt/plugins/sqldrivers/libqsqlite.so"
+                  smoke_dir="$(mktemp -d)"
+                  "${package_root}/opt/openai-reasoning-guard/bin/openai-reasoning-guard-cli" \
+                    profile list --json --config "${smoke_dir}/config.json" >/dev/null
+                  test -f "${smoke_dir}/upstream-profiles.sqlite3"
+                  rm -rf "${smoke_dir}"
+              done
+
+              deb_path="$(find "/workspace/dist/${PACKAGE_ARCH}" -maxdepth 1 -type f -name "*.deb" -print -quit)"
+              rpm_path="$(find "/workspace/dist/${PACKAGE_ARCH}" -maxdepth 1 -type f -name "*.rpm" -print -quit)"
+              test -n "${deb_path}"
+              test -n "${rpm_path}"
+              dpkg-deb --contents "${deb_path}" | grep -F "/opt/openai-reasoning-guard/qt/lib/libQt5Sql.so.5" >/dev/null
+              dpkg-deb --contents "${deb_path}" | grep -F "/opt/openai-reasoning-guard/qt/plugins/sqldrivers/libqsqlite.so" >/dev/null
+              rpm -qpl "${rpm_path}" | grep -Fx "/opt/openai-reasoning-guard/qt/lib/libQt5Sql.so.5" >/dev/null
+              rpm -qpl "${rpm_path}" | grep -Fx "/opt/openai-reasoning-guard/qt/plugins/sqldrivers/libqsqlite.so" >/dev/null
             '
           sudo chown -R "$(id -u):$(id -g)" \
             "build-ci-${{ matrix.arch }}" \
@@ -317,6 +365,19 @@ jobs:
           build_appimage gui
           build_appimage cli
 
+      - name: Smoke-test final Linux packages
+        if: env.BUILD_TARGET == 'all' || env.BUILD_TARGET == format('linux-{0}', matrix.arch)
+        shell: bash
+        env:
+          TEST_DOCKER_IMAGE: ${{ matrix.image }}
+          TEST_DOCKER_PLATFORM: ${{ matrix.platform }}
+          TEST_DOCKER_PROXY: ${{ env.DOWNLOAD_PROXY }}
+        run: |
+          set -euo pipefail
+          scripts/test-linux-packages-docker.sh \
+            --arch "${{ matrix.arch }}" \
+            --input-dir "${PWD}/dist/${{ matrix.arch }}"
+
       - name: Upload Linux packages
         if: env.BUILD_TARGET == 'all' || env.BUILD_TARGET == format('linux-{0}', matrix.arch)
         uses: actions/upload-artifact@v4
@@ -327,36 +388,6 @@ jobs:
             dist/${{ matrix.arch }}/*.rpm
             dist/${{ matrix.arch }}/*.AppImage
           if-no-files-found: error
-
-      - name: Publish Linux packages to GitHub Release
-        if: (env.BUILD_TARGET == 'all' || env.BUILD_TARGET == format('linux-{0}', matrix.arch)) && (github.event_name == 'push' || inputs.publish_release == 'true')
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.release_tag }}
-          RELEASE_PRERELEASE: ${{ github.event_name == 'workflow_dispatch' && 'true' || 'false' }}
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          files=(dist/${{ matrix.arch }}/*.deb dist/${{ matrix.arch }}/*.rpm dist/${{ matrix.arch }}/*.AppImage)
-          shopt -u nullglob
-          if ((${#files[@]} == 0)); then
-            echo "No Linux package files found for release upload" >&2
-            exit 2
-          fi
-          if ! gh release view "${RELEASE_TAG}" -R "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-            create_args=(
-              "${RELEASE_TAG}"
-              --repo "${GITHUB_REPOSITORY}"
-              --title "${RELEASE_TAG}"
-              --notes "OpenAI Reasoning Guard package build ${GITHUB_SHA}."
-            )
-            if [[ "${RELEASE_PRERELEASE}" == "true" ]]; then
-              create_args+=(--prerelease)
-            fi
-            gh release create "${create_args[@]}" || gh release view "${RELEASE_TAG}" -R "${GITHUB_REPOSITORY}" >/dev/null
-          fi
-          gh release upload "${RELEASE_TAG}" "${files[@]}" -R "${GITHUB_REPOSITORY}" --clobber
 
   windows:
     name: Windows ${{ matrix.arch }} MinGW exe
@@ -372,13 +403,6 @@ jobs:
       DOWNLOAD_PROXY: ${{ secrets.DOWNLOAD_PROXY }}
       CLEAN_PACKAGES: ${{ github.event_name != 'workflow_dispatch' || inputs.clean != 'false' }}
       BUILD_TARGET: ${{ github.event_name == 'workflow_dispatch' && inputs.target || 'all' }}
-      MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
-      MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
-      MACOS_CODESIGN_IDENTITY_SECRET: ${{ secrets.MACOS_CODESIGN_IDENTITY }}
-      MACOS_NOTARY_APPLE_ID_SECRET: ${{ secrets.MACOS_NOTARY_APPLE_ID }}
-      MACOS_NOTARY_TEAM_ID_SECRET: ${{ secrets.MACOS_NOTARY_TEAM_ID }}
-      MACOS_NOTARY_PASSWORD_SECRET: ${{ secrets.MACOS_NOTARY_PASSWORD }}
-      MACOS_NOTARY_PROFILE_SECRET: ${{ secrets.MACOS_NOTARY_PROFILE }}
     steps:
       - name: Checkout
         if: env.BUILD_TARGET == 'all' || env.BUILD_TARGET == format('windows-{0}', matrix.arch)
@@ -398,6 +422,7 @@ jobs:
             curl
             file
             nsis
+            p7zip-full
             unzip
             xz-utils
             zip
@@ -476,7 +501,10 @@ jobs:
           chmod +x "${moc_path}" || true
           qt_root="$(cd -- "$(dirname -- "${moc_path}")/.." && pwd)"
           test -f "${qt_root}/bin/Qt5Core.dll"
+          test -f "${qt_root}/bin/Qt5Sql.dll"
+          test -f "${qt_root}/plugins/sqldrivers/qsqlite.dll"
           test -f "${qt_root}/lib/cmake/Qt5/Qt5Config.cmake"
+          test -f "${qt_root}/lib/cmake/Qt5Sql/Qt5SqlConfig.cmake"
           echo "QT_ROOT=${qt_root}" >> "${GITHUB_ENV}"
           echo "Using Qt root: ${qt_root}"
 
@@ -496,6 +524,23 @@ jobs:
           DIST_DIR="${PWD}/dist/windows-${{ matrix.arch }}" \
           scripts/package-windows-mingw.sh "${clean_arg[@]}"
 
+      - name: Validate Windows package contents
+        if: env.BUILD_TARGET == 'all' || env.BUILD_TARGET == format('windows-{0}', matrix.arch)
+        shell: bash
+        run: |
+          set -euo pipefail
+          stage_dir="${PWD}/.package-work/windows-mingw-${{ matrix.arch }}/openai-reasoning-guard-windows-${{ matrix.arch }}"
+          test -f "${stage_dir}/Qt5Sql.dll"
+          test -f "${stage_dir}/plugins/sqldrivers/qsqlite.dll"
+          portable="$(find "${PWD}/dist/windows-${{ matrix.arch }}" -maxdepth 1 -type f -name '*-portable.zip' -print -quit)"
+          test -n "${portable}"
+          unzip -Z1 "${portable}" | grep -Fx 'Qt5Sql.dll' >/dev/null
+          unzip -Z1 "${portable}" | grep -Fx 'plugins/sqldrivers/qsqlite.dll' >/dev/null
+          installer="$(find "${PWD}/dist/windows-${{ matrix.arch }}" -maxdepth 1 -type f -name '*-installer.exe' -print -quit)"
+          test -n "${installer}"
+          7z l "${installer}" | grep -F 'Qt5Sql.dll' >/dev/null
+          7z l "${installer}" | grep -F 'qsqlite.dll' >/dev/null
+
       - name: Upload Windows package
         if: env.BUILD_TARGET == 'all' || env.BUILD_TARGET == format('windows-{0}', matrix.arch)
         uses: actions/upload-artifact@v4
@@ -506,35 +551,69 @@ jobs:
             dist/windows-${{ matrix.arch }}/*windows-${{ matrix.arch }}*.exe
           if-no-files-found: error
 
-      - name: Publish Windows package to GitHub Release
-        if: (env.BUILD_TARGET == 'all' || env.BUILD_TARGET == format('windows-{0}', matrix.arch)) && (github.event_name == 'push' || inputs.publish_release == 'true')
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.release_tag }}
-          RELEASE_PRERELEASE: ${{ github.event_name == 'workflow_dispatch' && 'true' || 'false' }}
+  windows-smoke:
+    name: Windows ${{ matrix.arch }} package smoke
+    needs: [plan, windows]
+    if: needs.plan.outputs.windows_smoke_enabled == 'true'
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.windows_smoke_matrix) }}
+    steps:
+      - name: Download Windows package
+        uses: actions/download-artifact@v4
+        with:
+          name: openai-reasoning-guard-windows-${{ matrix.arch }}
+          path: ${{ runner.temp }}/windows-package
+
+      - name: Run CLI profile and QSQLITE smoke
+        shell: pwsh
         run: |
-          set -euo pipefail
-          shopt -s nullglob
-          files=(dist/windows-${{ matrix.arch }}/*windows-${{ matrix.arch }}*.zip dist/windows-${{ matrix.arch }}/*windows-${{ matrix.arch }}*.exe)
-          shopt -u nullglob
-          if ((${#files[@]} == 0)); then
-            echo "No Windows package files found for release upload" >&2
-            exit 2
-          fi
-          if ! gh release view "${RELEASE_TAG}" -R "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-            create_args=(
-              "${RELEASE_TAG}"
-              --repo "${GITHUB_REPOSITORY}"
-              --title "${RELEASE_TAG}"
-              --notes "OpenAI Reasoning Guard package build ${GITHUB_SHA}."
-            )
-            if [[ "${RELEASE_PRERELEASE}" == "true" ]]; then
-              create_args+=(--prerelease)
-            fi
-            gh release create "${create_args[@]}" || gh release view "${RELEASE_TAG}" -R "${GITHUB_REPOSITORY}" >/dev/null
-          fi
-          gh release upload "${RELEASE_TAG}" "${files[@]}" -R "${GITHUB_REPOSITORY}" --clobber
+          $ErrorActionPreference = "Stop"
+          $packageDir = Join-Path $env:RUNNER_TEMP "windows-package"
+          $archives = @(Get-ChildItem -Path $packageDir -Filter "*-portable.zip" -File)
+          if ($archives.Count -ne 1) {
+              throw "Expected exactly one portable archive, found $($archives.Count)"
+          }
+
+          $extractDir = Join-Path $env:RUNNER_TEMP "windows-portable"
+          Remove-Item -Recurse -Force $extractDir -ErrorAction SilentlyContinue
+          Expand-Archive -Path $archives[0].FullName -DestinationPath $extractDir
+
+          $cli = Join-Path $extractDir "openai-reasoning-guard-cli.exe"
+          $qsqlite = Join-Path $extractDir "plugins/sqldrivers/qsqlite.dll"
+          if (-not (Test-Path $cli -PathType Leaf)) {
+              throw "CLI executable is missing from portable archive: $cli"
+          }
+          if (-not (Test-Path $qsqlite -PathType Leaf)) {
+              throw "QSQLITE plugin is missing from portable archive: $qsqlite"
+          }
+
+          $smokeDir = Join-Path $env:RUNNER_TEMP "profile-smoke"
+          Remove-Item -Recurse -Force $smokeDir -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $smokeDir | Out-Null
+          $configPath = Join-Path $smokeDir "config.json"
+
+          $addJson = (& $cli --config $configPath profile add `
+              --name "CI smoke" --base-url "https://example.com/v1" --json | Out-String)
+          if ($LASTEXITCODE -ne 0) {
+              throw "profile add failed with exit code $LASTEXITCODE"
+          }
+          $null = $addJson | ConvertFrom-Json
+
+          $listJson = (& $cli --config $configPath profile list --json | Out-String)
+          if ($LASTEXITCODE -ne 0) {
+              throw "profile list failed with exit code $LASTEXITCODE"
+          }
+          $list = $listJson | ConvertFrom-Json
+          if ($list.total_items -ne 1 -or $list.items[0].display_name -ne "CI smoke") {
+              throw "profile list returned unexpected data: $listJson"
+          }
+
+          $database = Join-Path $smokeDir "upstream-profiles.sqlite3"
+          if (-not (Test-Path $database -PathType Leaf) -or (Get-Item $database).Length -eq 0) {
+              throw "QSQLITE did not create a non-empty profile database: $database"
+          }
 
   macos:
     name: macOS ${{ matrix.arch }} shell installer
@@ -550,6 +629,13 @@ jobs:
       DOWNLOAD_PROXY: ${{ secrets.DOWNLOAD_PROXY }}
       CLEAN_PACKAGES: ${{ github.event_name != 'workflow_dispatch' || inputs.clean != 'false' }}
       BUILD_TARGET: ${{ github.event_name == 'workflow_dispatch' && inputs.target || 'all' }}
+      MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+      MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+      MACOS_CODESIGN_IDENTITY_SECRET: ${{ secrets.MACOS_CODESIGN_IDENTITY }}
+      MACOS_NOTARY_APPLE_ID_SECRET: ${{ secrets.MACOS_NOTARY_APPLE_ID }}
+      MACOS_NOTARY_TEAM_ID_SECRET: ${{ secrets.MACOS_NOTARY_TEAM_ID }}
+      MACOS_NOTARY_PASSWORD_SECRET: ${{ secrets.MACOS_NOTARY_PASSWORD }}
+      MACOS_NOTARY_PROFILE_SECRET: ${{ secrets.MACOS_NOTARY_PROFILE }}
     steps:
       - name: Checkout
         if: env.BUILD_TARGET == 'all' || env.BUILD_TARGET == format('macos-{0}', matrix.arch)
@@ -605,6 +691,9 @@ jobs:
           fi
           qt_root="$(cd -- "$(dirname -- "${moc_path}")/.." && pwd)"
           test -x "${qt_root}/bin/macdeployqt"
+          test -e "${qt_root}/lib/QtSql.framework/QtSql"
+          test -f "${qt_root}/plugins/sqldrivers/libqsqlite.dylib"
+          test -f "${qt_root}/lib/cmake/Qt5Sql/Qt5SqlConfig.cmake"
           echo "QT_ROOT=${qt_root}" >> "${GITHUB_ENV}"
           echo "Using Qt root: ${qt_root}"
 
@@ -655,8 +744,20 @@ jobs:
           } >> "${GITHUB_ENV}"
 
           if [[ -n "${MACOS_NOTARY_PROFILE_SECRET:-}" ]]; then
-            echo "MACOS_NOTARIZE=1" >> "${GITHUB_ENV}"
-            echo "MACOS_NOTARY_PROFILE=${MACOS_NOTARY_PROFILE_SECRET}" >> "${GITHUB_ENV}"
+            if [[ -z "${MACOS_NOTARY_APPLE_ID_SECRET:-}" || -z "${MACOS_NOTARY_TEAM_ID_SECRET:-}" || -z "${MACOS_NOTARY_PASSWORD_SECRET:-}" ]]; then
+              echo "MACOS_NOTARY_PROFILE requires Apple ID, team ID, and app-specific password secrets so CI can create the ephemeral keychain profile" >&2
+              exit 2
+            fi
+            xcrun notarytool store-credentials "${MACOS_NOTARY_PROFILE_SECRET}" \
+              --apple-id "${MACOS_NOTARY_APPLE_ID_SECRET}" \
+              --team-id "${MACOS_NOTARY_TEAM_ID_SECRET}" \
+              --password "${MACOS_NOTARY_PASSWORD_SECRET}" \
+              --keychain "${keychain_path}"
+            {
+              echo "MACOS_NOTARIZE=1"
+              echo "MACOS_NOTARY_PROFILE=${MACOS_NOTARY_PROFILE_SECRET}"
+              echo "MACOS_NOTARY_KEYCHAIN=${keychain_path}"
+            } >> "${GITHUB_ENV}"
           elif [[ -n "${MACOS_NOTARY_APPLE_ID_SECRET:-}" && -n "${MACOS_NOTARY_TEAM_ID_SECRET:-}" && -n "${MACOS_NOTARY_PASSWORD_SECRET:-}" ]]; then
             {
               echo "MACOS_NOTARIZE=1"
@@ -693,12 +794,44 @@ jobs:
           if [[ "${CLEAN_PACKAGES}" == "true" ]]; then
             clean_arg+=(--clean)
           fi
+          work_dir="${RUNNER_TEMP}/package-macos-${{ matrix.arch }}"
+          echo "MACOS_PACKAGE_WORK_DIR=${work_dir}" >> "${GITHUB_ENV}"
           QT_ROOT="${QT_ROOT}" \
           BUILD_DIR="${PWD}/build-ci-${{ matrix.arch }}" \
+          WORK_DIR="${work_dir}" \
           scripts/package-macos.sh \
             --arch "${{ matrix.arch }}" \
             --skip-build \
             "${clean_arg[@]}"
+
+      - name: Validate installed macOS package and QSQLITE
+        if: env.BUILD_TARGET == 'all' || env.BUILD_TARGET == format('macos-{0}', matrix.arch)
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          installers=(dist/*macos-${{ matrix.arch }}*-installer.sh)
+          shopt -u nullglob
+          if ((${#installers[@]} != 1)); then
+            echo "Expected exactly one macOS installer, found ${#installers[@]}" >&2
+            exit 2
+          fi
+          OPEN_AFTER_INSTALL=0 INSTALL_CLI_SYMLINK=1 "${installers[0]}"
+          bundle="/Applications/OpenAI Reasoning Guard.app"
+          cli="/usr/local/bin/openai-reasoning-guard-cli"
+          test -x "${cli}"
+          test -f "${bundle}/Contents/Resources/qt.conf"
+          test -f "${bundle}/Contents/Frameworks/QtSql.framework/QtSql"
+          test -f "${bundle}/Contents/PlugIns/sqldrivers/libqsqlite.dylib"
+          grep -F "Plugins = PlugIns" "${bundle}/Contents/Resources/qt.conf" >/dev/null
+          smoke_dir="$(mktemp -d "${RUNNER_TEMP}/profile-smoke.XXXXXX")"
+          printf '{}\n' > "${smoke_dir}/config.json"
+          QT_DEBUG_PLUGINS=1 "${cli}" \
+            --config "${smoke_dir}/config.json" profile list --json \
+            >"${smoke_dir}/result.json" 2>"${smoke_dir}/plugins.log"
+          grep -F "Contents/PlugIns/sqldrivers/libqsqlite.dylib" "${smoke_dir}/plugins.log" >/dev/null
+          grep -F '"total_items": 0' "${smoke_dir}/result.json" >/dev/null
+          test -s "${smoke_dir}/upstream-profiles.sqlite3"
 
       - name: Upload macOS shell installer
         if: env.BUILD_TARGET == 'all' || env.BUILD_TARGET == format('macos-{0}', matrix.arch)
@@ -708,36 +841,139 @@ jobs:
           path: dist/*macos-${{ matrix.arch }}*-installer.sh
           if-no-files-found: error
 
-      - name: Publish macOS shell installer to GitHub Release
-        if: (env.BUILD_TARGET == 'all' || env.BUILD_TARGET == format('macos-{0}', matrix.arch)) && (github.event_name == 'push' || inputs.publish_release == 'true')
+  publish-release:
+    name: Publish complete package set
+    needs: [plan, linux, windows, windows-smoke, macos]
+    if: github.event_name == 'push' || inputs.publish_release == 'true'
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.release_tag }}
+      RELEASE_PRERELEASE: ${{ github.event_name == 'workflow_dispatch' && 'true' || 'false' }}
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all package artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: openai-reasoning-guard-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Validate complete package set
         shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.release_tag }}
-          RELEASE_PRERELEASE: ${{ github.event_name == 'workflow_dispatch' && 'true' || 'false' }}
         run: |
           set -euo pipefail
-          shopt -s nullglob
-          files=(dist/*macos-${{ matrix.arch }}*-installer.sh)
-          shopt -u nullglob
-          if ((${#files[@]} == 0)); then
-            echo "No macOS shell installer files found for release upload" >&2
+          version="$(sed -n 's/^project([^ ]* VERSION \([^ ]*\).*/\1/p' CMakeLists.txt)"
+          version="${version:-0.1.0}"
+          expected="${RUNNER_TEMP}/expected-release-assets.txt"
+          actual="${RUNNER_TEMP}/actual-release-assets.txt"
+
+          {
+            for arch in amd64 i386 arm64 armhf; do
+              printf 'openai-reasoning-guard_%s_%s.deb\n' "${version}" "${arch}"
+            done
+            for arch in x86_64 i686 aarch64 armv7hl; do
+              printf 'openai-reasoning-guard-%s-1.%s.rpm\n' "${version}" "${arch}"
+            done
+            for variant in cli gui; do
+              for arch in x86_64 i686 aarch64 armhf; do
+                printf 'openai-reasoning-guard-%s-%s-%s.AppImage\n' "${variant}" "${version}" "${arch}"
+              done
+            done
+            for arch in x86_64 x86_32 arm64; do
+              printf 'openai-reasoning-guard-windows-%s-%s-installer.exe\n' "${arch}" "${version}"
+              printf 'openai-reasoning-guard-windows-%s-%s-portable.zip\n' "${arch}" "${version}"
+            done
+            for arch in x86_64 aarch64; do
+              printf 'openai-reasoning-guard-macos-%s-%s-installer.sh\n' "${arch}" "${version}"
+            done
+          } | LC_ALL=C sort > "${expected}"
+
+          find release-assets -type f -printf '%f\n' | LC_ALL=C sort > "${actual}"
+          test "$(wc -l < "${expected}")" -eq 24
+          test "$(wc -l < "${actual}")" -eq 24
+          diff -u "${expected}" "${actual}"
+
+          while IFS= read -r asset; do
+            path="$(find release-assets -type f -name "${asset}" -print -quit)"
+            test -n "${path}"
+            test -s "${path}"
+          done < "${expected}"
+
+          echo "EXPECTED_ASSETS_FILE=${expected}" >> "${GITHUB_ENV}"
+
+      - name: Verify release tag source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --force --no-tags origin \
+            "+refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
+          tag_commit="$(git rev-parse "${RELEASE_TAG}^{commit}")"
+          source_commit="$(git rev-parse HEAD)"
+          if [[ "${tag_commit}" != "${source_commit}" ]]; then
+            echo "Release tag ${RELEASE_TAG} points to ${tag_commit}, expected ${source_commit}" >&2
             exit 2
           fi
+          echo "RELEASE_SOURCE_COMMIT=${source_commit}" >> "${GITHUB_ENV}"
+
+      - name: Publish and verify release assets
+        shell: bash
+        run: |
+          set -euo pipefail
           if ! gh release view "${RELEASE_TAG}" -R "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
             create_args=(
               "${RELEASE_TAG}"
               --repo "${GITHUB_REPOSITORY}"
+              --verify-tag
               --title "${RELEASE_TAG}"
-              --notes "OpenAI Reasoning Guard package build ${GITHUB_SHA}."
+              --notes "OpenAI Reasoning Guard package build ${RELEASE_SOURCE_COMMIT}."
             )
             if [[ "${RELEASE_PRERELEASE}" == "true" ]]; then
               create_args+=(--prerelease)
             fi
-            gh release create "${create_args[@]}" || gh release view "${RELEASE_TAG}" -R "${GITHUB_REPOSITORY}" >/dev/null
+            gh release create "${create_args[@]}"
           fi
-          version="$(sed -n 's/^project([^ ]* VERSION \([^ ]*\).*/\1/p' CMakeLists.txt)"
-          version="${version:-0.1.0}"
-          gh release delete-asset "${RELEASE_TAG}" "openai-reasoning-guard-macos-${{ matrix.arch }}-${version}.dmg" \
-            -R "${GITHUB_REPOSITORY}" -y >/dev/null 2>&1 || true
-          gh release upload "${RELEASE_TAG}" "${files[@]}" -R "${GITHUB_REPOSITORY}" --clobber
+
+          mapfile -t files < <(find release-assets -type f -print | LC_ALL=C sort)
+          test "${#files[@]}" -eq 24
+          gh release upload "${RELEASE_TAG}" "${files[@]}" \
+            -R "${GITHUB_REPOSITORY}" --clobber
+
+          declare -A expected_assets=()
+          while IFS= read -r asset; do
+            expected_assets["${asset}"]=1
+          done < "${EXPECTED_ASSETS_FILE}"
+          while IFS= read -r asset; do
+            if [[ -z "${expected_assets[${asset}]+present}" ]]; then
+              gh release delete-asset "${RELEASE_TAG}" "${asset}" \
+                -R "${GITHUB_REPOSITORY}" -y
+            fi
+          done < <(gh release view "${RELEASE_TAG}" -R "${GITHUB_REPOSITORY}" \
+            --json assets --jq '.assets[].name')
+
+          remote_assets="${RUNNER_TEMP}/remote-release-assets.tsv"
+          remote_names="${RUNNER_TEMP}/remote-release-assets.txt"
+          gh release view "${RELEASE_TAG}" -R "${GITHUB_REPOSITORY}" \
+            --json assets --jq '.assets[] | [.name, (.size | tostring)] | @tsv' \
+            > "${remote_assets}"
+          cut -f1 "${remote_assets}" | LC_ALL=C sort > "${remote_names}"
+          test "$(wc -l < "${remote_names}")" -eq 24
+          diff -u "${EXPECTED_ASSETS_FILE}" "${remote_names}"
+          if awk -F '\t' '$2 <= 0 { found=1 } END { exit !found }' "${remote_assets}"; then
+            echo "Release contains an empty asset" >&2
+            exit 2
+          fi
+
+          git fetch --force --no-tags origin \
+            "+refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
+          tag_commit="$(git rev-parse "${RELEASE_TAG}^{commit}")"
+          if [[ "${tag_commit}" != "${RELEASE_SOURCE_COMMIT}" ]]; then
+            echo "Release tag moved to ${tag_commit} during publication; expected ${RELEASE_SOURCE_COMMIT}" >&2
+            exit 2
+          fi

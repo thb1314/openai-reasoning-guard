@@ -1,5 +1,7 @@
+#include "cli/profile_commands.h"
 #include "core/app_config.h"
 #include "core/http_proxy_server.h"
+#include "core/upstream_profile.h"
 
 #include <QtCore/QCommandLineOption>
 #include <QtCore/QCommandLineParser>
@@ -33,6 +35,26 @@ static int optionInt(const QCommandLineParser &parser,
     bool ok = false;
     const int value = parser.value(option).toInt(&ok);
     return ok ? value : fallback;
+}
+
+static bool boundedIntOption(const QCommandLineParser &parser,
+                             const QCommandLineOption &option,
+                             int minimum,
+                             int maximum,
+                             int *value,
+                             QString *error)
+{
+    bool ok = false;
+    const int parsed = parser.value(option).toInt(&ok);
+    if (!ok || parsed < minimum || parsed > maximum) {
+        if (error) {
+            *error = QString("--%1 must be an integer between %2 and %3")
+                .arg(option.names().first()).arg(minimum).arg(maximum);
+        }
+        return false;
+    }
+    *value = parsed;
+    return true;
 }
 
 static qint64 optionInt64(const QCommandLineParser &parser,
@@ -107,6 +129,10 @@ int main(int argc, char **argv)
     QCoreApplication::setApplicationName("openai-reasoning-guard-cli");
     QCoreApplication::setApplicationVersion("0.1.0");
 
+    if (isProfileCommand(QCoreApplication::arguments())) {
+        return runProfileCommand(QCoreApplication::arguments());
+    }
+
     QCommandLineParser parser;
     parser.setApplicationDescription("OpenAI reasoning degradation guard proxy CLI");
     parser.addHelpOption();
@@ -121,6 +147,7 @@ int main(int argc, char **argv)
     QCommandLineOption upstreamApiKeyOpt("upstream-api-key", "Upstream bearer token override; empty forwards incoming Authorization", "token");
     QCommandLineOption upstreamUserAgentOpt("upstream-user-agent", "User-Agent sent upstream", "ua", "curl/8.7.1");
     QCommandLineOption forwardUserAgentOpt("forward-user-agent", "Forward incoming User-Agent upstream");
+    QCommandLineOption noForwardUserAgentOpt("no-forward-user-agent", "Use the selected profile User-Agent instead of forwarding the incoming value");
     QCommandLineOption upstreamProxyOpt("upstream-proxy", "Proxy for upstream API requests, e.g. http://127.0.0.1:7890 or socks5://127.0.0.1:7890", "url");
     QCommandLineOption upstreamHttpProxyOpt("upstream-http-proxy", "Compatibility alias for --upstream-proxy", "url");
     QCommandLineOption upstreamHttpsProxyOpt("upstream-https-proxy", "Compatibility alias for --upstream-proxy", "url");
@@ -148,7 +175,7 @@ int main(int argc, char **argv)
     QCommandLineOption queryStatusOpt("query-status", "Query /status from an already running proxy and exit");
     QCommandLineOption queryUrlOpt("query-url", "Full status URL for --query-status", "url");
 
-    QCommandLineOption keepConfigOpt("keep-config", "Persist selected settings to config.json");
+    QCommandLineOption keepConfigOpt("keep-config", "Persist global settings to config.json");
 
     parser.addOptions(QList<QCommandLineOption>()
         << configOpt
@@ -160,6 +187,7 @@ int main(int argc, char **argv)
         << upstreamApiKeyOpt
         << upstreamUserAgentOpt
         << forwardUserAgentOpt
+        << noForwardUserAgentOpt
         << upstreamProxyOpt
         << upstreamHttpProxyOpt
         << upstreamHttpsProxyOpt
@@ -184,7 +212,34 @@ int main(int argc, char **argv)
         << queryStatusOpt
         << queryUrlOpt
         << keepConfigOpt);
+    parser.addPositionalArgument("profile", "Manage saved upstream profiles; run 'profile --help' for usage", "[profile ...]");
     parser.process(app);
+
+    const QStringList unexpectedPositionals = parser.positionalArguments();
+    if (!unexpectedPositionals.isEmpty()) {
+        QTextStream(stderr) << "unexpected positional arguments: "
+                            << unexpectedPositionals.join(" ")
+                            << "; use the lowercase 'profile' subcommand for profile management\n";
+        return 2;
+    }
+
+    if (parser.isSet(forwardUserAgentOpt) && parser.isSet(noForwardUserAgentOpt)) {
+        QTextStream(stderr) << "--forward-user-agent and --no-forward-user-agent are mutually exclusive\n";
+        return 2;
+    }
+
+    int upstreamTimeoutOverride = 0;
+    int firstTokenTimeoutOverride = 0;
+    QString timeoutOptionError;
+    if ((parser.isSet(upstreamTimeoutOpt)
+         && !boundedIntOption(parser, upstreamTimeoutOpt, 1, 86400,
+                              &upstreamTimeoutOverride, &timeoutOptionError))
+        || (parser.isSet(firstTokenTimeoutOpt)
+            && !boundedIntOption(parser, firstTokenTimeoutOpt, 0, 3600,
+                                 &firstTokenTimeoutOverride, &timeoutOptionError))) {
+        QTextStream(stderr) << timeoutOptionError << "\n";
+        return 2;
+    }
 
     const QString configPath = parser.isSet(configOpt) ? parser.value(configOpt) : defaultConfigPath();
     AppConfig config = loadConfig(configPath);
@@ -195,22 +250,89 @@ int main(int argc, char **argv)
     settings.listenHost = optionString(parser, proxyHostOpt, config.proxyHost);
     settings.listenPort = optionInt(parser, proxyPortOpt, config.proxyPort);
     settings.proxyPrefix = parser.isSet(proxyPrefixOpt) ? parser.value(proxyPrefixOpt) : config.proxyPrefix;
-    settings.upstreamBaseUrl = optionString(parser, upstreamBaseUrlOpt, config.upstreamBaseUrl);
-    settings.upstreamApiKey = parser.isSet(upstreamApiKeyOpt) ? parser.value(upstreamApiKeyOpt) : config.upstreamApiKey;
-    settings.upstreamUserAgent = optionString(parser, upstreamUserAgentOpt, config.upstreamUserAgent);
-    settings.forwardUserAgent = parser.isSet(forwardUserAgentOpt) || config.forwardUserAgent;
-    settings.upstreamProxy = parser.isSet(upstreamProxyOpt) ? parser.value(upstreamProxyOpt) : config.upstreamProxy;
-    settings.upstreamHttpProxy = parser.isSet(upstreamHttpProxyOpt) ? parser.value(upstreamHttpProxyOpt) : config.upstreamHttpProxy;
-    settings.upstreamHttpsProxy = parser.isSet(upstreamHttpsProxyOpt) ? parser.value(upstreamHttpsProxyOpt) : config.upstreamHttpsProxy;
-    settings.upstreamSocksProxy = parser.isSet(upstreamSocksProxyOpt) ? parser.value(upstreamSocksProxyOpt) : config.upstreamSocksProxy;
-    if (!settings.upstreamProxy.trimmed().isEmpty()) {
-        settings.upstreamProxy = proxyTextWithDefaultScheme(settings.upstreamProxy, false);
+
+    if (parser.isSet(queryStatusOpt)) {
+        const QString url = parser.isSet(queryUrlOpt)
+            ? parser.value(queryUrlOpt)
+            : QString("http://%1:%2/status").arg(settings.listenHost).arg(settings.listenPort);
+        return queryStatus(QUrl(url));
     }
+
+    const QString profileDatabasePath = upstreamProfileDatabasePath(configPath);
+    UpstreamProfileStore profileStore(profileDatabasePath);
+    QString error;
+    if (!profileStore.open(&error)) {
+        QTextStream(stderr) << "profile database open failed: " << error << "\n";
+        return 2;
+    }
+    if (!migrateLegacyUpstreamConfig(configPath, &config, &profileStore, 0, &error)) {
+        QTextStream(stderr) << "legacy upstream configuration migration failed: " << error << "\n";
+        return 2;
+    }
+
+    QString selectedProfileId = profileStore.selectedProfileId(&error);
+    if (!error.isEmpty()) {
+        QTextStream(stderr) << "selected profile lookup failed: " << error << "\n";
+        return 2;
+    }
+    const bool hasExplicitBaseUrl = parser.isSet(upstreamBaseUrlOpt)
+        && !parser.value(upstreamBaseUrlOpt).trimmed().isEmpty();
+    if (selectedProfileId.isEmpty() && !hasExplicitBaseUrl) {
+        QTextStream(stderr) << "no upstream profile is selected; create one with 'profile add' "
+                            << "or provide --upstream-base-url\n";
+        return 2;
+    }
+
+    UpstreamProfileRunLock profileRunLock(profileDatabasePath);
+    if (!profileRunLock.tryLock(selectedProfileId, &error)) {
+        QTextStream(stderr) << "upstream profile is already in use: " << error << "\n";
+        return 2;
+    }
+
+    const QString lockedSelectedProfileId = profileStore.selectedProfileId(&error);
+    if (!error.isEmpty()) {
+        QTextStream(stderr) << "selected profile lookup failed: " << error << "\n";
+        return 2;
+    }
+    if (lockedSelectedProfileId != selectedProfileId) {
+        QTextStream(stderr) << "the selected upstream profile changed while the proxy was starting; retry\n";
+        return 2;
+    }
+
+    UpstreamProfile selectedProfile;
+    const bool hasSelectedProfile = !selectedProfileId.isEmpty();
+    if (hasSelectedProfile
+        && !profileStore.profileById(selectedProfileId, &selectedProfile, &error)) {
+        QTextStream(stderr) << "selected profile load failed: " << error << "\n";
+        return 2;
+    }
+
+    UpstreamProfile upstreamDefaults;
+    if (hasSelectedProfile) {
+        upstreamDefaults = selectedProfile;
+    }
+    settings.upstreamBaseUrl = optionString(parser, upstreamBaseUrlOpt, upstreamDefaults.baseUrl);
+    settings.upstreamApiKey = parser.isSet(upstreamApiKeyOpt)
+        ? parser.value(upstreamApiKeyOpt) : upstreamDefaults.apiKey;
+    settings.upstreamUserAgent = optionString(parser, upstreamUserAgentOpt, upstreamDefaults.userAgent);
+    settings.forwardUserAgent = parser.isSet(noForwardUserAgentOpt)
+        ? false : (parser.isSet(forwardUserAgentOpt) ? true : upstreamDefaults.forwardUserAgent);
+
+    const bool hasSplitProxyOverride = parser.isSet(upstreamHttpProxyOpt)
+        || parser.isSet(upstreamHttpsProxyOpt) || parser.isSet(upstreamSocksProxyOpt);
+    settings.upstreamProxy = parser.isSet(upstreamProxyOpt)
+        ? parser.value(upstreamProxyOpt) : (hasSplitProxyOverride ? QString() : upstreamDefaults.upstreamProxy);
+    settings.upstreamHttpProxy = parser.isSet(upstreamHttpProxyOpt) ? parser.value(upstreamHttpProxyOpt) : QString();
+    settings.upstreamHttpsProxy = parser.isSet(upstreamHttpsProxyOpt) ? parser.value(upstreamHttpsProxyOpt) : QString();
+    settings.upstreamSocksProxy = parser.isSet(upstreamSocksProxyOpt) ? parser.value(upstreamSocksProxyOpt) : QString();
+    settings.upstreamProxy = proxyTextWithDefaultScheme(settings.upstreamProxy, false);
     settings.upstreamHttpProxy = proxyTextWithDefaultScheme(settings.upstreamHttpProxy, false);
     settings.upstreamHttpsProxy = proxyTextWithDefaultScheme(settings.upstreamHttpsProxy, false);
     settings.upstreamSocksProxy = proxyTextWithDefaultScheme(settings.upstreamSocksProxy, true);
-    settings.upstreamTimeoutSec = optionInt(parser, upstreamTimeoutOpt, config.upstreamTimeoutSec);
-    settings.firstTokenTimeoutSec = optionInt(parser, firstTokenTimeoutOpt, config.firstTokenTimeoutSec);
+    settings.upstreamTimeoutSec = parser.isSet(upstreamTimeoutOpt)
+        ? upstreamTimeoutOverride : upstreamDefaults.upstreamTimeoutSec;
+    settings.firstTokenTimeoutSec = parser.isSet(firstTokenTimeoutOpt)
+        ? firstTokenTimeoutOverride : upstreamDefaults.firstTokenTimeoutSec;
     settings.bufferTimeoutSec = optionInt(parser, bufferTimeoutOpt, config.bufferTimeoutSec);
     settings.requestBodyLimitBytes = optionInt64(parser, requestBodyLimitOpt, config.requestBodyLimitBytes);
     settings.responseBufferLimitBytes = optionInt64(parser, responseBufferLimitOpt, config.responseBufferLimitBytes);
@@ -233,27 +355,10 @@ int main(int argc, char **argv)
     settings.nonStreamStatusCode = optionInt(parser, nonStreamStatusCodeOpt, config.nonStreamStatusCode);
     settings.streamAction = parser.isSet(streamActionOpt) ? parser.value(streamActionOpt) : config.streamAction;
 
-    if (parser.isSet(queryStatusOpt)) {
-        const QString url = parser.isSet(queryUrlOpt)
-            ? parser.value(queryUrlOpt)
-            : QString("http://%1:%2/status").arg(settings.listenHost).arg(settings.listenPort);
-        return queryStatus(QUrl(url));
-    }
-
     if (parser.isSet(keepConfigOpt)) {
         config.proxyHost = settings.listenHost;
         config.proxyPort = settings.listenPort;
         config.proxyPrefix = settings.proxyPrefix;
-        config.upstreamBaseUrl = settings.upstreamBaseUrl;
-        config.upstreamApiKey = settings.upstreamApiKey;
-        config.upstreamUserAgent = settings.upstreamUserAgent;
-        config.forwardUserAgent = settings.forwardUserAgent;
-        config.upstreamProxy = settings.upstreamProxy;
-        config.upstreamHttpProxy = settings.upstreamHttpProxy;
-        config.upstreamHttpsProxy = settings.upstreamHttpsProxy;
-        config.upstreamSocksProxy = settings.upstreamSocksProxy;
-        config.upstreamTimeoutSec = settings.upstreamTimeoutSec;
-        config.firstTokenTimeoutSec = settings.firstTokenTimeoutSec;
         config.bufferTimeoutSec = settings.bufferTimeoutSec;
         config.requestBodyLimitBytes = settings.requestBodyLimitBytes;
         config.responseBufferLimitBytes = settings.responseBufferLimitBytes;
@@ -278,9 +383,12 @@ int main(int argc, char **argv)
         QObject::connect(&server, &HttpProxyServer::logLine, logLine);
     }
 
-    QString error;
     if (!server.start(settings, &error)) {
-        logLine(QString("proxy start failed: %1").arg(error));
+        if (parser.isSet(statusJsonOpt)) {
+            QTextStream(stderr) << "proxy start failed: " << error << "\n";
+        } else {
+            logLine(QString("proxy start failed: %1").arg(error));
+        }
         return 2;
     }
     if (parser.isSet(statusJsonOpt)) {
