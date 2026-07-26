@@ -393,7 +393,10 @@ jobs:
     name: Windows ${{ matrix.arch }} MinGW exe
     needs: plan
     if: needs.plan.outputs.windows_enabled == 'true'
-    runs-on: ubuntu-22.04
+    # NSIS 3.09 fixes an upstream 3.08 uninstaller PE relocation bug that
+    # Windows Server rejects with ERROR_BAD_EXE_FORMAT. The package is still
+    # cross-built and the installer is still generated entirely on Linux.
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.windows_matrix) }}
@@ -415,13 +418,15 @@ jobs:
           set -euo pipefail
           export DEBIAN_FRONTEND=noninteractive
           sudo apt-get update
+          nsis_package_version="3.09-4ubuntu1"
           apt_packages=(
             build-essential
             ca-certificates
             cmake
             curl
             file
-            nsis
+            "nsis=${nsis_package_version}"
+            "nsis-common=${nsis_package_version}"
             unzip
             xz-utils
             zip
@@ -430,6 +435,7 @@ jobs:
             apt_packages+=("${{ matrix.apt_package }}")
           fi
           sudo apt-get install -y --no-install-recommends "${apt_packages[@]}"
+          makensis -VERSION
 
       - name: Install llvm-mingw for Windows ARM64
         if: (env.BUILD_TARGET == 'all' || env.BUILD_TARGET == format('windows-{0}', matrix.arch)) && matrix.arch == 'arm64'

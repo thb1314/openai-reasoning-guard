@@ -246,6 +246,27 @@ find_makensis() {
     return 1
 }
 
+require_supported_makensis() {
+    local path="$1"
+    local version major minor
+
+    version="$("${path}" -VERSION 2>&1)"
+    version="${version//$'\r'/}"
+    if [[ ! "${version}" =~ ^v([0-9]+)\.([0-9]+) ]]; then
+        echo "Unable to determine NSIS compiler version from ${path}: ${version}" >&2
+        exit 2
+    fi
+    major="${BASH_REMATCH[1]}"
+    minor="${BASH_REMATCH[2]}"
+    if ((major < 3 || (major == 3 && 10#${minor} < 9))); then
+        echo "NSIS 3.09 or newer is required to build a Windows installer; detected ${version}." >&2
+        echo "NSIS 3.08 can emit an invalid runtime uninstaller on current Windows." >&2
+        echo "Set MAKENSIS to a newer compiler or use --no-installer for the portable zip." >&2
+        exit 2
+    fi
+    echo "Using NSIS compiler: ${version}"
+}
+
 prepare_cross_path() {
     local cross_bin="${WORK_DIR}/cross-bin"
     mkdir -p "${cross_bin}"
@@ -465,6 +486,7 @@ rm -f "${zip_path}"
 
 if ((BUILD_INSTALLER == 1)); then
     if makensis_path="$(find_makensis)"; then
+        require_supported_makensis "${makensis_path}"
         nsis_script="${WORK_DIR}/${PACKAGE_ID}-${PACKAGE_ARCH}.nsi"
         installer_payload_manifest="${WORK_DIR}/${PACKAGE_ID}-${PACKAGE_ARCH}-installer-payload.txt"
         installer_validation_manifest="${WORK_DIR}/${PACKAGE_ID}-${PACKAGE_ARCH}-installer-validation.sha256"
