@@ -156,14 +156,14 @@ GuardDialog::GuardDialog(QWidget *parent)
 
     QFrame *titleFrame = static_cast<QFrame *>(titleBar_);
     titleFrame->setObjectName("guardDialogTitleBar");
-    titleFrame->setFixedHeight(42);
+    titleFrame->setFixedHeight(30);
     QHBoxLayout *titleLayout = new QHBoxLayout(titleFrame);
     titleLayout->setContentsMargins(0, 0, 0, 0);
     titleLayout->setSpacing(0);
 
     QLabel *iconLabel = asLabel(titleIcon_);
     iconLabel->setObjectName("guardDialogTitleIcon");
-    iconLabel->setFixedSize(36, 42);
+    iconLabel->setFixedSize(30, 30);
     iconLabel->setAlignment(Qt::AlignCenter);
     QLabel *titleLabel = asLabel(titleLabel_);
     titleLabel->setObjectName("guardDialogTitleText");
@@ -173,7 +173,7 @@ GuardDialog::GuardDialog(QWidget *parent)
     closeButton_->setObjectName("guardDialogCloseButton");
     closeButton_->setToolTip(tr("Close"));
     setGuardCloseGlyph(closeButton_);
-    closeButton_->setFixedSize(36, 42);
+    closeButton_->setFixedSize(30, 30);
     closeButton_->setFocusPolicy(Qt::NoFocus);
 
     titleLayout->addWidget(iconLabel);
@@ -264,7 +264,7 @@ void GuardDialog::updateTitleChrome()
     }
     asLabel(titleLabel_)->setText(windowTitle());
     const QIcon icon = windowIcon();
-    asLabel(titleIcon_)->setPixmap(icon.isNull() ? QPixmap() : icon.pixmap(22, 22));
+    asLabel(titleIcon_)->setPixmap(icon.isNull() ? QPixmap() : icon.pixmap(18, 18));
 }
 
 GuardMessageButton::GuardMessageButton(const QString &buttonText,

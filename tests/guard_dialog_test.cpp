@@ -27,8 +27,8 @@ private slots:
         QVERIFY(title);
         QVERIFY(close);
         QCOMPARE(title->text(), QString("Custom title"));
-        QCOMPARE(titleBar->height(), 42);
-        QCOMPARE(close->size(), QSize(36, 42));
+        QCOMPARE(titleBar->height(), 30);
+        QCOMPARE(close->size(), QSize(30, 30));
         QCOMPARE(title->alignment(), Qt::AlignCenter);
         QVERIFY(QFontDatabase().families().contains("FontAwesome"));
         QCOMPARE(close->font().family(), QString("FontAwesome"));
