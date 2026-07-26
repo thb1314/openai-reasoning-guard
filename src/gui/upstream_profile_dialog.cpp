@@ -188,7 +188,7 @@ private:
         revealButton_ = new QToolButton(this);
         revealButton_->setObjectName("profileRevealApiKeyButton");
         revealButton_->setCheckable(true);
-        revealButton_->setIcon(apiKeyVisibilityIcon(revealButton_, false));
+        revealButton_->setIcon(apiKeyVisibilityIcon(revealButton_, true));
         revealButton_->setToolTip(trText("显示 API Key", "Reveal API key"));
         revealButton_->setAutoRaise(false);
 
@@ -259,7 +259,7 @@ private:
 
         QObject::connect(revealButton_, &QToolButton::toggled, [this](bool checked) {
             apiKeyEdit_->setEchoMode(checked ? QLineEdit::Normal : QLineEdit::Password);
-            revealButton_->setIcon(apiKeyVisibilityIcon(revealButton_, checked));
+            revealButton_->setIcon(apiKeyVisibilityIcon(revealButton_, !checked));
             revealButton_->setToolTip(checked
                 ? trText("隐藏 API Key", "Hide API key")
                 : trText("显示 API Key", "Reveal API key"));

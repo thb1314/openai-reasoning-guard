@@ -5,6 +5,7 @@
 #include <QtCore/QTimer>
 #include <QtCore/QLockFile>
 #include <QtGui/QClipboard>
+#include <QtGui/QImage>
 #include <QtTest/QSignalSpy>
 #include <QtTest/QTest>
 #include <QtWidgets/QApplication>
@@ -189,11 +190,15 @@ void UpstreamProfileDialogTest::editorUsesDefaultsAndProtectsApiKey()
             (editor->windowFlags() & Qt::FramelessWindowHint) &&
             editor->findChild<QWidget *>("guardDialogTitleBar")) {
             const quint64 concealedIconKey = reveal->icon().cacheKey();
+            const QImage concealedIcon = reveal->icon().pixmap(18, 18).toImage();
             reveal->click();
             copy->click();
+            const QImage revealedIcon = reveal->icon().pixmap(18, 18).toImage();
             keyChecksPassed = key->echoMode() == QLineEdit::Normal &&
                 QApplication::clipboard()->text() == "sk-test-secret" &&
-                !reveal->icon().isNull() && reveal->icon().cacheKey() != concealedIconKey;
+                !reveal->icon().isNull() && reveal->icon().cacheKey() != concealedIconKey &&
+                concealedIcon.pixelColor(3, 3).alpha() > 0 &&
+                revealedIcon.pixelColor(3, 3).alpha() == 0;
         }
         editor->reject();
     });

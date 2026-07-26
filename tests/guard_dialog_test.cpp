@@ -2,6 +2,7 @@
 
 #include <QtCore/QDir>
 #include <QtCore/QTimer>
+#include <QtGui/QFontDatabase>
 #include <QtTest/QTest>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QLabel>
@@ -26,7 +27,12 @@ private slots:
         QVERIFY(title);
         QVERIFY(close);
         QCOMPARE(title->text(), QString("Custom title"));
-        QCOMPARE(close->size(), QSize(38, 38));
+        QCOMPARE(titleBar->height(), 42);
+        QCOMPARE(close->size(), QSize(36, 42));
+        QCOMPARE(title->alignment(), Qt::AlignCenter);
+        QVERIFY(QFontDatabase().families().contains("FontAwesome"));
+        QCOMPARE(close->font().family(), QString("FontAwesome"));
+        QCOMPARE(close->text(), QString(QChar(0xf00d)));
     }
 
     void messagesAndFilePickerUseTheSameChrome()

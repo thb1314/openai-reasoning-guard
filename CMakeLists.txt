@@ -301,6 +301,7 @@ if(NET_TUNNEL_BUILD_TESTS)
         tests/guard_dialog_test.cpp
         src/gui/guard_dialog.h
         src/gui/guard_dialog.cpp
+        third_party/qui/qui_resources.qrc
     )
     net_tunnel_add_private_compile_options(guard-dialog-test)
     target_include_directories(guard-dialog-test PRIVATE

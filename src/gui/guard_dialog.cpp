@@ -3,6 +3,8 @@
 #include <QtCore/QDir>
 #include <QtCore/QEvent>
 #include <QtCore/QFileInfo>
+#include <QtGui/QFont>
+#include <QtGui/QFontDatabase>
 #include <QtGui/QGuiApplication>
 #include <QtGui/QIcon>
 #include <QtGui/QMouseEvent>
@@ -40,6 +42,36 @@ QStyle::StandardPixmap standardPixmapFor(GuardMessageIcon icon)
     default:
         return QStyle::SP_MessageBoxInformation;
     }
+}
+
+QString fontAwesomeFamily()
+{
+    const QString expectedFamily("FontAwesome");
+    if (QFontDatabase().families().contains(expectedFamily)) {
+        return expectedFamily;
+    }
+
+    const int fontId = QFontDatabase::addApplicationFont(":/image/fontawesome-webfont.ttf");
+    if (fontId < 0) {
+        return QString();
+    }
+    const QStringList families = QFontDatabase::applicationFontFamilies(fontId);
+    return families.isEmpty() ? QString() : families.first();
+}
+
+void setGuardCloseGlyph(QPushButton *button)
+{
+    const QString family = fontAwesomeFamily();
+    button->setIcon(QIcon());
+    if (family.isEmpty()) {
+        button->setText(QString(QChar(0x00d7)));
+        return;
+    }
+
+    QFont font(family);
+    font.setPointSize(9);
+    button->setFont(font);
+    button->setText(QString(QChar(0xf00d)));
 }
 
 class GuardMessageDialog : public GuardDialog {
@@ -124,25 +156,24 @@ GuardDialog::GuardDialog(QWidget *parent)
 
     QFrame *titleFrame = static_cast<QFrame *>(titleBar_);
     titleFrame->setObjectName("guardDialogTitleBar");
-    titleFrame->setFixedHeight(38);
+    titleFrame->setFixedHeight(42);
     QHBoxLayout *titleLayout = new QHBoxLayout(titleFrame);
-    titleLayout->setContentsMargins(10, 0, 0, 0);
-    titleLayout->setSpacing(8);
+    titleLayout->setContentsMargins(0, 0, 0, 0);
+    titleLayout->setSpacing(0);
 
     QLabel *iconLabel = asLabel(titleIcon_);
     iconLabel->setObjectName("guardDialogTitleIcon");
-    iconLabel->setFixedSize(20, 20);
+    iconLabel->setFixedSize(36, 42);
     iconLabel->setAlignment(Qt::AlignCenter);
     QLabel *titleLabel = asLabel(titleLabel_);
     titleLabel->setObjectName("guardDialogTitleText");
     titleLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
-    titleLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    titleLabel->setAlignment(Qt::AlignCenter);
 
     closeButton_->setObjectName("guardDialogCloseButton");
     closeButton_->setToolTip(tr("Close"));
-    closeButton_->setIcon(style()->standardIcon(QStyle::SP_TitleBarCloseButton));
-    closeButton_->setIconSize(QSize(16, 16));
-    closeButton_->setFixedSize(38, 38);
+    setGuardCloseGlyph(closeButton_);
+    closeButton_->setFixedSize(36, 42);
     closeButton_->setFocusPolicy(Qt::NoFocus);
 
     titleLayout->addWidget(iconLabel);
@@ -161,13 +192,18 @@ GuardDialog::GuardDialog(QWidget *parent)
     outer->addWidget(contentFrame, 1);
 
     setStyleSheet(
-        "QDialog[guard_dialog_root=\"true\"] { background: #f7fafb; border: 1px solid #9aa9b5; }"
-        "#guardDialogTitleBar { background: #e3ebef; border-bottom: 1px solid #b8c6ce; }"
-        "#guardDialogTitleText { color: #1d2b34; font-weight: 600; }"
-        "#guardDialogCloseButton { background: transparent; border: none; color: #33434e; }"
-        "#guardDialogCloseButton:hover { background: #d45d4b; color: white; }"
-        "#guardDialogContent { background: #f7fafb; }"
-        "#guardMessageText { color: #263640; }"
+        "QDialog[guard_dialog_root=\"true\"] { background: #EAF7FF; border: 1px solid #C0DCF2; }"
+        "#guardDialogTitleBar { border: none; border-radius: 0px; background: qlineargradient("
+            "spread:pad,x1:0,y1:0,x2:0,y2:1,stop:0 #DEF0FE,stop:1 #C0DEF6); }"
+        "#guardDialogTitleIcon, #guardDialogTitleText { color: #386487; background: transparent; border: none; }"
+        "QPushButton#guardDialogCloseButton { border: none; border-radius: 3px; color: #386487; "
+            "padding: 3px; margin: 0px; background: transparent; }"
+        "QPushButton#guardDialogCloseButton:hover { color: #FFFFFF; margin: 1px 1px 2px 1px; "
+            "background-color: rgba(238,0,0,128); }"
+        "QPushButton#guardDialogCloseButton:pressed { color: #FFFFFF; "
+            "background-color: rgba(238,0,0,128); }"
+        "#guardDialogContent { background: #EAF7FF; border: none; border-radius: 0px; }"
+        "#guardMessageText { color: #386487; }"
         "#guardFileTree { background: white; border: 1px solid #c3d0d6; }"
         "QDialog[guard_dialog_root=\"true\"] QLineEdit { background: white; border: 1px solid #b8c6ce; padding: 5px; }"
         "QDialog[guard_dialog_root=\"true\"] QPushButton { min-height: 26px; padding: 2px 10px; }"
@@ -228,7 +264,7 @@ void GuardDialog::updateTitleChrome()
     }
     asLabel(titleLabel_)->setText(windowTitle());
     const QIcon icon = windowIcon();
-    asLabel(titleIcon_)->setPixmap(icon.isNull() ? QPixmap() : icon.pixmap(18, 18));
+    asLabel(titleIcon_)->setPixmap(icon.isNull() ? QPixmap() : icon.pixmap(22, 22));
 }
 
 GuardMessageButton::GuardMessageButton(const QString &buttonText,
