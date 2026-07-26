@@ -722,20 +722,27 @@ jobs:
           Assert-NsisUninstallerPe -Path $uninstaller
           $uninstallerDiagnostic = Join-Path $env:RUNNER_TEMP "windows-uninstaller-${{ matrix.arch }}-diagnostic.exe"
           Copy-Item -LiteralPath $uninstaller -Destination $uninstallerDiagnostic -Force
-          $uninstallerRunnerDir = Join-Path $env:RUNNER_TEMP "windows-uninstaller-runner-${{ matrix.arch }}"
-          $uninstallerRunner = Join-Path $uninstallerRunnerDir "Uninstall.exe"
-          Remove-Item -Recurse -Force $uninstallerRunnerDir -ErrorAction SilentlyContinue
-          New-Item -ItemType Directory -Force -Path $uninstallerRunnerDir | Out-Null
-          Copy-Item -LiteralPath $uninstaller -Destination $uninstallerRunner -Force
-          # _?= is intentionally the final argument: it binds $INSTDIR and
-          # prevents NSIS from spawning another temporary uninstaller process.
-          & $uninstallerRunner /S "_?=$installDir"
-          $uninstallExitCode = $LASTEXITCODE
+          $uninstallTimer = [System.Diagnostics.Stopwatch]::StartNew()
+          Push-Location $env:RUNNER_TEMP
+          try {
+              & $uninstaller /S
+              $uninstallExitCode = $LASTEXITCODE
+          }
+          finally {
+              Pop-Location
+          }
           if ($uninstallExitCode -ne 0) {
               throw "NSIS uninstaller failed with exit code $uninstallExitCode"
           }
+          $uninstallDeadline = [DateTime]::UtcNow.AddSeconds(10)
+          while ((Test-Path -LiteralPath $installDir) -and [DateTime]::UtcNow -lt $uninstallDeadline) {
+              Start-Sleep -Milliseconds 100
+          }
+          $uninstallTimer.Stop()
           if (Test-Path -LiteralPath $installDir) {
-              throw "NSIS uninstaller left the custom installation directory behind: $installDir"
+              $remaining = Get-ChildItem -LiteralPath $installDir -Force -Recurse -ErrorAction SilentlyContinue |
+                  Select-Object -First 20 -ExpandProperty FullName
+              throw "NSIS uninstaller left the custom installation directory behind: $installDir; remaining: $($remaining -join ', ')"
           }
           if (Test-Path -LiteralPath $sentinel) {
               throw "NSIS uninstaller left a non-payload sentinel behind: $sentinel"
@@ -743,7 +750,7 @@ jobs:
           if (Test-Path -LiteralPath $startMenuDir) {
               throw "NSIS uninstaller left the Start Menu directory behind: $startMenuDir"
           }
-          Write-Host "Confirmed NSIS removed the custom installation directory and Start Menu shortcuts: $installDir"
+          Write-Host "Confirmed NSIS removed the custom installation directory, sentinel, and Start Menu shortcuts in $($uninstallTimer.ElapsedMilliseconds) ms: $installDir"
 
       - name: Upload failed NSIS uninstaller diagnostic
         if: failure()
