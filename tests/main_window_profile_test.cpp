@@ -14,7 +14,7 @@
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QLineEdit>
-#include <QtWidgets/QMessageBox>
+#include <QtWidgets/QDialog>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QSpinBox>
 
@@ -42,13 +42,16 @@ QPushButton *buttonWithKey(QWidget *window, const char *key)
     return 0;
 }
 
-void dismissNextMessageBox()
+void dismissNextMessageDialog()
 {
     QTimer::singleShot(0, []() {
         const QList<QWidget *> widgets = QApplication::topLevelWidgets();
         for (int i = 0; i < widgets.size(); ++i) {
-            if (QMessageBox *messageBox = qobject_cast<QMessageBox *>(widgets.at(i))) {
-                messageBox->accept();
+            QWidget *widget = widgets.at(i);
+            if (widget->property("guard_dialog_kind").toString() == "message") {
+                if (QDialog *dialog = qobject_cast<QDialog *>(widget)) {
+                    dialog->accept();
+                }
             }
         }
     });
@@ -182,7 +185,7 @@ private slots:
         QVERIFY2(saveConfig(config, configPath, &error), qPrintable(error));
         QVERIFY(QDir().mkpath(upstreamProfileDatabasePath(configPath)));
 
-        dismissNextMessageBox();
+        dismissNextMessageDialog();
         MainWindow window;
         QPushButton *save = buttonWithKey(&window, "save_config");
         QLineEdit *host = window.findChild<QLineEdit *>("proxyHostEdit");
@@ -208,7 +211,7 @@ private slots:
         QVERIFY(writeJson(configPath, legacy));
         QVERIFY(QDir().mkpath(upstreamProfileDatabasePath(configPath)));
 
-        dismissNextMessageBox();
+        dismissNextMessageDialog();
         MainWindow window;
         QPushButton *save = buttonWithKey(&window, "save_config");
         QVERIFY(save);

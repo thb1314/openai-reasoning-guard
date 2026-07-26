@@ -1,22 +1,23 @@
 #include "gui/upstream_profile_dialog.h"
 
+#include <QtCore/QDir>
 #include <QtCore/QFileInfo>
 #include <QtCore/QSignalBlocker>
 #include <QtGui/QClipboard>
 #include <QtGui/QFont>
 #include <QtGui/QIcon>
-#include <QtWidgets/QAbstractButton>
+#include <QtGui/QPainter>
+#include <QtGui/QPainterPath>
+#include <QtGui/QPalette>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QDialogButtonBox>
-#include <QtWidgets/QFileDialog>
 #include <QtWidgets/QFormLayout>
 #include <QtWidgets/QHeaderView>
 #include <QtWidgets/QHBoxLayout>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QLineEdit>
-#include <QtWidgets/QMessageBox>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QSpinBox>
 #include <QtWidgets/QStyle>
@@ -33,6 +34,14 @@ using net_tunnel::UpstreamProfile;
 using net_tunnel::UpstreamProfileImportResult;
 using net_tunnel::UpstreamProfilePage;
 using net_tunnel::UpstreamProfileStore;
+using net_tunnel_gui::GuardDialog;
+using net_tunnel_gui::GuardFileDialog;
+using net_tunnel_gui::GuardMessageButton;
+using net_tunnel_gui::GuardQuestion;
+using net_tunnel_gui::chooseGuardMessage;
+using net_tunnel_gui::confirmGuardMessage;
+using net_tunnel_gui::showGuardInformation;
+using net_tunnel_gui::showGuardWarning;
 
 namespace {
 
@@ -40,6 +49,37 @@ QIcon themedIcon(QWidget *widget, const QString &name, QStyle::StandardPixmap fa
 {
     const QIcon icon = QIcon::fromTheme(name);
     return icon.isNull() ? widget->style()->standardIcon(fallback) : icon;
+}
+
+QIcon apiKeyVisibilityIcon(const QWidget *widget, bool hidden)
+{
+    QPixmap pixmap(18, 18);
+    pixmap.fill(Qt::transparent);
+
+    QPainter painter(&pixmap);
+    painter.setRenderHint(QPainter::Antialiasing);
+    QColor color = widget->palette().color(QPalette::ButtonText);
+    if (!color.isValid()) color = QColor("#255b82");
+    QPen pen(color, 1.6, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+    painter.setPen(pen);
+    painter.setBrush(Qt::NoBrush);
+
+    QPainterPath outline;
+    outline.moveTo(1.5, 9.0);
+    outline.cubicTo(3.5, 5.3, 5.9, 3.5, 9.0, 3.5);
+    outline.cubicTo(12.1, 3.5, 14.5, 5.3, 16.5, 9.0);
+    outline.cubicTo(14.5, 12.7, 12.1, 14.5, 9.0, 14.5);
+    outline.cubicTo(5.9, 14.5, 3.5, 12.7, 1.5, 9.0);
+    painter.drawPath(outline);
+    painter.setBrush(color);
+    painter.setPen(Qt::NoPen);
+    painter.drawEllipse(QPointF(9.0, 9.0), 2.2, 2.2);
+
+    if (hidden) {
+        painter.setPen(pen);
+        painter.drawLine(QPointF(2.5, 2.5), QPointF(15.5, 15.5));
+    }
+    return QIcon(pixmap);
 }
 
 QString normalizedBaseUrl(const QString &value)
@@ -52,14 +92,14 @@ QString normalizedBaseUrl(const QString &value)
     return result;
 }
 
-class UpstreamProfileEditor : public QDialog {
+class UpstreamProfileEditor : public GuardDialog {
 public:
     UpstreamProfileEditor(const UpstreamProfile &profile,
                           bool editable,
                           const QString &language,
                           UpstreamProfileStore *store,
                           QWidget *parent)
-        : QDialog(parent),
+        : GuardDialog(parent),
           editable_(editable),
           english_(language.trimmed().toLower() == "en"),
           store_(store),
@@ -116,7 +156,7 @@ private:
             : trText("查看上游配置", "View Upstream Profile"));
         setMinimumWidth(620);
 
-        QVBoxLayout *root = new QVBoxLayout(this);
+        QVBoxLayout *root = contentLayout();
         root->setContentsMargins(16, 16, 16, 14);
         root->setSpacing(14);
 
@@ -148,7 +188,7 @@ private:
         revealButton_ = new QToolButton(this);
         revealButton_->setObjectName("profileRevealApiKeyButton");
         revealButton_->setCheckable(true);
-        revealButton_->setIcon(themedIcon(this, "view-reveal", QStyle::SP_FileDialogContentsView));
+        revealButton_->setIcon(apiKeyVisibilityIcon(revealButton_, false));
         revealButton_->setToolTip(trText("显示 API Key", "Reveal API key"));
         revealButton_->setAutoRaise(false);
 
@@ -219,6 +259,7 @@ private:
 
         QObject::connect(revealButton_, &QToolButton::toggled, [this](bool checked) {
             apiKeyEdit_->setEchoMode(checked ? QLineEdit::Normal : QLineEdit::Password);
+            revealButton_->setIcon(apiKeyVisibilityIcon(revealButton_, checked));
             revealButton_->setToolTip(checked
                 ? trText("隐藏 API Key", "Hide API key")
                 : trText("显示 API Key", "Reveal API key"));
@@ -283,11 +324,12 @@ private:
                 message = trText("首 Token 超时必须在 0 到 3600 秒之间。",
                                  "First-token timeout must be between 0 and 3600 seconds.");
             }
-            QMessageBox::warning(this,
-                                 trText("无法保存", "Cannot Save"),
-                                 message.isEmpty()
-                                     ? trText("请检查必填项和 URL 格式。", "Check the required fields and URL format.")
-                                     : message);
+            showGuardWarning(this,
+                             trText("无法保存", "Cannot Save"),
+                             message.isEmpty()
+                                 ? trText("请检查必填项和 URL 格式。", "Check the required fields and URL format.")
+                                 : message,
+                             trText("确定", "OK"));
             return;
         }
         if (store_) {
@@ -296,10 +338,11 @@ private:
                 ? store_->addProfile(&candidate, &storeError)
                 : store_->updateProfile(candidate, &storeError);
             if (!saved) {
-                QMessageBox::warning(this, trText("无法保存", "Cannot Save"),
-                                     storeError.isEmpty()
-                                         ? trText("上游配置保存失败。", "Failed to save the upstream profile.")
-                                         : storeError);
+                showGuardWarning(this, trText("无法保存", "Cannot Save"),
+                                 storeError.isEmpty()
+                                     ? trText("上游配置保存失败。", "Failed to save the upstream profile.")
+                                     : storeError,
+                                 trText("确定", "OK"));
                 return;
             }
             original_ = candidate;
@@ -331,7 +374,7 @@ UpstreamProfileDialog::UpstreamProfileDialog(UpstreamProfileStore *store,
                                              const QString &activeProfileId,
                                              bool proxyRunning,
                                              QWidget *parent)
-    : QDialog(parent),
+    : GuardDialog(parent),
       store_(store),
       language_(language.trimmed().toLower() == "en" ? "en" : "zh"),
       activeProfileId_(activeProfileId),
@@ -395,7 +438,7 @@ void UpstreamProfileDialog::buildUi()
     setMinimumSize(880, 560);
     resize(1080, 680);
 
-    QVBoxLayout *root = new QVBoxLayout(this);
+    QVBoxLayout *root = contentLayout();
     root->setContentsMargins(14, 14, 14, 12);
     root->setSpacing(10);
 
@@ -781,8 +824,9 @@ bool UpstreamProfileDialog::profileIsLocked(const QString &profileId) const
 
 void UpstreamProfileDialog::showStoreError(const QString &operation, const QString &error)
 {
-    QMessageBox::warning(this, textFor("operation_failed").arg(operation),
-                         error.isEmpty() ? textFor("operation_failed").arg(operation) : error);
+    showGuardWarning(this, textFor("operation_failed").arg(operation),
+                     error.isEmpty() ? textFor("operation_failed").arg(operation) : error,
+                     language_ == "en" ? "OK" : "确定");
 }
 
 void UpstreamProfileDialog::addProfile()
@@ -813,7 +857,8 @@ void UpstreamProfileDialog::viewOrEditSelectedProfile()
 {
     UpstreamProfile profile;
     if (!currentRowProfile(&profile)) {
-        QMessageBox::information(this, textFor("title"), textFor("no_selection"));
+        showGuardInformation(this, textFor("title"), textFor("no_selection"),
+                             language_ == "en" ? "OK" : "确定");
         return;
     }
     const bool editable = !profileIsLocked(profile.id);
@@ -832,21 +877,23 @@ void UpstreamProfileDialog::removeSelectedProfile()
 {
     UpstreamProfile profile;
     if (!currentRowProfile(&profile)) {
-        QMessageBox::information(this, textFor("title"), textFor("no_selection"));
+        showGuardInformation(this, textFor("title"), textFor("no_selection"),
+                             language_ == "en" ? "OK" : "确定");
         return;
     }
     if (profileIsLocked(profile.id)) {
-        QMessageBox::information(this, textFor("title"), textFor("locked_tip"));
+        showGuardInformation(this, textFor("title"), textFor("locked_tip"),
+                             language_ == "en" ? "OK" : "确定");
         return;
     }
     if (profile.id == selectedProfileId_ && store_->isSelectionLocked()) {
-        QMessageBox::information(this, textFor("title"), textFor("selection_locked_tip"));
+        showGuardInformation(this, textFor("title"), textFor("selection_locked_tip"),
+                             language_ == "en" ? "OK" : "确定");
         return;
     }
-    if (QMessageBox::question(this, textFor("delete_title"),
-                              textFor("delete_confirm").arg(profile.displayName),
-                              QMessageBox::Yes | QMessageBox::No,
-                              QMessageBox::No) != QMessageBox::Yes) {
+    if (!confirmGuardMessage(this, textFor("delete_title"),
+                             textFor("delete_confirm").arg(profile.displayName),
+                             textFor("remove"), textFor("cancel"), true)) {
         return;
     }
 
@@ -876,11 +923,13 @@ void UpstreamProfileDialog::selectCurrentProfile()
 {
     const QString id = currentRowProfileId();
     if (id.isEmpty()) {
-        QMessageBox::information(this, textFor("title"), textFor("no_selection"));
+        showGuardInformation(this, textFor("title"), textFor("no_selection"),
+                             language_ == "en" ? "OK" : "确定");
         return;
     }
     if (proxyRunning_ || store_->isSelectionLocked()) {
-        QMessageBox::information(this, textFor("title"), textFor("selection_locked_tip"));
+        showGuardInformation(this, textFor("title"), textFor("selection_locked_tip"),
+                             language_ == "en" ? "OK" : "确定");
         return;
     }
     QString error;
@@ -895,59 +944,57 @@ void UpstreamProfileDialog::selectCurrentProfile()
 
 void UpstreamProfileDialog::importProfiles()
 {
-    const QString path = QFileDialog::getOpenFileName(this, textFor("import_title"), QString(),
-                                                       textFor("json_filter"));
+    GuardFileDialog fileDialog(GuardFileDialog::OpenExistingFile, textFor("import_title"),
+                               QDir::homePath(), this, language_);
+    if (fileDialog.exec() != QDialog::Accepted) return;
+    const QString path = fileDialog.selectedFile();
     if (path.isEmpty()) return;
 
-    QMessageBox conflict(this);
-    conflict.setIcon(QMessageBox::Question);
-    conflict.setWindowTitle(textFor("import_title"));
-    conflict.setText(textFor("import_conflict"));
-    QAbstractButton *skip = conflict.addButton(textFor("skip"), QMessageBox::AcceptRole);
-    QAbstractButton *overwrite = conflict.addButton(textFor("overwrite"), QMessageBox::DestructiveRole);
-    QAbstractButton *cancel = conflict.addButton(textFor("cancel"), QMessageBox::RejectRole);
-    conflict.setDefaultButton(qobject_cast<QPushButton *>(skip));
-    conflict.exec();
-    if (conflict.clickedButton() == cancel || !conflict.clickedButton()) return;
+    const int conflictChoice = chooseGuardMessage(
+        this, textFor("import_title"), textFor("import_conflict"), GuardQuestion,
+        QList<GuardMessageButton>()
+            << GuardMessageButton(textFor("skip"), 1, QDialogButtonBox::AcceptRole, true)
+            << GuardMessageButton(textFor("overwrite"), 2, QDialogButtonBox::DestructiveRole)
+            << GuardMessageButton(textFor("cancel"), QDialog::Rejected, QDialogButtonBox::RejectRole));
+    if (conflictChoice == QDialog::Rejected) return;
 
     UpstreamProfileImportResult result;
     QString error;
     if (!store_->importJson(path,
-                            conflict.clickedButton() == overwrite ? OverwriteImportConflicts
-                                                                  : SkipImportConflicts,
+                            conflictChoice == 2 ? OverwriteImportConflicts : SkipImportConflicts,
                             &result, &error)) {
         showStoreError(textFor("import_operation"), error);
         return;
     }
     currentPage_ = 1;
     loadPage();
-    QMessageBox::information(this, textFor("import_complete"),
-                             textFor("import_summary").arg(result.added).arg(result.updated).arg(result.skipped));
+    showGuardInformation(this, textFor("import_complete"),
+                         textFor("import_summary").arg(result.added).arg(result.updated).arg(result.skipped),
+                         language_ == "en" ? "OK" : "确定");
 }
 
 void UpstreamProfileDialog::exportProfiles()
 {
-    QString path = QFileDialog::getSaveFileName(this, textFor("export_title"),
-                                                 "upstream-profiles.json", textFor("json_filter"));
+    GuardFileDialog fileDialog(GuardFileDialog::SaveFile, textFor("export_title"),
+                               QDir(QDir::homePath()).filePath("upstream-profiles.json"), this,
+                               language_);
+    if (fileDialog.exec() != QDialog::Accepted) return;
+    QString path = fileDialog.selectedFile();
     if (path.isEmpty()) return;
     if (QFileInfo(path).suffix().isEmpty()) path += ".json";
 
-    QMessageBox choice(this);
-    choice.setIcon(QMessageBox::Question);
-    choice.setWindowTitle(textFor("export_title"));
-    choice.setText(textFor("secret_choice"));
-    QAbstractButton *withoutSecrets = choice.addButton(textFor("without_secrets"), QMessageBox::AcceptRole);
-    QAbstractButton *withSecrets = choice.addButton(textFor("with_secrets"), QMessageBox::DestructiveRole);
-    QAbstractButton *cancel = choice.addButton(textFor("cancel"), QMessageBox::RejectRole);
-    choice.setDefaultButton(qobject_cast<QPushButton *>(withoutSecrets));
-    choice.exec();
-    if (choice.clickedButton() == cancel || !choice.clickedButton()) return;
+    const int secretChoice = chooseGuardMessage(
+        this, textFor("export_title"), textFor("secret_choice"), GuardQuestion,
+        QList<GuardMessageButton>()
+            << GuardMessageButton(textFor("without_secrets"), 1, QDialogButtonBox::AcceptRole, true)
+            << GuardMessageButton(textFor("with_secrets"), 2, QDialogButtonBox::DestructiveRole)
+            << GuardMessageButton(textFor("cancel"), QDialog::Rejected, QDialogButtonBox::RejectRole));
+    if (secretChoice == QDialog::Rejected) return;
 
-    const bool includeSecrets = choice.clickedButton() == withSecrets;
+    const bool includeSecrets = secretChoice == 2;
     if (includeSecrets &&
-        QMessageBox::warning(this, textFor("secret_warning_title"), textFor("secret_warning"),
-                             QMessageBox::Yes | QMessageBox::No,
-                             QMessageBox::No) != QMessageBox::Yes) {
+        !confirmGuardMessage(this, textFor("secret_warning_title"), textFor("secret_warning"),
+                             textFor("with_secrets"), textFor("cancel"), true)) {
         return;
     }
 
@@ -956,8 +1003,9 @@ void UpstreamProfileDialog::exportProfiles()
         showStoreError(textFor("export_operation"), error);
         return;
     }
-    QMessageBox::information(this, textFor("export_complete"),
-                             textFor("export_complete_message").arg(path));
+    showGuardInformation(this, textFor("export_complete"),
+                         textFor("export_complete_message").arg(path),
+                         language_ == "en" ? "OK" : "确定");
 }
 
 void UpstreamProfileDialog::applySearch()

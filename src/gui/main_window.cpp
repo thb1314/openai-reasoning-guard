@@ -1,6 +1,7 @@
 #include "gui/main_window.h"
 
 #include "gui/app_icon.h"
+#include "gui/guard_dialog.h"
 #include "gui/upstream_profile_dialog.h"
 
 #include <QtCore/QDateTime>
@@ -23,7 +24,6 @@
 #include <QtWidgets/QHBoxLayout>
 #include <QtWidgets/QMenu>
 #include <QtWidgets/QMenuBar>
-#include <QtWidgets/QMessageBox>
 #include <QtWidgets/QScrollArea>
 #include <QtWidgets/QSizePolicy>
 #include <QtWidgets/QSplitter>
@@ -1422,7 +1422,8 @@ void MainWindow::handleProxyStopped()
 void MainWindow::handleFailure(const QString &message)
 {
     appendLog(textFor("log_error").arg(message));
-    QMessageBox::warning(this, textFor("window_title"), message);
+    net_tunnel_gui::showGuardWarning(this, textFor("window_title"), message,
+                                     currentLanguage() == "en" ? "OK" : "确定");
 }
 
 void MainWindow::setProxyRunningUi(bool running)

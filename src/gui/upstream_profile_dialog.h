@@ -1,8 +1,7 @@
 #pragma once
 
 #include "core/upstream_profile.h"
-
-#include <QtWidgets/QDialog>
+#include "gui/guard_dialog.h"
 
 class QComboBox;
 class QLabel;
@@ -10,7 +9,7 @@ class QLineEdit;
 class QPushButton;
 class QTableWidget;
 
-class UpstreamProfileDialog : public QDialog {
+class UpstreamProfileDialog : public net_tunnel_gui::GuardDialog {
     Q_OBJECT
 
 public:

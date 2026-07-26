@@ -65,6 +65,8 @@ void UpstreamProfileDialogTest::paginatesAndSelectsCurrentProfile()
     QVERIFY2(store.setSelectedProfileId(profiles.first().id, &error), qPrintable(error));
 
     UpstreamProfileDialog dialog(&store, "en");
+    QVERIFY(dialog.windowFlags() & Qt::FramelessWindowHint);
+    QVERIFY(dialog.findChild<QWidget *>("guardDialogTitleBar"));
     QTableWidget *table = dialog.findChild<QTableWidget *>("profileTable");
     QComboBox *pageSize = dialog.findChild<QComboBox *>("profilePageSizeCombo");
     QLineEdit *search = dialog.findChild<QLineEdit *>("profileSearchEdit");
@@ -183,11 +185,15 @@ void UpstreamProfileDialogTest::editorUsesDefaultsAndProtectsApiKey()
         QLineEdit *key = editor->findChild<QLineEdit *>("profileApiKeyEdit");
         QToolButton *reveal = editor->findChild<QToolButton *>("profileRevealApiKeyButton");
         QToolButton *copy = editor->findChild<QToolButton *>("profileCopyApiKeyButton");
-        if (key && reveal && copy && key->echoMode() == QLineEdit::Password) {
+        if (key && reveal && copy && key->echoMode() == QLineEdit::Password &&
+            (editor->windowFlags() & Qt::FramelessWindowHint) &&
+            editor->findChild<QWidget *>("guardDialogTitleBar")) {
+            const quint64 concealedIconKey = reveal->icon().cacheKey();
             reveal->click();
             copy->click();
             keyChecksPassed = key->echoMode() == QLineEdit::Normal &&
-                QApplication::clipboard()->text() == "sk-test-secret";
+                QApplication::clipboard()->text() == "sk-test-secret" &&
+                !reveal->icon().isNull() && reveal->icon().cacheKey() != concealedIconKey;
         }
         editor->reject();
     });

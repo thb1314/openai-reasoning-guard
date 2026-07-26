@@ -194,6 +194,8 @@ target_link_libraries(net-tunnel-cli PRIVATE
 
 add_executable(net-tunnel-gui
     src/gui/main.cpp
+    src/gui/guard_dialog.h
+    src/gui/guard_dialog.cpp
     src/gui/main_window.h
     src/gui/main_window.cpp
     src/gui/upstream_profile_dialog.h
@@ -279,6 +281,8 @@ if(NET_TUNNEL_BUILD_TESTS)
 
     add_executable(upstream-profile-dialog-test
         tests/upstream_profile_dialog_test.cpp
+        src/gui/guard_dialog.h
+        src/gui/guard_dialog.cpp
         src/gui/upstream_profile_dialog.h
         src/gui/upstream_profile_dialog.cpp
     )
@@ -293,8 +297,27 @@ if(NET_TUNNEL_BUILD_TESTS)
     )
     add_test(NAME upstream-profile-dialog-test COMMAND upstream-profile-dialog-test -platform offscreen)
 
+    add_executable(guard-dialog-test
+        tests/guard_dialog_test.cpp
+        src/gui/guard_dialog.h
+        src/gui/guard_dialog.cpp
+    )
+    net_tunnel_add_private_compile_options(guard-dialog-test)
+    target_include_directories(guard-dialog-test PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    )
+    target_link_libraries(guard-dialog-test PRIVATE
+        Qt5::Core
+        Qt5::Gui
+        Qt5::Widgets
+        Qt5::Test
+    )
+    add_test(NAME guard-dialog-test COMMAND guard-dialog-test -platform offscreen)
+
     add_executable(main-window-profile-test
         tests/main_window_profile_test.cpp
+        src/gui/guard_dialog.h
+        src/gui/guard_dialog.cpp
         src/gui/main_window.h
         src/gui/main_window.cpp
         src/gui/upstream_profile_dialog.h
@@ -359,6 +382,7 @@ if(NET_TUNNEL_BUILD_TESTS)
         openssl-runtime-test
         upstream-profile-store-test
         upstream-profile-dialog-test
+        guard-dialog-test
         main-window-profile-test
         cli-profile-commands-test
         qui-widget-test
