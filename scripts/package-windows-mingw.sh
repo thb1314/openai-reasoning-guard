@@ -489,6 +489,9 @@ OutFile "${installer_path}"
 InstallDir "${nsis_install_dir}\\${APP_NAME}"
 RequestExecutionLevel admin
 SetCompressor /SOLID lzma
+; Generate a complete uninstaller while building the package. This avoids
+; rebuilding its PE header and icon resources at install time.
+!uninstfinalize 'test -s "%1"' = 0
 
 Page directory
 Page instfiles
@@ -503,6 +506,10 @@ Section "Install"
   CreateShortCut "\$SMPROGRAMS\\${APP_NAME}\\CLI.lnk" "\$INSTDIR\\${PACKAGE_ID}-cli.exe" "" "\$INSTDIR\\${PACKAGE_ID}-cli.exe" 0
   WriteUninstaller "\$INSTDIR\\Uninstall.exe"
 SectionEnd
+
+Function un.onInit
+  StrCpy \$INSTDIR \$EXEDIR
+FunctionEnd
 
 Section "Uninstall"
   Delete "\$SMPROGRAMS\\${APP_NAME}\\${APP_NAME}.lnk"

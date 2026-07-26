@@ -618,6 +618,35 @@ jobs:
               }
           }
 
+          function Assert-NsisUninstallerPe {
+              param(
+                  [Parameter(Mandatory = $true)]
+                  [string]$Path
+              )
+
+              [byte[]]$bytes = [System.IO.File]::ReadAllBytes($Path)
+              if ($bytes.Length -lt 0x40 -or $bytes[0] -ne 0x4d -or $bytes[1] -ne 0x5a) {
+                  throw "NSIS uninstaller is missing its MZ header: $Path"
+              }
+
+              $peOffset = [BitConverter]::ToInt32($bytes, 0x3c)
+              if ($peOffset -lt 0 -or $peOffset + 6 -gt $bytes.Length) {
+                  throw "NSIS uninstaller has an invalid PE header offset: $Path"
+              }
+              if ($bytes[$peOffset] -ne 0x50 -or $bytes[$peOffset + 1] -ne 0x45 -or
+                  $bytes[$peOffset + 2] -ne 0x00 -or $bytes[$peOffset + 3] -ne 0x00) {
+                  throw "NSIS uninstaller is missing its PE header: $Path"
+              }
+
+              $machine = [BitConverter]::ToUInt16($bytes, $peOffset + 4)
+              if ($machine -ne 0x014c) {
+                  throw ("NSIS uninstaller has unexpected PE machine 0x{0:X4}: {1}" -f $machine, $Path)
+              }
+              $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash
+              Write-Host ("NSIS uninstaller PE validated: bytes={0}; machine=0x{1:X4}; sha256={2}" -f `
+                  $bytes.Length, $machine, $hash)
+          }
+
           $packageDir = Join-Path $env:RUNNER_TEMP "windows-package"
           $archives = @(Get-ChildItem -Path $packageDir -Filter "*-portable.zip" -File)
           if ($archives.Count -ne 1) {
@@ -671,11 +700,31 @@ jobs:
           if (-not (Test-Path $uninstaller -PathType Leaf)) {
               throw "NSIS uninstaller is missing after installation: $uninstaller"
           }
-          $uninstallResult = Start-Process -FilePath $uninstaller -ArgumentList @("/S") -PassThru -Wait
-          if ($uninstallResult.ExitCode -ne 0) {
-              throw "NSIS uninstaller failed with exit code $($uninstallResult.ExitCode)"
+          Assert-NsisUninstallerPe -Path $uninstaller
+          $uninstallerDiagnostic = Join-Path $env:RUNNER_TEMP "windows-uninstaller-${{ matrix.arch }}-diagnostic.exe"
+          Copy-Item -LiteralPath $uninstaller -Destination $uninstallerDiagnostic -Force
+          Push-Location $installDir
+          try {
+              & $uninstaller /S
+              $uninstallExitCode = $LASTEXITCODE
           }
-          Remove-Item -Recurse -Force $installDir -ErrorAction SilentlyContinue
+          finally {
+              Pop-Location
+          }
+          if ($uninstallExitCode -ne 0) {
+              throw "NSIS uninstaller failed with exit code $uninstallExitCode"
+          }
+          if (Test-Path $installDir) {
+              throw "NSIS uninstaller left the custom installation directory behind: $installDir"
+          }
+
+      - name: Upload failed NSIS uninstaller diagnostic
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: openai-reasoning-guard-windows-${{ matrix.arch }}-uninstaller-diagnostic
+          path: ${{ runner.temp }}/windows-uninstaller-${{ matrix.arch }}-diagnostic.exe
+          if-no-files-found: warn
 
   macos:
     name: macOS ${{ matrix.arch }} shell installer
