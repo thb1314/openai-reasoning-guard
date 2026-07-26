@@ -535,6 +535,7 @@ Section "Uninstall"
   RMDir "\$SMPROGRAMS\\${APP_NAME}"
   ; NSIS runs the uninstaller from a temporary copy, so explicitly deleting
   ; this installed copy allows the original installation directory to vanish.
+  SetOutPath "\$TEMP"
   Delete "\$INSTDIR\\Uninstall.exe"
   RMDir /r "\$INSTDIR"
 SectionEnd

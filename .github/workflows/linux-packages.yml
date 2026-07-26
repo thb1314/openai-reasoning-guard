@@ -681,7 +681,10 @@ jobs:
           if ($installDir -match '\s') {
               throw "NSIS silent installation path must not contain whitespace: $installDir"
           }
+          $startMenuDir = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::Programs)) `
+              "OpenAI Reasoning Guard"
           Remove-Item -Recurse -Force $installDir -ErrorAction SilentlyContinue
+          Remove-Item -Recurse -Force $startMenuDir -ErrorAction SilentlyContinue
           $installResult = Start-Process -FilePath $installers[0].FullName `
               -ArgumentList @("/S", "/D=$installDir") -PassThru -Wait
           if ($installResult.ExitCode -ne 0) {
@@ -700,7 +703,17 @@ jobs:
           if (-not (Test-Path $installedQsqlite -PathType Leaf)) {
               throw "QSQLITE plugin is missing after NSIS installation: $installedQsqlite"
           }
+          $guiShortcut = Join-Path $startMenuDir "OpenAI Reasoning Guard.lnk"
+          $cliShortcut = Join-Path $startMenuDir "CLI.lnk"
+          if (-not (Test-Path $guiShortcut -PathType Leaf) -or -not (Test-Path $cliShortcut -PathType Leaf)) {
+              throw "NSIS installer did not create the expected Start Menu shortcuts"
+          }
           Invoke-ProfileSmoke -Cli $installedCli -Name "installer-${{ matrix.arch }}"
+
+          $sentinelDir = Join-Path $installDir "uninstall-sentinel"
+          $sentinel = Join-Path $sentinelDir "keep-me.txt"
+          New-Item -ItemType Directory -Force -Path $sentinelDir | Out-Null
+          Set-Content -LiteralPath $sentinel -Value "uninstall cleanup sentinel"
 
           $uninstaller = Join-Path $installDir "Uninstall.exe"
           if (-not (Test-Path $uninstaller -PathType Leaf)) {
@@ -709,24 +722,28 @@ jobs:
           Assert-NsisUninstallerPe -Path $uninstaller
           $uninstallerDiagnostic = Join-Path $env:RUNNER_TEMP "windows-uninstaller-${{ matrix.arch }}-diagnostic.exe"
           Copy-Item -LiteralPath $uninstaller -Destination $uninstallerDiagnostic -Force
-          Push-Location $installDir
-          try {
-              & $uninstaller /S
-              $uninstallExitCode = $LASTEXITCODE
-          }
-          finally {
-              Pop-Location
-          }
+          $uninstallerRunnerDir = Join-Path $env:RUNNER_TEMP "windows-uninstaller-runner-${{ matrix.arch }}"
+          $uninstallerRunner = Join-Path $uninstallerRunnerDir "Uninstall.exe"
+          Remove-Item -Recurse -Force $uninstallerRunnerDir -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $uninstallerRunnerDir | Out-Null
+          Copy-Item -LiteralPath $uninstaller -Destination $uninstallerRunner -Force
+          # _?= is intentionally the final argument: it binds $INSTDIR and
+          # prevents NSIS from spawning another temporary uninstaller process.
+          & $uninstallerRunner /S "_?=$installDir"
+          $uninstallExitCode = $LASTEXITCODE
           if ($uninstallExitCode -ne 0) {
               throw "NSIS uninstaller failed with exit code $uninstallExitCode"
-          }
-          $uninstallDeadline = [DateTime]::UtcNow.AddSeconds(10)
-          while ((Test-Path -LiteralPath $installDir) -and [DateTime]::UtcNow -lt $uninstallDeadline) {
-              Start-Sleep -Milliseconds 100
           }
           if (Test-Path -LiteralPath $installDir) {
               throw "NSIS uninstaller left the custom installation directory behind: $installDir"
           }
+          if (Test-Path -LiteralPath $sentinel) {
+              throw "NSIS uninstaller left a non-payload sentinel behind: $sentinel"
+          }
+          if (Test-Path -LiteralPath $startMenuDir) {
+              throw "NSIS uninstaller left the Start Menu directory behind: $startMenuDir"
+          }
+          Write-Host "Confirmed NSIS removed the custom installation directory and Start Menu shortcuts: $installDir"
 
       - name: Upload failed NSIS uninstaller diagnostic
         if: failure()
