@@ -1,6 +1,7 @@
 #include "cli/profile_commands.h"
 #include "core/app_config.h"
 #include "core/http_proxy_server.h"
+#include "core/openssl_runtime.h"
 #include "core/upstream_profile.h"
 
 #include <QtCore/QCommandLineOption>
@@ -125,6 +126,12 @@ static int queryStatus(const QUrl &url)
 
 int main(int argc, char **argv)
 {
+    QString runtimeError;
+    if (!ensureBundledOpenSslRuntime(argc, argv, &runtimeError)) {
+        QTextStream(stderr) << runtimeError << "\n";
+        return 127;
+    }
+
     QCoreApplication app(argc, argv);
     QCoreApplication::setApplicationName("openai-reasoning-guard-cli");
     QCoreApplication::setApplicationVersion("0.1.0");

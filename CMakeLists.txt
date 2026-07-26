@@ -151,6 +151,8 @@ add_library(net-tunnel-core STATIC
     src/core/http_proxy_server.cpp
     src/core/json_utils.h
     src/core/json_utils.cpp
+    src/core/openssl_runtime.h
+    src/core/openssl_runtime.cpp
     src/core/upstream_profile.h
     src/core/upstream_profile.cpp
 )
@@ -252,6 +254,17 @@ if(NET_TUNNEL_BUILD_TESTS)
     )
     add_test(NAME http-proxy-server-stop-test COMMAND http-proxy-server-stop-test)
 
+    add_executable(openssl-runtime-test
+        tests/openssl_runtime_test.cpp
+    )
+    net_tunnel_add_private_compile_options(openssl-runtime-test)
+    target_link_libraries(openssl-runtime-test PRIVATE
+        net-tunnel-core
+        Qt5::Core
+        Qt5::Test
+    )
+    add_test(NAME openssl-runtime-test COMMAND openssl-runtime-test)
+
     add_executable(upstream-profile-store-test
         tests/upstream_profile_store_test.cpp
     )
@@ -343,6 +356,7 @@ if(NET_TUNNEL_BUILD_TESTS)
     set_tests_properties(
         http-proxy-server-test
         http-proxy-server-stop-test
+        openssl-runtime-test
         upstream-profile-store-test
         upstream-profile-dialog-test
         main-window-profile-test

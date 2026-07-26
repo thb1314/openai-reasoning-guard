@@ -1,6 +1,7 @@
 #include "gui/main_window.h"
 
 #include "gui/app_icon.h"
+#include "core/openssl_runtime.h"
 #include "quiwidget.h"
 
 #include <QtCore/QCoreApplication>
@@ -10,6 +11,8 @@
 #include <QtGui/QFontDatabase>
 #include <QtGui/QGuiApplication>
 #include <QtWidgets/QApplication>
+
+#include <cstdio>
 
 static void loadApplicationFonts()
 {
@@ -40,6 +43,12 @@ static void loadApplicationFonts()
 
 int main(int argc, char **argv)
 {
+    QString runtimeError;
+    if (!net_tunnel::ensureBundledOpenSslRuntime(argc, argv, &runtimeError)) {
+        fprintf(stderr, "%s\n", runtimeError.toLocal8Bit().constData());
+        return 127;
+    }
+
     QApplication app(argc, argv);
     QApplication::setApplicationName("openai-reasoning-guard-gui");
     QApplication::setApplicationVersion("0.1.0");
