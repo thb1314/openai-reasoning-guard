@@ -171,6 +171,38 @@ verify_pe_architecture() {
     fi
 }
 
+verify_nsis_installer() {
+    local path="$1"
+    local magic pe_offset signature machine
+
+    if [[ ! -s "${path}" ]]; then
+        echo "NSIS installer is missing or empty: ${path}" >&2
+        exit 2
+    fi
+
+    magic="$(od -An -tx1 -N2 "${path}" | tr -d '[:space:]')"
+    if [[ "${magic}" != "4d5a" ]]; then
+        echo "NSIS installer is not a PE file (missing MZ header): ${path}" >&2
+        exit 2
+    fi
+    pe_offset="$(od -An -tu4 -j60 -N4 "${path}" | tr -d '[:space:]')"
+    if [[ ! "${pe_offset}" =~ ^[0-9]+$ ]]; then
+        echo "NSIS installer has an invalid PE header offset: ${path}" >&2
+        exit 2
+    fi
+    signature="$(od -An -tx1 -j"${pe_offset}" -N4 "${path}" | tr -d '[:space:]')"
+    if [[ "${signature}" != "50450000" ]]; then
+        echo "NSIS installer is not a PE file (missing PE header): ${path}" >&2
+        exit 2
+    fi
+    machine="$(od -An -tx1 -j"$((pe_offset + 4))" -N2 "${path}" | tr -d '[:space:]')"
+    # NSIS 3 emits an x86 Unicode bootstrap; its payload may target another architecture.
+    if [[ "${machine}" != "4c01" ]]; then
+        echo "NSIS installer has an unexpected bootstrap architecture: ${path}" >&2
+        exit 2
+    fi
+}
+
 find_tool() {
     local name="$1"
     if [[ -n "${MINGW_BIN_DIR}" && -x "${MINGW_BIN_DIR}/${MINGW_TRIPLE}-${name}" ]]; then
@@ -434,6 +466,18 @@ rm -f "${zip_path}"
 if ((BUILD_INSTALLER == 1)); then
     if makensis_path="$(find_makensis)"; then
         nsis_script="${WORK_DIR}/${PACKAGE_ID}-${PACKAGE_ARCH}.nsi"
+        installer_payload_manifest="${WORK_DIR}/${PACKAGE_ID}-${PACKAGE_ARCH}-installer-payload.txt"
+        installer_validation_manifest="${WORK_DIR}/${PACKAGE_ID}-${PACKAGE_ARCH}-installer-validation.sha256"
+        (
+            cd "${stage_dir}"
+            find . -type f -printf '%P\n' | LC_ALL=C sort
+        ) > "${installer_payload_manifest}"
+        require_file "${installer_payload_manifest}"
+        if ! grep -Fx 'Qt5Sql.dll' "${installer_payload_manifest}" >/dev/null ||
+            ! grep -Fx 'plugins/sqldrivers/qsqlite.dll' "${installer_payload_manifest}" >/dev/null; then
+            echo "NSIS installer payload manifest is missing required QtSql files" >&2
+            exit 2
+        fi
         nsis_install_dir='$PROGRAMFILES'
         if [[ "${PACKAGE_ARCH}" == "x86_64" || "${PACKAGE_ARCH}" == "arm64" ]]; then
             nsis_install_dir='$PROGRAMFILES64'
@@ -468,6 +512,9 @@ Section "Uninstall"
 SectionEnd
 EOF
         "${makensis_path}" "${nsis_script}"
+        verify_nsis_installer "${installer_path}"
+        sha256sum "${installer_path}" "${installer_payload_manifest}" > "${installer_validation_manifest}"
+        echo "Built Windows installer payload manifest: ${installer_payload_manifest}"
     else
         echo "warning: makensis not found; installer exe was not built" >&2
     fi

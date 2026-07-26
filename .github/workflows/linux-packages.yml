@@ -422,7 +422,6 @@ jobs:
             curl
             file
             nsis
-            p7zip-full
             unzip
             xz-utils
             zip
@@ -530,6 +529,7 @@ jobs:
         run: |
           set -euo pipefail
           stage_dir="${PWD}/.package-work/windows-mingw-${{ matrix.arch }}/openai-reasoning-guard-windows-${{ matrix.arch }}"
+          work_dir="${PWD}/.package-work/windows-mingw-${{ matrix.arch }}"
           test -f "${stage_dir}/Qt5Sql.dll"
           test -f "${stage_dir}/plugins/sqldrivers/qsqlite.dll"
           portable="$(find "${PWD}/dist/windows-${{ matrix.arch }}" -maxdepth 1 -type f -name '*-portable.zip' -print -quit)"
@@ -538,8 +538,20 @@ jobs:
           unzip -Z1 "${portable}" | grep -Fx 'plugins/sqldrivers/qsqlite.dll' >/dev/null
           installer="$(find "${PWD}/dist/windows-${{ matrix.arch }}" -maxdepth 1 -type f -name '*-installer.exe' -print -quit)"
           test -n "${installer}"
-          7z l "${installer}" | grep -F 'Qt5Sql.dll' >/dev/null
-          7z l "${installer}" | grep -F 'qsqlite.dll' >/dev/null
+          # NSIS uses a PE overlay, which general archive readers do not reliably expose.
+          test -s "${installer}"
+          test "$(od -An -tx1 -N2 "${installer}" | tr -d '[:space:]')" = '4d5a'
+          payload_manifest="${work_dir}/openai-reasoning-guard-${{ matrix.arch }}-installer-payload.txt"
+          validation_manifest="${work_dir}/openai-reasoning-guard-${{ matrix.arch }}-installer-validation.sha256"
+          nsis_script="${work_dir}/openai-reasoning-guard-${{ matrix.arch }}.nsi"
+          test -s "${payload_manifest}"
+          test -s "${validation_manifest}"
+          test -s "${nsis_script}"
+          grep -Fx 'Qt5Sql.dll' "${payload_manifest}" >/dev/null
+          grep -Fx 'plugins/sqldrivers/qsqlite.dll' "${payload_manifest}" >/dev/null
+          grep -F "File /r \"${stage_dir}/*\"" "${nsis_script}" >/dev/null
+          grep -F "  ${installer}" "${validation_manifest}" >/dev/null
+          sha256sum --check "${validation_manifest}"
 
       - name: Upload Windows package
         if: env.BUILD_TARGET == 'all' || env.BUILD_TARGET == format('windows-{0}', matrix.arch)
@@ -566,10 +578,46 @@ jobs:
           name: openai-reasoning-guard-windows-${{ matrix.arch }}
           path: ${{ runner.temp }}/windows-package
 
-      - name: Run CLI profile and QSQLITE smoke
+      - name: Run installer and CLI profile/QSQLITE smoke
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+
+          function Invoke-ProfileSmoke {
+              param(
+                  [Parameter(Mandatory = $true)]
+                  [string]$Cli,
+                  [Parameter(Mandatory = $true)]
+                  [string]$Name
+              )
+
+              $smokeDir = Join-Path $env:RUNNER_TEMP "profile-smoke-$Name"
+              Remove-Item -Recurse -Force $smokeDir -ErrorAction SilentlyContinue
+              New-Item -ItemType Directory -Force -Path $smokeDir | Out-Null
+              $configPath = Join-Path $smokeDir "config.json"
+
+              $addJson = (& $Cli --config $configPath profile add `
+                  --name "CI smoke" --base-url "https://example.com/v1" --json | Out-String)
+              if ($LASTEXITCODE -ne 0) {
+                  throw "$Name profile add failed with exit code $LASTEXITCODE"
+              }
+              $null = $addJson | ConvertFrom-Json
+
+              $listJson = (& $Cli --config $configPath profile list --json | Out-String)
+              if ($LASTEXITCODE -ne 0) {
+                  throw "$Name profile list failed with exit code $LASTEXITCODE"
+              }
+              $list = $listJson | ConvertFrom-Json
+              if ($list.total_items -ne 1 -or $list.items[0].display_name -ne "CI smoke") {
+                  throw "$Name profile list returned unexpected data: $listJson"
+              }
+
+              $database = Join-Path $smokeDir "upstream-profiles.sqlite3"
+              if (-not (Test-Path $database -PathType Leaf) -or (Get-Item $database).Length -eq 0) {
+                  throw "$Name QSQLITE did not create a non-empty profile database: $database"
+              }
+          }
+
           $packageDir = Join-Path $env:RUNNER_TEMP "windows-package"
           $archives = @(Get-ChildItem -Path $packageDir -Filter "*-portable.zip" -File)
           if ($archives.Count -ne 1) {
@@ -580,40 +628,54 @@ jobs:
           Remove-Item -Recurse -Force $extractDir -ErrorAction SilentlyContinue
           Expand-Archive -Path $archives[0].FullName -DestinationPath $extractDir
 
-          $cli = Join-Path $extractDir "openai-reasoning-guard-cli.exe"
+          $portableCli = Join-Path $extractDir "openai-reasoning-guard-cli.exe"
           $qsqlite = Join-Path $extractDir "plugins/sqldrivers/qsqlite.dll"
-          if (-not (Test-Path $cli -PathType Leaf)) {
-              throw "CLI executable is missing from portable archive: $cli"
+          if (-not (Test-Path $portableCli -PathType Leaf)) {
+              throw "CLI executable is missing from portable archive: $portableCli"
           }
           if (-not (Test-Path $qsqlite -PathType Leaf)) {
               throw "QSQLITE plugin is missing from portable archive: $qsqlite"
           }
+          Invoke-ProfileSmoke -Cli $portableCli -Name "portable-${{ matrix.arch }}"
 
-          $smokeDir = Join-Path $env:RUNNER_TEMP "profile-smoke"
-          Remove-Item -Recurse -Force $smokeDir -ErrorAction SilentlyContinue
-          New-Item -ItemType Directory -Force -Path $smokeDir | Out-Null
-          $configPath = Join-Path $smokeDir "config.json"
-
-          $addJson = (& $cli --config $configPath profile add `
-              --name "CI smoke" --base-url "https://example.com/v1" --json | Out-String)
-          if ($LASTEXITCODE -ne 0) {
-              throw "profile add failed with exit code $LASTEXITCODE"
+          $installers = @(Get-ChildItem -Path $packageDir -Filter "*-installer.exe" -File)
+          if ($installers.Count -ne 1) {
+              throw "Expected exactly one installer, found $($installers.Count)"
           }
-          $null = $addJson | ConvertFrom-Json
-
-          $listJson = (& $cli --config $configPath profile list --json | Out-String)
-          if ($LASTEXITCODE -ne 0) {
-              throw "profile list failed with exit code $LASTEXITCODE"
+          $installDir = Join-Path $env:RUNNER_TEMP "windows-installer-${{ matrix.arch }}"
+          if ($installDir -match '\s') {
+              throw "NSIS silent installation path must not contain whitespace: $installDir"
           }
-          $list = $listJson | ConvertFrom-Json
-          if ($list.total_items -ne 1 -or $list.items[0].display_name -ne "CI smoke") {
-              throw "profile list returned unexpected data: $listJson"
+          Remove-Item -Recurse -Force $installDir -ErrorAction SilentlyContinue
+          $installResult = Start-Process -FilePath $installers[0].FullName `
+              -ArgumentList @("/S", "/D=$installDir") -PassThru -Wait
+          if ($installResult.ExitCode -ne 0) {
+              throw "NSIS installer failed with exit code $($installResult.ExitCode)"
           }
 
-          $database = Join-Path $smokeDir "upstream-profiles.sqlite3"
-          if (-not (Test-Path $database -PathType Leaf) -or (Get-Item $database).Length -eq 0) {
-              throw "QSQLITE did not create a non-empty profile database: $database"
+          $installedCli = Join-Path $installDir "openai-reasoning-guard-cli.exe"
+          $installedQtSql = Join-Path $installDir "Qt5Sql.dll"
+          $installedQsqlite = Join-Path $installDir "plugins/sqldrivers/qsqlite.dll"
+          if (-not (Test-Path $installedCli -PathType Leaf)) {
+              throw "CLI executable is missing after NSIS installation: $installedCli"
           }
+          if (-not (Test-Path $installedQtSql -PathType Leaf)) {
+              throw "Qt5Sql runtime is missing after NSIS installation: $installedQtSql"
+          }
+          if (-not (Test-Path $installedQsqlite -PathType Leaf)) {
+              throw "QSQLITE plugin is missing after NSIS installation: $installedQsqlite"
+          }
+          Invoke-ProfileSmoke -Cli $installedCli -Name "installer-${{ matrix.arch }}"
+
+          $uninstaller = Join-Path $installDir "Uninstall.exe"
+          if (-not (Test-Path $uninstaller -PathType Leaf)) {
+              throw "NSIS uninstaller is missing after installation: $uninstaller"
+          }
+          $uninstallResult = Start-Process -FilePath $uninstaller -ArgumentList @("/S") -PassThru -Wait
+          if ($uninstallResult.ExitCode -ne 0) {
+              throw "NSIS uninstaller failed with exit code $($uninstallResult.ExitCode)"
+          }
+          Remove-Item -Recurse -Force $installDir -ErrorAction SilentlyContinue
 
   macos:
     name: macOS ${{ matrix.arch }} shell installer
