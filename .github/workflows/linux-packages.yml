@@ -720,7 +720,11 @@ jobs:
           if ($uninstallExitCode -ne 0) {
               throw "NSIS uninstaller failed with exit code $uninstallExitCode"
           }
-          if (Test-Path $installDir) {
+          $uninstallDeadline = [DateTime]::UtcNow.AddSeconds(10)
+          while ((Test-Path -LiteralPath $installDir) -and [DateTime]::UtcNow -lt $uninstallDeadline) {
+              Start-Sleep -Milliseconds 100
+          }
+          if (Test-Path -LiteralPath $installDir) {
               throw "NSIS uninstaller left the custom installation directory behind: $installDir"
           }
 

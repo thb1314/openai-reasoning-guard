@@ -529,14 +529,13 @@ Section "Install"
   WriteUninstaller "\$INSTDIR\\Uninstall.exe"
 SectionEnd
 
-Function un.onInit
-  StrCpy \$INSTDIR \$EXEDIR
-FunctionEnd
-
 Section "Uninstall"
   Delete "\$SMPROGRAMS\\${APP_NAME}\\${APP_NAME}.lnk"
   Delete "\$SMPROGRAMS\\${APP_NAME}\\CLI.lnk"
   RMDir "\$SMPROGRAMS\\${APP_NAME}"
+  ; NSIS runs the uninstaller from a temporary copy, so explicitly deleting
+  ; this installed copy allows the original installation directory to vanish.
+  Delete "\$INSTDIR\\Uninstall.exe"
   RMDir /r "\$INSTDIR"
 SectionEnd
 EOF
