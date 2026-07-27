@@ -11,6 +11,7 @@
 #include <QtCore/QSet>
 #include <QtCore/QSignalBlocker>
 #include <QtCore/QSize>
+#include <QtGui/QFont>
 #include <QtWidgets/QAction>
 #include <QtGui/QClipboard>
 #include <QtGui/QIcon>
@@ -19,6 +20,7 @@
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QDesktopWidget>
+#include <QtWidgets/QFormLayout>
 #include <QtWidgets/QGridLayout>
 #include <QtWidgets/QGroupBox>
 #include <QtWidgets/QHBoxLayout>
@@ -96,6 +98,85 @@ static bool configHasLegacyUpstreamFields(const QString &path)
     return false;
 }
 
+namespace {
+
+class AboutDialog : public net_tunnel_gui::GuardDialog {
+public:
+    AboutDialog(const QString &title,
+                const QString &authorLabel,
+                const QString &projectLabel,
+                const QString &closeText,
+                QWidget *parent)
+        : GuardDialog(parent)
+    {
+        setObjectName("aboutDialog");
+        setProperty("guard_dialog_kind", "about");
+        setWindowTitle(title);
+        setFixedWidth(500);
+
+        QVBoxLayout *root = contentLayout();
+        root->setContentsMargins(18, 14, 18, 14);
+        root->setSpacing(12);
+
+        QLabel *productLabel = new QLabel("OpenAI Reasoning Guard", this);
+        productLabel->setObjectName("aboutProductName");
+        QFont productFont = productLabel->font();
+        productFont.setPointSize(productFont.pointSize() + 2);
+        productFont.setBold(true);
+        productLabel->setFont(productFont);
+        productLabel->setAlignment(Qt::AlignCenter);
+        root->addWidget(productLabel);
+
+        QFormLayout *details = new QFormLayout;
+        details->setContentsMargins(0, 0, 0, 0);
+        details->setHorizontalSpacing(14);
+        details->setVerticalSpacing(8);
+        details->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
+
+        QLabel *authorLink = makeLinkLabel(
+            "aboutAuthorLink", "https://github.com/thb1314", "thb1314");
+        QLabel *projectLink = makeLinkLabel(
+            "aboutProjectLink",
+            "https://github.com/thb1314/openai-reasoning-guard",
+            "https://github.com/thb1314/openai-reasoning-guard");
+        QLabel *authorCaption = new QLabel(authorLabel, this);
+        authorCaption->setObjectName("aboutAuthorCaption");
+        QLabel *projectCaption = new QLabel(projectLabel, this);
+        projectCaption->setObjectName("aboutProjectCaption");
+        details->addRow(authorCaption, authorLink);
+        details->addRow(projectCaption, projectLink);
+        root->addLayout(details);
+
+        QHBoxLayout *buttons = new QHBoxLayout;
+        buttons->setContentsMargins(0, 0, 0, 0);
+        buttons->addStretch(1);
+        QPushButton *closeButton = new QPushButton(closeText, this);
+        closeButton->setObjectName("aboutCloseButton");
+        closeButton->setDefault(true);
+        connect(closeButton, &QPushButton::clicked, this, &QDialog::accept);
+        buttons->addWidget(closeButton);
+        root->addLayout(buttons);
+    }
+
+private:
+    QLabel *makeLinkLabel(const QString &objectName,
+                          const QString &url,
+                          const QString &displayText)
+    {
+        QLabel *label = new QLabel(this);
+        label->setObjectName(objectName);
+        label->setTextFormat(Qt::RichText);
+        label->setText(QString("<a href=\"%1\">%2</a>")
+                           .arg(url.toHtmlEscaped(), displayText.toHtmlEscaped()));
+        label->setTextInteractionFlags(Qt::TextBrowserInteraction);
+        label->setOpenExternalLinks(true);
+        label->setWordWrap(true);
+        return label;
+    }
+};
+
+} // namespace
+
 MainWindow::MainWindow(QWidget *parent)
     : QUIWidget(parent),
       configPath_(defaultConfigPath()),
@@ -106,6 +187,7 @@ MainWindow::MainWindow(QWidget *parent)
       languageMenu_(0),
       zhAction_(0),
       enAction_(0),
+      aboutAction_(0),
       trayIcon_(0),
       trayMenu_(0),
       trayShowAction_(0),
@@ -278,6 +360,9 @@ QMenuBar *MainWindow::buildMenuBar()
     enAction_->setCheckable(true);
     connect(zhAction_, SIGNAL(triggered()), this, SLOT(switchToChinese()));
     connect(enAction_, SIGNAL(triggered()), this, SLOT(switchToEnglish()));
+    aboutAction_ = bar->addAction("");
+    aboutAction_->setObjectName("aboutAction");
+    connect(aboutAction_, SIGNAL(triggered()), this, SLOT(showAboutDialog()));
     return bar;
 }
 
@@ -677,6 +762,11 @@ QString MainWindow::textFor(const QString &key) const
     if (key == "window_subtitle") return en ? "Qt + C++11 intelligent OpenAI-compatible proxy" : "Qt + C++11 智能拦截 / OpenAI 兼容转发";
     if (key == "menu_upstream_profiles") return en ? "Upstream Profiles" : "上游配置";
     if (key == "menu_language") return en ? "Language" : "语言";
+    if (key == "menu_about") return en ? "About" : "关于";
+    if (key == "about_title") return en ? "About" : "关于";
+    if (key == "about_author") return en ? "Author" : "作者";
+    if (key == "about_project") return en ? "Project" : "项目地址";
+    if (key == "about_close") return en ? "Close" : "关闭";
     if (key == "lang_zh") return en ? "Chinese" : "中文";
     if (key == "lang_en") return en ? "English" : "英文";
     if (key == "group_runtime_target") return en ? "Runtime Target" : "运行目标";
@@ -825,6 +915,9 @@ void MainWindow::retranslateUi()
         enAction_->setText(textFor("lang_en"));
         enAction_->setChecked(currentLanguage() == "en");
     }
+    if (aboutAction_) {
+        aboutAction_->setText(textFor("menu_about"));
+    }
     if (trayIcon_) {
         trayIcon_->setToolTip(textFor("tray_tooltip"));
     }
@@ -910,6 +1003,16 @@ void MainWindow::switchToChinese()
 void MainWindow::switchToEnglish()
 {
     setLanguage("en");
+}
+
+void MainWindow::showAboutDialog()
+{
+    AboutDialog dialog(textFor("about_title"),
+                       textFor("about_author"),
+                       textFor("about_project"),
+                       textFor("about_close"),
+                       this);
+    dialog.exec();
 }
 
 void MainWindow::showFromTray()

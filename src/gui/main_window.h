@@ -44,6 +44,7 @@ private slots:
     void switchToChinese();
     void switchToEnglish();
     void openUpstreamProfiles();
+    void showAboutDialog();
     void handleUpstreamProfileChanged(int index);
     void showFromTray();
     void handleTrayActivated(QSystemTrayIcon::ActivationReason reason);
@@ -93,6 +94,7 @@ private:
     QMenu *languageMenu_;
     QAction *zhAction_;
     QAction *enAction_;
+    QAction *aboutAction_;
     QSystemTrayIcon *trayIcon_;
     QMenu *trayMenu_;
     QAction *trayShowAction_;

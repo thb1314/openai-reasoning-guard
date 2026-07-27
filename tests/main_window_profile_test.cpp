@@ -15,11 +15,13 @@
 #include <QtNetwork/QTcpServer>
 #include <QtNetwork/QTcpSocket>
 #include <QtTest/QTest>
+#include <QtWidgets/QAction>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QLineEdit>
 #include <QtWidgets/QDialog>
+#include <QtWidgets/QLabel>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QSpinBox>
 
@@ -197,6 +199,87 @@ bool writeJson(const QString &path, const QJsonObject &object)
     return file.write(bytes) == bytes.size();
 }
 
+struct AboutDialogSnapshot {
+    bool shown = false;
+    bool frameless = false;
+    bool customTitleBar = false;
+    bool authorExternalLink = false;
+    bool projectExternalLink = false;
+    bool closeInvoked = false;
+    int height = 0;
+    QString title;
+    QString authorCaption;
+    QString authorLink;
+    QString projectCaption;
+    QString projectLink;
+    QString closeText;
+};
+
+AboutDialogSnapshot captureAboutDialog(QAction *action)
+{
+    AboutDialogSnapshot snapshot;
+    QTimer captureTimer;
+    captureTimer.setInterval(5);
+    QObject::connect(&captureTimer, &QTimer::timeout, [&captureTimer, &snapshot]() {
+        const QList<QWidget *> widgets = QApplication::topLevelWidgets();
+        for (int i = 0; i < widgets.size(); ++i) {
+            QWidget *widget = widgets.at(i);
+            if (widget->property("guard_dialog_kind").toString() != "about") {
+                continue;
+            }
+
+            QDialog *dialog = qobject_cast<QDialog *>(widget);
+            if (!dialog) {
+                continue;
+            }
+            snapshot.shown = true;
+            snapshot.frameless = dialog->windowFlags().testFlag(Qt::FramelessWindowHint);
+            snapshot.customTitleBar = dialog->findChild<QWidget *>("guardDialogTitleBar") != 0;
+            snapshot.title = dialog->windowTitle();
+            snapshot.height = dialog->height();
+
+            QLabel *authorCaption = dialog->findChild<QLabel *>("aboutAuthorCaption");
+            QLabel *authorLink = dialog->findChild<QLabel *>("aboutAuthorLink");
+            QLabel *projectCaption = dialog->findChild<QLabel *>("aboutProjectCaption");
+            QLabel *projectLink = dialog->findChild<QLabel *>("aboutProjectLink");
+            QPushButton *closeButton = dialog->findChild<QPushButton *>("aboutCloseButton");
+            if (authorCaption) snapshot.authorCaption = authorCaption->text();
+            if (authorLink) {
+                snapshot.authorLink = authorLink->text();
+                snapshot.authorExternalLink = authorLink->openExternalLinks()
+                    && authorLink->textInteractionFlags().testFlag(Qt::LinksAccessibleByMouse);
+            }
+            if (projectCaption) snapshot.projectCaption = projectCaption->text();
+            if (projectLink) {
+                snapshot.projectLink = projectLink->text();
+                snapshot.projectExternalLink = projectLink->openExternalLinks()
+                    && projectLink->textInteractionFlags().testFlag(Qt::LinksAccessibleByMouse);
+            }
+            if (closeButton) {
+                snapshot.closeText = closeButton->text();
+                snapshot.closeInvoked = true;
+                captureTimer.stop();
+                closeButton->click();
+            }
+            return;
+        }
+    });
+
+    QTimer watchdog;
+    watchdog.setSingleShot(true);
+    QObject::connect(&watchdog, &QTimer::timeout, []() {
+        if (QDialog *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget())) {
+            dialog->reject();
+        }
+    });
+    captureTimer.start();
+    watchdog.start(2000);
+    action->trigger();
+    captureTimer.stop();
+    watchdog.stop();
+    return snapshot;
+}
+
 } // namespace
 
 class MainWindowProfileTest : public QObject {
@@ -206,6 +289,51 @@ private slots:
     void cleanup()
     {
         qunsetenv("NET_TUNNEL_CONFIG");
+    }
+
+    void aboutMenuUsesCustomLocalizedDialog()
+    {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString configPath = dir.filePath("config.json");
+        qputenv("NET_TUNNEL_CONFIG", configPath.toLocal8Bit());
+
+        AppConfig config;
+        config.lang = "en";
+        QString error;
+        QVERIFY2(saveConfig(config, configPath, &error), qPrintable(error));
+
+        MainWindow window;
+        QAction *aboutAction = window.findChild<QAction *>("aboutAction");
+        QVERIFY(aboutAction);
+        QCOMPARE(aboutAction->text(), QString("About"));
+
+        AboutDialogSnapshot english = captureAboutDialog(aboutAction);
+        QVERIFY(english.shown);
+        QVERIFY(english.frameless);
+        QVERIFY(english.customTitleBar);
+        QVERIFY(english.height > 0 && english.height <= 260);
+        QCOMPARE(english.title, QString("About"));
+        QCOMPARE(english.authorCaption, QString("Author"));
+        QVERIFY(english.authorLink.contains("href=\"https://github.com/thb1314\""));
+        QVERIFY(english.authorLink.contains("thb1314"));
+        QVERIFY(english.authorExternalLink);
+        QCOMPARE(english.projectCaption, QString("Project"));
+        QVERIFY(english.projectLink.contains(
+            "href=\"https://github.com/thb1314/openai-reasoning-guard\""));
+        QVERIFY(english.projectExternalLink);
+        QCOMPARE(english.closeText, QString("Close"));
+        QVERIFY(english.closeInvoked);
+
+        QVERIFY(QMetaObject::invokeMethod(&window, "switchToChinese", Qt::DirectConnection));
+        QCOMPARE(aboutAction->text(), QString::fromUtf8("关于"));
+        AboutDialogSnapshot chinese = captureAboutDialog(aboutAction);
+        QVERIFY(chinese.shown);
+        QCOMPARE(chinese.title, QString::fromUtf8("关于"));
+        QCOMPARE(chinese.authorCaption, QString::fromUtf8("作者"));
+        QCOMPARE(chinese.projectCaption, QString::fromUtf8("项目地址"));
+        QCOMPARE(chinese.closeText, QString::fromUtf8("关闭"));
+        QVERIFY(chinese.closeInvoked);
     }
 
     void selectionPopulatesReadOnlyFieldsAndRemainsAvailableWhileRunning()

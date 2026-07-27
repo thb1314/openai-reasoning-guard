@@ -169,6 +169,10 @@ openai-reasoning-guard-cli --keep-config ...
 
 ## GUI
 
+![OpenAI Reasoning Guard GUI](docs/images/gui-main-window.png)
+
+> URLs and local paths in the screenshot are redacted.
+
 The first GUI screen is divided into four areas:
 
 - Top runtime target overview.
@@ -177,6 +181,8 @@ The first GUI screen is divided into four areas:
 - Right-side information panel and console logs.
 
 The Upstream Profiles menu opens a modal management window. It supports add, view, edit, delete, display-name or Base URL search, header sorting, and pagination at 10, 20, 50, or 100 rows per page. Selecting a table row only chooses an operation target. When selection is not run-locked, Set Current switches it explicitly. Adding or importing the first profile into an empty database selects it automatically; deleting the current profile selects the next item in descending update-time order, or the previous item when no next item exists.
+
+The About menu opens a custom-drawn window consistent with the main window and provides links to the author, `thb1314`, and the project's GitHub repository.
 
 The main window keeps the original connection-field layout, but Base URL, API key, User-Agent, User-Agent forwarding, upstream proxy, upstream timeout, and first-token timeout are loaded from the selected profile and are read-only. Global settings such as the listen address, buffer limits, interception rules, and `stream_action` remain editable.
 
