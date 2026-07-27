@@ -13,6 +13,10 @@
 本项目是一个独立的 Qt/C++11 本地 OpenAI 兼容智能代理实现，用 CMake 管理，同时产出 CLI 和 GUI 两个可执行文件。
 它把 Codex 或其它 OpenAI 兼容客户端的请求转发到真实上游，并在本地检查响应里的 `reasoning_tokens`、流式 SSE 结构和上游异常；必要时代理会在内部重试，避免把可疑响应直接交给客户端。
 
+![OpenAI Reasoning Guard 图形界面](docs/images/gui-main-window.png)
+
+> 截图中的网址和本机路径已脱敏。
+
 
 
 ## 工作原理
@@ -168,10 +172,6 @@ openai-reasoning-guard-cli --keep-config ...
 `--keep-config` 不保存 `--upstream-base-url`、`--upstream-api-key`、上游代理、User-Agent 或上游超时；永久修改这些字段必须使用 `profile update`。`--api-proxy` 仍是兼容标记，CLI 始终运行代理模式；`--reasoning-516-retries` 是 `--guard-retry-attempts` 的兼容别名。
 
 ## GUI
-
-![OpenAI Reasoning Guard 图形界面](docs/images/gui-main-window.png)
-
-> 截图中的网址和本机路径已脱敏。
 
 GUI 第一屏分为四块：
 

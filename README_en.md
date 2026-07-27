@@ -13,6 +13,10 @@ This project sits between the client and the real upstream service as a local in
 This project is an independent Qt/C++11 local OpenAI-compatible intelligent proxy implementation managed by CMake, and it produces both CLI and GUI executables.
 It forwards requests from Codex or other OpenAI-compatible clients to the real upstream service, and locally checks `reasoning_tokens`, streaming SSE structure, and upstream exceptions in the response; when necessary, the proxy retries internally to avoid handing suspicious responses directly to the client.
 
+![OpenAI Reasoning Guard GUI](docs/images/gui-main-window.png)
+
+> URLs and local paths in the screenshot are redacted.
+
 
 
 ## How It Works
@@ -168,10 +172,6 @@ openai-reasoning-guard-cli --keep-config ...
 `--keep-config` does not persist `--upstream-base-url`, `--upstream-api-key`, the upstream proxy, User-Agent, or upstream timeouts. Use `profile update` for permanent changes. `--api-proxy` remains a compatibility flag; the CLI always runs proxy mode. `--reasoning-516-retries` is a compatibility alias for `--guard-retry-attempts`.
 
 ## GUI
-
-![OpenAI Reasoning Guard GUI](docs/images/gui-main-window.png)
-
-> URLs and local paths in the screenshot are redacted.
 
 The first GUI screen is divided into four areas:
 
