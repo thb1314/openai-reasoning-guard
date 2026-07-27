@@ -119,7 +119,7 @@ openai-reasoning-guard-gui
 openai-reasoning-guard-cli --help
 ```
 
-macOS shell installer 会请求 `sudo` 权限，把 app 安装到 `/Applications/OpenAI Reasoning Guard.app`，并安装 CLI 包装脚本到 `/usr/local/bin/openai-reasoning-guard-cli`。
+macOS shell installer 会请求 `sudo` 权限，把 app 安装到 `/Applications/OpenAI Reasoning Guard.app`，并安装 CLI 包装脚本到 `/usr/local/bin/openai-reasoning-guard-cli`。升级旧版本时，安装器会在替换 app 前把 bundle 内的旧 `config.json` 迁移到当前用户配置目录，且不会覆盖已有用户配置。
 
 ## CLI
 
@@ -250,7 +250,7 @@ openai-reasoning-guard-cli --config /srv/reasoning-guard/config.json
 
 ### 旧配置迁移
 
-首次升级时，如果用户目录尚无配置，程序会先复制可执行文件旁的旧 `config.json`。当上游配置数据库为空且旧字段能够组成一条有效上游配置时，程序会把原文件备份为 `config.json.pre-upstream-profiles.bak`，再创建名为“已迁移配置”的配置并设为当前，同时写入旧 API Key、User-Agent、转发开关、上游代理和两个超时。迁移前会按当前上游配置规则校验 Base URL、代理和两个超时；校验失败时不会改写原 JSON，需修正旧字段后重试。
+首次升级时，如果用户目录尚无配置，程序会先复制可执行文件旁的旧 `config.json`；macOS shell installer 和 First Run helper 会在替换旧 app 前完成同样的迁移。当上游配置数据库为空且旧字段能够组成一条有效上游配置时，程序会把原文件备份为 `config.json.pre-upstream-profiles.bak`，再创建名为“已迁移配置”的配置并设为当前，同时写入旧 API Key、User-Agent、转发开关、上游代理和两个超时。迁移前会按当前上游配置规则校验 Base URL、代理和两个超时；校验失败时不会改写原 JSON，需修正旧字段后重试。
 
 旧版的 `upstream_proxy`、`upstream_http_proxy`、`upstream_https_proxy`、`upstream_socks_proxy` 会根据 Base URL 协议和旧优先级折算成一个实际代理。数据库事务成功后，旧 `upstream_*` 字段才会从当前 JSON 中移除。Base URL 为空且其余遗留字段均为空或保持旧默认值时，程序会先备份 JSON，再原子清理这些占位字段，不创建配置；如果 API Key、代理、非默认 User-Agent、转发开关或超时等仍有实际值，则迁移失败并原样保留 JSON，要求用户先补全 Base URL 或人工处理。这样升级后只有 SQLite 是上游配置的数据源，备份仍可用于人工恢复。
 

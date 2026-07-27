@@ -119,7 +119,7 @@ openai-reasoning-guard-gui
 openai-reasoning-guard-cli --help
 ```
 
-The macOS shell installer will request `sudo` permission, install the app to `/Applications/OpenAI Reasoning Guard.app`, and install the CLI wrapper script to `/usr/local/bin/openai-reasoning-guard-cli`.
+The macOS shell installer will request `sudo` permission, install the app to `/Applications/OpenAI Reasoning Guard.app`, and install the CLI wrapper script to `/usr/local/bin/openai-reasoning-guard-cli`. When upgrading an older release, it migrates the legacy `config.json` from inside the app bundle before replacing the app and never overwrites an existing user configuration.
 
 ## CLI
 
@@ -250,7 +250,7 @@ Both forms use `/srv/reasoning-guard/upstream-profiles.sqlite3`. The application
 
 ### Legacy Configuration Migration
 
-On the first upgrade, the application copies an old `config.json` beside the executable when the user configuration directory has no config yet. When the profile database is empty and the legacy fields form a valid upstream profile, the application backs it up as `config.json.pre-upstream-profiles.bak`, then creates and selects a profile named `已迁移配置` with the old API key, User-Agent, forwarding switch, upstream proxy, and both timeouts. Before migration, the Base URL, proxy, and both timeouts are validated with the current profile rules. On validation failure, the original JSON is left unchanged and must be corrected before retrying.
+On the first upgrade, the application copies an old `config.json` beside the executable when the user configuration directory has no config yet; the macOS shell installer and First Run helper perform the same migration before replacing the old app. When the profile database is empty and the legacy fields form a valid upstream profile, the application backs it up as `config.json.pre-upstream-profiles.bak`, then creates and selects a profile named `已迁移配置` with the old API key, User-Agent, forwarding switch, upstream proxy, and both timeouts. Before migration, the Base URL, proxy, and both timeouts are validated with the current profile rules. On validation failure, the original JSON is left unchanged and must be corrected before retrying.
 
 Legacy `upstream_proxy`, `upstream_http_proxy`, `upstream_https_proxy`, and `upstream_socks_proxy` values are reduced to one effective proxy according to the Base URL scheme and the old precedence rules. The old `upstream_*` fields are removed from the current JSON only after the database transaction succeeds. When the Base URL is empty and every other legacy field is empty or still at its old default, the application first backs up the JSON and then atomically removes those placeholder fields without creating a profile. If an API key, proxy, non-default User-Agent, forwarding switch, timeout, or another meaningful value remains, migration fails and preserves the JSON unchanged until the user supplies a Base URL or resolves it manually. SQLite is therefore the only upstream-profile data source after the upgrade, while the backup remains available for manual recovery.
 
