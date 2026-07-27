@@ -39,6 +39,7 @@ private slots:
     void updateProxyStats();
     void handleProxyStarted(const QString &url);
     void handleProxyStopped();
+    void restartProxyAfterUpstreamProfileSwitch();
     void handleFailure(const QString &message);
     void switchToChinese();
     void switchToEnglish();
@@ -71,6 +72,8 @@ private:
     void refreshUpstreamProfiles();
     void applyCurrentUpstreamProfile();
     void clearCurrentUpstreamProfile();
+    bool selectUpstreamProfile(const QString &id, QString *error = 0);
+    void restoreCurrentUpstreamProfileSelection();
     net_tunnel::AppConfig collectConfigFromUi() const;
     net_tunnel::ProxySettings collectProxySettings() const;
     void setProxyRunningUi(bool running);
@@ -143,7 +146,10 @@ private:
     net_tunnel::UpstreamProfileStore *upstreamProfileStore_;
     net_tunnel::UpstreamProfileRunLock *upstreamProfileRunLock_;
     net_tunnel::UpstreamProfile currentUpstreamProfile_;
+    net_tunnel::UpstreamProfile pendingUpstreamProfile_;
     bool legacyUpstreamMigrationComplete_;
     bool upstreamProfilesReady_;
     bool hasCurrentUpstreamProfile_;
+    bool hasPendingUpstreamProfileSwitch_;
+    bool upstreamProfileSwitchRestartPending_;
 };

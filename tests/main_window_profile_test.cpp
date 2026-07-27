@@ -3,12 +3,17 @@
 #include "gui/main_window.h"
 
 #include <QtCore/QDir>
+#include <QtCore/QCoreApplication>
+#include <QtCore/QElapsedTimer>
+#include <QtCore/QEventLoop>
 #include <QtCore/QFile>
 #include <QtCore/QJsonDocument>
 #include <QtCore/QJsonObject>
 #include <QtCore/QTemporaryDir>
 #include <QtCore/QTimer>
+#include <QtNetwork/QHostAddress>
 #include <QtNetwork/QTcpServer>
+#include <QtNetwork/QTcpSocket>
 #include <QtTest/QTest>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QCheckBox>
@@ -17,6 +22,8 @@
 #include <QtWidgets/QDialog>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QSpinBox>
+
+#include <functional>
 
 using namespace net_tunnel;
 
@@ -29,6 +36,129 @@ quint16 reservePort()
         return 0;
     }
     return server.serverPort();
+}
+
+bool waitUntil(const std::function<bool()> &predicate, int timeoutMs = 3000)
+{
+    QElapsedTimer timer;
+    timer.start();
+    while (timer.elapsed() < timeoutMs) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 25);
+        if (predicate()) {
+            return true;
+        }
+        QTest::qWait(10);
+    }
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 25);
+    return predicate();
+}
+
+class RecordingUpstream : public QObject {
+public:
+    explicit RecordingUpstream(const QByteArray &marker)
+        : marker_(marker), requestCount_(0)
+    {
+        connect(&server_, &QTcpServer::newConnection, this,
+                &RecordingUpstream::acceptConnections);
+    }
+
+    bool start()
+    {
+        return server_.listen(QHostAddress::LocalHost, 0);
+    }
+
+    int port() const { return int(server_.serverPort()); }
+    int requestCount() const { return requestCount_; }
+    QByteArray lastAuthorization() const { return lastAuthorization_; }
+
+private:
+    void acceptConnections()
+    {
+        while (server_.hasPendingConnections()) {
+            QTcpSocket *socket = server_.nextPendingConnection();
+            socket->setParent(this);
+            connect(socket, &QTcpSocket::readyRead, this, [this, socket]() {
+                QByteArray request = socket->property("request").toByteArray();
+                request.append(socket->readAll());
+                socket->setProperty("request", request);
+                if (socket->property("handled").toBool()) {
+                    return;
+                }
+
+                const int headerEnd = request.indexOf("\r\n\r\n");
+                if (headerEnd < 0) {
+                    return;
+                }
+                int contentLength = 0;
+                const QList<QByteArray> lines = request.left(headerEnd).split('\n');
+                for (int i = 1; i < lines.size(); ++i) {
+                    const QByteArray line = lines.at(i).trimmed();
+                    const int colon = line.indexOf(':');
+                    if (colon <= 0) {
+                        continue;
+                    }
+                    const QByteArray name = line.left(colon).trimmed().toLower();
+                    const QByteArray value = line.mid(colon + 1).trimmed();
+                    if (name == "content-length") {
+                        contentLength = value.toInt();
+                    } else if (name == "authorization") {
+                        lastAuthorization_ = value;
+                    }
+                }
+                if (request.size() < headerEnd + 4 + contentLength) {
+                    return;
+                }
+
+                socket->setProperty("handled", true);
+                ++requestCount_;
+                const QByteArray body = "{\"profile\":\"" + marker_ + "\"}";
+                QByteArray response = "HTTP/1.1 200 OK\r\n";
+                response += "Content-Type: application/json\r\n";
+                response += "Content-Length: " + QByteArray::number(body.size()) + "\r\n";
+                response += "Connection: close\r\n\r\n";
+                response += body;
+                socket->write(response);
+                socket->flush();
+                socket->disconnectFromHost();
+            });
+            connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
+        }
+    }
+
+    QTcpServer server_;
+    QByteArray marker_;
+    int requestCount_;
+    QByteArray lastAuthorization_;
+};
+
+QByteArray proxyRequest(int port)
+{
+    QTcpSocket socket;
+    QByteArray response;
+    QObject::connect(&socket, &QTcpSocket::readyRead, [&socket, &response]() {
+        response.append(socket.readAll());
+    });
+    socket.connectToHost(QHostAddress::LocalHost, quint16(port));
+    if (!waitUntil([&socket]() {
+        return socket.state() == QAbstractSocket::ConnectedState;
+    }, 1000)) {
+        return QByteArray("CONNECT_FAILED");
+    }
+
+    const QByteArray body = "{}";
+    QByteArray request = "POST /v1/responses HTTP/1.1\r\n";
+    request += "Host: 127.0.0.1\r\n";
+    request += "Content-Type: application/json\r\n";
+    request += "Content-Length: " + QByteArray::number(body.size()) + "\r\n";
+    request += "Connection: close\r\n\r\n";
+    request += body;
+    socket.write(request);
+    socket.flush();
+    waitUntil([&socket]() {
+        return socket.state() == QAbstractSocket::UnconnectedState;
+    });
+    response.append(socket.readAll());
+    return response;
 }
 
 QPushButton *buttonWithKey(QWidget *window, const char *key)
@@ -78,7 +208,7 @@ private slots:
         qunsetenv("NET_TUNNEL_CONFIG");
     }
 
-    void selectionPopulatesReadOnlyFieldsAndLocksWhileRunning()
+    void selectionPopulatesReadOnlyFieldsAndRemainsAvailableWhileRunning()
     {
         QTemporaryDir dir;
         QVERIFY(dir.isValid());
@@ -147,13 +277,163 @@ private slots:
         QVERIFY2(error.isEmpty(), qPrintable(error));
 
         QVERIFY(QMetaObject::invokeMethod(&window, "startProxy", Qt::DirectConnection));
-        QTRY_VERIFY(!combo->isEnabled());
+        QTRY_VERIFY(combo->isEnabled());
         QVERIFY(!start->isEnabled());
         QVERIFY(stop->isEnabled());
         QVERIFY(store.isProfileLocked(backup.id));
 
         QVERIFY(QMetaObject::invokeMethod(&window, "stopProxy", Qt::DirectConnection));
         QTRY_VERIFY(combo->isEnabled());
+        QVERIFY(!store.isProfileLocked(backup.id));
+    }
+
+    void runningProfileSelectionStopsAndRestartsWithNewUpstream()
+    {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString configPath = dir.filePath("config.json");
+        qputenv("NET_TUNNEL_CONFIG", configPath.toLocal8Bit());
+
+        RecordingUpstream primaryUpstream("primary");
+        RecordingUpstream backupUpstream("backup");
+        QVERIFY(primaryUpstream.start());
+        QVERIFY(backupUpstream.start());
+
+        AppConfig config;
+        config.proxyPort = reservePort();
+        QVERIFY(config.proxyPort > 0);
+        QString error;
+        QVERIFY2(saveConfig(config, configPath, &error), qPrintable(error));
+
+        UpstreamProfileStore store(upstreamProfileDatabasePath(configPath));
+        QVERIFY2(store.open(&error), qPrintable(error));
+        UpstreamProfile primary;
+        primary.displayName = "Primary";
+        primary.baseUrl = QString("http://127.0.0.1:%1/v1").arg(primaryUpstream.port());
+        primary.apiKey = "primary-key";
+        QVERIFY2(store.addProfile(&primary, &error), qPrintable(error));
+        UpstreamProfile backup;
+        backup.displayName = "Backup";
+        backup.baseUrl = QString("http://127.0.0.1:%1/v1").arg(backupUpstream.port());
+        backup.apiKey = "backup-key";
+        QVERIFY2(store.addProfile(&backup, &error), qPrintable(error));
+        QVERIFY2(store.setSelectedProfileId(primary.id, &error), qPrintable(error));
+
+        MainWindow window;
+        QComboBox *combo = window.findChild<QComboBox *>("upstreamProfileCombo");
+        QLineEdit *url = window.findChild<QLineEdit *>("upstreamBaseUrlEdit");
+        HttpProxyServer *proxy = window.findChild<HttpProxyServer *>();
+        QPushButton *start = buttonWithKey(&window, "start_proxy");
+        QPushButton *stop = buttonWithKey(&window, "stop_proxy");
+        QVERIFY(combo && url && proxy && start && stop);
+        QCOMPARE(combo->currentData().toString(), primary.id);
+
+        QVERIFY(QMetaObject::invokeMethod(&window, "startProxy", Qt::DirectConnection));
+        QTRY_VERIFY(proxy->isRunning());
+        QVERIFY(combo->isEnabled());
+        QVERIFY(store.isProfileLocked(primary.id));
+
+        const QByteArray primaryResponse = proxyRequest(config.proxyPort);
+        QVERIFY2(primaryResponse.contains("\"profile\":\"primary\""), primaryResponse.constData());
+        QTRY_COMPARE(primaryUpstream.requestCount(), 1);
+        QCOMPARE(primaryUpstream.lastAuthorization(), QByteArray("Bearer primary-key"));
+
+        const int backupIndex = combo->findData(backup.id);
+        QVERIFY(backupIndex >= 0);
+        combo->setCurrentIndex(backupIndex);
+
+        QTRY_COMPARE(combo->currentData().toString(), backup.id);
+        QTRY_COMPARE(url->text(), backup.baseUrl);
+        QTRY_COMPARE(store.selectedProfileId(&error), backup.id);
+        QVERIFY2(error.isEmpty(), qPrintable(error));
+        QTRY_VERIFY(!store.isProfileLocked(primary.id));
+        QTRY_VERIFY(store.isProfileLocked(backup.id));
+        QTRY_VERIFY(proxy->isRunning());
+        QVERIFY(!start->isEnabled());
+        QVERIFY(stop->isEnabled());
+
+        const QByteArray backupResponse = proxyRequest(config.proxyPort);
+        QVERIFY2(backupResponse.contains("\"profile\":\"backup\""), backupResponse.constData());
+        QTRY_COMPARE(backupUpstream.requestCount(), 1);
+        QCOMPARE(backupUpstream.lastAuthorization(), QByteArray("Bearer backup-key"));
+        QCOMPARE(primaryUpstream.requestCount(), 1);
+
+        QVERIFY(QMetaObject::invokeMethod(&window, "stopProxy", Qt::DirectConnection));
+        QTRY_VERIFY(!proxy->isRunning());
+        QVERIFY(!store.isProfileLocked(backup.id));
+    }
+
+    void failedRunningProfileSwitchLeavesProxyStoppedAndUnlocksProfiles()
+    {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString configPath = dir.filePath("config.json");
+        qputenv("NET_TUNNEL_CONFIG", configPath.toLocal8Bit());
+
+        RecordingUpstream primaryUpstream("primary");
+        QVERIFY(primaryUpstream.start());
+
+        AppConfig config;
+        config.proxyPort = reservePort();
+        QVERIFY(config.proxyPort > 0);
+        QString error;
+        QVERIFY2(saveConfig(config, configPath, &error), qPrintable(error));
+
+        UpstreamProfileStore store(upstreamProfileDatabasePath(configPath));
+        QVERIFY2(store.open(&error), qPrintable(error));
+        UpstreamProfile primary;
+        primary.displayName = "Primary";
+        primary.baseUrl = QString("http://127.0.0.1:%1/v1").arg(primaryUpstream.port());
+        QVERIFY2(store.addProfile(&primary, &error), qPrintable(error));
+        UpstreamProfile backup;
+        backup.displayName = "Backup";
+        backup.baseUrl = "https://backup.example/v1";
+        QVERIFY2(store.addProfile(&backup, &error), qPrintable(error));
+        QVERIFY2(store.setSelectedProfileId(primary.id, &error), qPrintable(error));
+
+        MainWindow window;
+        QComboBox *combo = window.findChild<QComboBox *>("upstreamProfileCombo");
+        QSpinBox *proxyPort = window.findChild<QSpinBox *>("proxyPortSpin");
+        HttpProxyServer *proxy = window.findChild<HttpProxyServer *>();
+        QPushButton *start = buttonWithKey(&window, "start_proxy");
+        QVERIFY(combo && proxyPort && proxy && start);
+
+        QVERIFY(QMetaObject::invokeMethod(&window, "startProxy", Qt::DirectConnection));
+        QTRY_VERIFY(proxy->isRunning());
+        QVERIFY(store.isProfileLocked(primary.id));
+
+        const int blockedPort = reservePort();
+        QVERIFY(blockedPort > 0);
+        QTcpServer blocker;
+        QVERIFY(blocker.listen(QHostAddress::LocalHost, quint16(blockedPort)));
+        proxyPort->setValue(blockedPort);
+
+        QTimer dismissTimer;
+        dismissTimer.setInterval(10);
+        QObject::connect(&dismissTimer, &QTimer::timeout, &window, []() {
+            const QList<QWidget *> widgets = QApplication::topLevelWidgets();
+            for (int i = 0; i < widgets.size(); ++i) {
+                QWidget *widget = widgets.at(i);
+                if (widget->property("guard_dialog_kind").toString() == "message") {
+                    if (QDialog *dialog = qobject_cast<QDialog *>(widget)) {
+                        dialog->accept();
+                    }
+                }
+            }
+        });
+        dismissTimer.start();
+
+        const int backupIndex = combo->findData(backup.id);
+        QVERIFY(backupIndex >= 0);
+        combo->setCurrentIndex(backupIndex);
+        QTRY_VERIFY(start->isEnabled());
+        dismissTimer.stop();
+
+        QVERIFY(!proxy->isRunning());
+        QCOMPARE(combo->currentData().toString(), backup.id);
+        QCOMPARE(store.selectedProfileId(&error), backup.id);
+        QVERIFY2(error.isEmpty(), qPrintable(error));
+        QVERIFY(!store.isProfileLocked(primary.id));
         QVERIFY(!store.isProfileLocked(backup.id));
     }
 

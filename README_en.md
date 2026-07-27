@@ -180,7 +180,7 @@ The Upstream Profiles menu opens a modal management window. It supports add, vie
 
 The main window keeps the original connection-field layout, but Base URL, API key, User-Agent, User-Agent forwarding, upstream proxy, upstream timeout, and first-token timeout are loaded from the selected profile and are read-only. Global settings such as the listen address, buffer limits, interception rules, and `stream_action` remain editable.
 
-While the proxy is running, the profile combo box cannot be switched and the active profile cannot be edited or deleted. Other unused profiles may still be added, viewed, and edited. Stop the proxy before changing the current profile. Start Proxy is disabled when no profile exists.
+While the proxy is running, the upstream-profile combo box in the main window can switch directly. The application stops the proxy and interrupts in-flight requests or streams, releases the old profile run lock, saves the new selection, and automatically restarts with that profile. If restart fails, the proxy remains stopped. The active profile still cannot be edited or deleted in the management window; other unused profiles may still be added, viewed, and edited. Start Proxy is disabled when no profile exists.
 
 The information panel displays the current profile name, proxy listen address, upstream address, path prefix, control endpoints, buffer limit, first-token timeout, stream action, and reasoning guard policy.
 

@@ -155,7 +155,9 @@ MainWindow::MainWindow(QWidget *parent)
       upstreamProfileRunLock_(new UpstreamProfileRunLock(upstreamProfileDatabasePath(configPath_))),
       legacyUpstreamMigrationComplete_(!configHasLegacyUpstreamFields(configPath_)),
       upstreamProfilesReady_(false),
-      hasCurrentUpstreamProfile_(false)
+      hasCurrentUpstreamProfile_(false),
+      hasPendingUpstreamProfileSwitch_(false),
+      upstreamProfileSwitchRestartPending_(false)
 {
     buildUi();
     setupTrayIcon();
@@ -333,6 +335,7 @@ QWidget *MainWindow::buildProxyPanel()
     proxyHostEdit_ = new QLineEdit(box);
     proxyHostEdit_->setObjectName("proxyHostEdit");
     proxyPortSpin_ = new QSpinBox(box);
+    proxyPortSpin_->setObjectName("proxyPortSpin");
     proxyPortSpin_->setRange(1, 65535);
     proxyPrefixEdit_ = new QLineEdit(box);
     upstreamProfileCombo_ = new QComboBox(box);
@@ -1130,24 +1133,48 @@ void MainWindow::clearCurrentUpstreamProfile()
     refreshInfoPanel();
 }
 
+bool MainWindow::selectUpstreamProfile(const QString &id, QString *error)
+{
+    if (error) {
+        error->clear();
+    }
+    UpstreamProfile profile;
+    if (!upstreamProfileStore_->profileById(id, &profile, error)) {
+        return false;
+    }
+    if (!upstreamProfileStore_->setSelectedProfileId(id, error)) {
+        return false;
+    }
+    currentUpstreamProfile_ = profile;
+    hasCurrentUpstreamProfile_ = true;
+    applyCurrentUpstreamProfile();
+    return true;
+}
+
+void MainWindow::restoreCurrentUpstreamProfileSelection()
+{
+    if (!upstreamProfileCombo_) {
+        return;
+    }
+    QSignalBlocker blocker(upstreamProfileCombo_);
+    upstreamProfileCombo_->setCurrentIndex(
+        hasCurrentUpstreamProfile_
+            ? upstreamProfileCombo_->findData(currentUpstreamProfile_.id)
+            : -1);
+}
+
 void MainWindow::handleUpstreamProfileChanged(int index)
 {
     if (!upstreamProfilesReady_ || !upstreamProfileStore_->isOpen()) {
-        QSignalBlocker blocker(upstreamProfileCombo_);
-        upstreamProfileCombo_->setCurrentIndex(
-            hasCurrentUpstreamProfile_
-                ? upstreamProfileCombo_->findData(currentUpstreamProfile_.id)
-                : -1);
-        return;
-    }
-    if (proxy_.isRunning()) {
-        QSignalBlocker blocker(upstreamProfileCombo_);
-        upstreamProfileCombo_->setCurrentIndex(
-            upstreamProfileCombo_->findData(currentUpstreamProfile_.id));
+        restoreCurrentUpstreamProfileSelection();
         return;
     }
     const QString id = upstreamProfileCombo_->itemData(index).toString();
     if (id.isEmpty()) {
+        if (proxy_.isRunning()) {
+            restoreCurrentUpstreamProfileSelection();
+            return;
+        }
         clearCurrentUpstreamProfile();
         setProxyRunningUi(false);
         return;
@@ -1155,19 +1182,27 @@ void MainWindow::handleUpstreamProfileChanged(int index)
 
     QString error;
     UpstreamProfile profile;
-    if (!upstreamProfileStore_->profileById(id, &profile, &error) ||
-        !upstreamProfileStore_->setSelectedProfileId(id, &error)) {
+    if (!upstreamProfileStore_->profileById(id, &profile, &error)) {
         handleFailure(textFor("error_profile_select").arg(error));
-        QSignalBlocker blocker(upstreamProfileCombo_);
-        upstreamProfileCombo_->setCurrentIndex(
-            hasCurrentUpstreamProfile_
-                ? upstreamProfileCombo_->findData(currentUpstreamProfile_.id)
-                : -1);
+        restoreCurrentUpstreamProfileSelection();
         return;
     }
-    currentUpstreamProfile_ = profile;
-    hasCurrentUpstreamProfile_ = true;
-    applyCurrentUpstreamProfile();
+
+    if (proxy_.isRunning()) {
+        if (hasCurrentUpstreamProfile_ && profile.id == currentUpstreamProfile_.id) {
+            return;
+        }
+        pendingUpstreamProfile_ = profile;
+        hasPendingUpstreamProfileSwitch_ = true;
+        proxy_.stop();
+        return;
+    }
+
+    if (!selectUpstreamProfile(id, &error)) {
+        handleFailure(textFor("error_profile_select").arg(error));
+        restoreCurrentUpstreamProfileSelection();
+        return;
+    }
     setProxyRunningUi(false);
 }
 
@@ -1415,8 +1450,44 @@ void MainWindow::handleProxyStopped()
 {
     upstreamProfileRunLock_->unlock();
     setProxyRunningUi(false);
+
+    if (hasPendingUpstreamProfileSwitch_) {
+        const QString profileId = pendingUpstreamProfile_.id;
+        hasPendingUpstreamProfileSwitch_ = false;
+        pendingUpstreamProfile_ = UpstreamProfile();
+
+        QString error;
+        if (!selectUpstreamProfile(profileId, &error)) {
+            restoreCurrentUpstreamProfileSelection();
+            handleFailure(textFor("error_profile_select").arg(error));
+            refreshInfoPanel();
+            updateProxyStats();
+            return;
+        }
+
+        upstreamProfileSwitchRestartPending_ = true;
+        setProxyRunningUi(false);
+        refreshInfoPanel();
+        updateProxyStats();
+        QTimer::singleShot(0, this, SLOT(restartProxyAfterUpstreamProfileSwitch()));
+        return;
+    }
+
     refreshInfoPanel();
     updateProxyStats();
+}
+
+void MainWindow::restartProxyAfterUpstreamProfileSwitch()
+{
+    if (!upstreamProfileSwitchRestartPending_) {
+        return;
+    }
+    upstreamProfileSwitchRestartPending_ = false;
+    if (proxy_.isRunning()) {
+        return;
+    }
+    setProxyRunningUi(false);
+    startProxy();
 }
 
 void MainWindow::handleFailure(const QString &message)
@@ -1429,13 +1500,14 @@ void MainWindow::handleFailure(const QString &message)
 void MainWindow::setProxyRunningUi(bool running)
 {
     setStatus(proxyState_, running ? textFor("state_running") : textFor("state_stopped"), running ? "ok" : "idle");
-    startProxyButton_->setEnabled(!running && upstreamProfilesReady_ &&
+    startProxyButton_->setEnabled(!running && !upstreamProfileSwitchRestartPending_ &&
+                                  upstreamProfilesReady_ &&
                                   hasCurrentUpstreamProfile_ && upstreamProfileStore_->isOpen());
     stopProxyButton_->setEnabled(running);
     copyProxyButton_->setEnabled(running);
     saveButton_->setEnabled(legacyUpstreamMigrationComplete_);
     if (upstreamProfileCombo_) {
-        upstreamProfileCombo_->setEnabled(!running && upstreamProfilesReady_ &&
+        upstreamProfileCombo_->setEnabled(upstreamProfilesReady_ &&
                                           hasCurrentUpstreamProfile_ &&
                                           upstreamProfileStore_->isOpen());
     }
