@@ -5,17 +5,25 @@
 #include <QtCore/QTimer>
 #include <QtCore/QLockFile>
 #include <QtGui/QClipboard>
+#include <QtGui/QFont>
+#include <QtGui/QGuiApplication>
 #include <QtGui/QImage>
+#include <QtGui/QScreen>
 #include <QtTest/QSignalSpy>
 #include <QtTest/QTest>
 #include <QtWidgets/QApplication>
+#include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QDialogButtonBox>
+#include <QtWidgets/QFormLayout>
+#include <QtWidgets/QHeaderView>
 #include <QtWidgets/QLineEdit>
 #include <QtWidgets/QPushButton>
+#include <QtWidgets/QScrollBar>
 #include <QtWidgets/QSpinBox>
 #include <QtWidgets/QTableWidget>
 #include <QtWidgets/QToolButton>
+#include <QtWidgets/QWidget>
 
 using namespace net_tunnel;
 
@@ -28,7 +36,14 @@ private slots:
     void editorUsesDefaultsAndProtectsApiKey();
     void editingNormalizesApiKeyWhitespace();
     void addsWithoutSelectingWhileSelectionIsLocked();
+    void inheritsParentUiScaleAcrossListAndEditor();
+    void largeScaleDialogFitsScreenAndTableScrollsHorizontally();
 };
+
+static QRect safeDialogGeometry()
+{
+    return QGuiApplication::primaryScreen()->availableGeometry().adjusted(24, 24, -24, -24);
+}
 
 static UpstreamProfile addProfile(UpstreamProfileStore *store,
                                   const QString &name,
@@ -302,6 +317,145 @@ void UpstreamProfileDialogTest::addsWithoutSelectingWhileSelectionIsLocked()
     QCOMPARE(store.selectedProfileId(&error), QString());
     QVERIFY2(error.isEmpty(), qPrintable(error));
     QCOMPARE(dialog.selectedProfileId(), QString());
+}
+
+void UpstreamProfileDialogTest::inheritsParentUiScaleAcrossListAndEditor()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    UpstreamProfileStore store(dir.filePath("profiles.sqlite3"));
+    QString error;
+    QVERIFY2(store.open(&error), qPrintable(error));
+    QVERIFY(!addProfile(&store, "Scaled Profile", "sk-scale-test").id.isEmpty());
+
+    QWidget parent;
+    parent.setProperty("ui_scale_factor", 1.30);
+    parent.setAttribute(Qt::WA_DontShowOnScreen);
+    parent.show();
+
+    UpstreamProfileDialog dialog(&store, "en", QString(), false, &parent);
+    const QFont applicationFont = QApplication::font();
+    const qreal applicationPointSize = applicationFont.pointSizeF();
+    const QString dialogStyleSheet = dialog.styleSheet();
+    QTableWidget *table = dialog.findChild<QTableWidget *>("profileTable");
+    QComboBox *pageSize = dialog.findChild<QComboBox *>("profilePageSizeCombo");
+    QPushButton *firstPage = dialog.findChild<QPushButton *>("profileFirstPageButton");
+    QWidget *titleBar = dialog.findChild<QWidget *>("guardDialogTitleBar");
+    QVERIFY(table);
+    QVERIFY(pageSize);
+    QVERIFY(firstPage);
+    QVERIFY(titleBar);
+    const QString tableStyleSheet = table->styleSheet();
+    const qreal baseTablePointSize = table->font().pointSizeF();
+    const int basePageSizeHeight = pageSize->sizeHint().height();
+
+    dialog.setAttribute(Qt::WA_DontShowOnScreen);
+    dialog.show();
+    QTest::qWait(20);
+
+    QVERIFY(qAbs(dialog.property("ui_scale_factor").toReal() - 1.30) < 0.001);
+    const QRect safeGeometry = safeDialogGeometry();
+    const QSize expectedMinimum = QSize(1144, 728).boundedTo(safeGeometry.size());
+    const QSize expectedSize = QSize(1404, 884).boundedTo(safeGeometry.size())
+        .expandedTo(expectedMinimum);
+    QCOMPARE(dialog.minimumSize(), expectedMinimum);
+    QCOMPARE(dialog.size(), expectedSize);
+    QVERIFY(safeGeometry.contains(dialog.geometry()));
+    QCOMPARE(titleBar->height(), 39);
+    QCOMPARE(firstPage->size(), QSize(44, 39));
+    QCOMPARE(table->verticalHeader()->defaultSectionSize(), 44);
+    QCOMPARE(table->rowHeight(0), 44);
+    QVERIFY(pageSize->minimumHeight() >= qRound(basePageSizeHeight * 1.30));
+    QVERIFY(pageSize->styleSheet().contains("QComboBox::drop-down"));
+    QVERIFY(pageSize->styleSheet().contains("width: 20px"));
+    if (baseTablePointSize > 0.0) {
+        QVERIFY(table->font().pointSizeF() > baseTablePointSize);
+    }
+    QCOMPARE(QApplication::font(), applicationFont);
+    QCOMPARE(dialog.styleSheet(), dialogStyleSheet);
+    QCOMPARE(table->styleSheet(), tableStyleSheet);
+
+    table->selectRow(0);
+    bool editorScaled = false;
+    QTimer::singleShot(0, [&editorScaled, applicationPointSize, safeGeometry]() {
+        QDialog *editor = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+        if (!editor) return;
+        QWidget *editorTitleBar = editor->findChild<QWidget *>("guardDialogTitleBar");
+        QPushButton *editorClose = editor->findChild<QPushButton *>("guardDialogCloseButton");
+        QFormLayout *form = editor->findChild<QFormLayout *>();
+        QLineEdit *name = editor->findChild<QLineEdit *>("profileNameEdit");
+        QSpinBox *upstreamTimeout =
+            editor->findChild<QSpinBox *>("profileUpstreamTimeoutSpin");
+        QCheckBox *forwardUserAgent =
+            editor->findChild<QCheckBox *>("profileForwardUserAgentCheck");
+        editorScaled = qAbs(editor->property("ui_scale_factor").toReal() - 1.30) < 0.001 &&
+            editorTitleBar && editorTitleBar->height() == 39 &&
+            editorClose && editorClose->size() == QSize(39, 39) &&
+            editor->minimumWidth() == qMin(806, safeGeometry.width()) &&
+            safeGeometry.contains(editor->geometry()) &&
+            form && form->horizontalSpacing() == 21 &&
+            form->verticalSpacing() == 13 && name && upstreamTimeout &&
+            upstreamTimeout->styleSheet().contains("width: 13px") &&
+            forwardUserAgent && forwardUserAgent->styleSheet().contains("width: 17px") &&
+            (applicationPointSize <= 0.0 ||
+             qAbs(name->font().pointSizeF() - applicationPointSize * 1.30) < 0.05);
+        editor->reject();
+    });
+    QVERIFY(QMetaObject::invokeMethod(&dialog, "viewOrEditSelectedProfile", Qt::DirectConnection));
+    QVERIFY(editorScaled);
+
+    dialog.hide();
+    parent.hide();
+}
+
+void UpstreamProfileDialogTest::largeScaleDialogFitsScreenAndTableScrollsHorizontally()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    UpstreamProfileStore store(dir.filePath("profiles.sqlite3"));
+    QString error;
+    QVERIFY2(store.open(&error), qPrintable(error));
+    QVERIFY(!addProfile(&store, "Large Scale Profile", "sk-large-scale").id.isEmpty());
+
+    const QRect available = QGuiApplication::primaryScreen()->availableGeometry();
+    QWidget parent;
+    const qreal applicationPointSize = QApplication::font().pointSizeF();
+    const qreal scale = applicationPointSize > 0.0 ? 20.0 / applicationPointSize : 2.0;
+    parent.setProperty("ui_scale_factor", scale);
+    parent.setGeometry(available);
+    parent.setAttribute(Qt::WA_DontShowOnScreen);
+    parent.showMaximized();
+
+    UpstreamProfileDialog dialog(&store, "en", QString(), false, &parent);
+    QTableWidget *table = dialog.findChild<QTableWidget *>("profileTable");
+    QVERIFY(table);
+    QScrollBar *horizontal = table->horizontalScrollBar();
+    QVERIFY(horizontal);
+    const int baseScrollBarHeight = horizontal->sizeHint().height();
+
+    dialog.setAttribute(Qt::WA_DontShowOnScreen);
+    dialog.show();
+    QTest::qWait(20);
+
+    const QRect safeGeometry = safeDialogGeometry();
+    QVERIFY(safeGeometry.contains(dialog.geometry()));
+    QVERIFY(dialog.minimumWidth() <= safeGeometry.width());
+    QVERIFY(dialog.minimumHeight() <= safeGeometry.height());
+    QCOMPARE(table->horizontalScrollBarPolicy(), Qt::ScrollBarAsNeeded);
+    QCOMPARE(table->horizontalScrollMode(), QAbstractItemView::ScrollPerPixel);
+    QCOMPARE(table->horizontalHeader()->sectionResizeMode(0), QHeaderView::Interactive);
+    QVERIFY(horizontal->isVisible());
+    QVERIFY(horizontal->maximum() > horizontal->minimum());
+    QVERIFY(horizontal->height() >= qRound(baseScrollBarHeight * scale));
+
+    const int initialItemX = table->visualItemRect(table->item(0, 0)).x();
+    horizontal->setValue(horizontal->maximum());
+    QCoreApplication::processEvents();
+    QCOMPARE(horizontal->value(), horizontal->maximum());
+    QVERIFY(table->visualItemRect(table->item(0, 0)).x() < initialItemX);
+
+    dialog.hide();
+    parent.hide();
 }
 
 QTEST_MAIN(UpstreamProfileDialogTest)

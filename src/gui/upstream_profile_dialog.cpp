@@ -45,6 +45,10 @@ using net_tunnel_gui::showGuardWarning;
 
 namespace {
 
+const int kProfileColumnWidths[] = {160, 310, 170, 230, 160};
+const int kProfileColumnCount = sizeof(kProfileColumnWidths) /
+    sizeof(kProfileColumnWidths[0]);
+
 QIcon themedIcon(QWidget *widget, const QString &name, QStyle::StandardPixmap fallback)
 {
     const QIcon icon = QIcon::fromTheme(name);
@@ -430,6 +434,18 @@ void UpstreamProfileDialog::refresh()
     loadPage(currentRowProfileId());
 }
 
+void UpstreamProfileDialog::uiScaleChanged()
+{
+    if (!table_) return;
+    table_->horizontalHeader()->setMinimumSectionSize(
+        qMax(1, qRound(70 * uiScaleFactor())));
+    for (int column = 0; column < kProfileColumnCount; ++column) {
+        table_->setColumnWidth(column,
+                               qMax(1, qRound(kProfileColumnWidths[column] *
+                                              uiScaleFactor())));
+    }
+}
+
 void UpstreamProfileDialog::buildUi()
 {
     setObjectName("upstreamProfileDialog");
@@ -437,6 +453,7 @@ void UpstreamProfileDialog::buildUi()
     setWindowModality(Qt::WindowModal);
     setMinimumSize(880, 560);
     resize(1080, 680);
+    setLogicalInitialSize(size());
 
     QVBoxLayout *root = contentLayout();
     root->setContentsMargins(14, 14, 14, 12);
@@ -477,6 +494,8 @@ void UpstreamProfileDialog::buildUi()
     table_->setSelectionBehavior(QAbstractItemView::SelectRows);
     table_->setSelectionMode(QAbstractItemView::SingleSelection);
     table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    table_->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    table_->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
     table_->setAlternatingRowColors(true);
     table_->setShowGrid(false);
     table_->setSortingEnabled(false);
@@ -487,11 +506,11 @@ void UpstreamProfileDialog::buildUi()
     table_->horizontalHeader()->setSectionsClickable(true);
     table_->horizontalHeader()->setSortIndicatorShown(true);
     table_->horizontalHeader()->setSortIndicator(4, Qt::DescendingOrder);
-    table_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
-    table_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
-    table_->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
-    table_->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
-    table_->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
+    table_->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
+    table_->horizontalHeader()->setMinimumSectionSize(70);
+    for (int column = 0; column < kProfileColumnCount; ++column) {
+        table_->setColumnWidth(column, kProfileColumnWidths[column]);
+    }
     root->addWidget(table_, 1);
 
     QHBoxLayout *bottomRow = new QHBoxLayout;
@@ -513,10 +532,12 @@ void UpstreamProfileDialog::buildUi()
     firstPageButton_->setObjectName("profileFirstPageButton");
     firstPageButton_->setIcon(themedIcon(this, "go-first", QStyle::SP_MediaSkipBackward));
     firstPageButton_->setFixedSize(34, 30);
+    firstPageButton_->setProperty("guard_logical_fixed_size", QSize(34, 30));
     previousPageButton_ = new QPushButton(this);
     previousPageButton_->setObjectName("profilePreviousPageButton");
     previousPageButton_->setIcon(themedIcon(this, "go-previous", QStyle::SP_ArrowBack));
     previousPageButton_->setFixedSize(34, 30);
+    previousPageButton_->setProperty("guard_logical_fixed_size", QSize(34, 30));
     pageLabel_ = new QLabel(this);
     pageLabel_->setObjectName("profilePageLabel");
     pageLabel_->setMinimumWidth(100);
@@ -525,10 +546,12 @@ void UpstreamProfileDialog::buildUi()
     nextPageButton_->setObjectName("profileNextPageButton");
     nextPageButton_->setIcon(themedIcon(this, "go-next", QStyle::SP_ArrowForward));
     nextPageButton_->setFixedSize(34, 30);
+    nextPageButton_->setProperty("guard_logical_fixed_size", QSize(34, 30));
     lastPageButton_ = new QPushButton(this);
     lastPageButton_->setObjectName("profileLastPageButton");
     lastPageButton_->setIcon(themedIcon(this, "go-last", QStyle::SP_MediaSkipForward));
     lastPageButton_->setFixedSize(34, 30);
+    lastPageButton_->setProperty("guard_logical_fixed_size", QSize(34, 30));
     pageSizeCombo_ = new QComboBox(this);
     pageSizeCombo_->setObjectName("profilePageSizeCombo");
     pageSizeCombo_->addItem("10", 10);

@@ -73,6 +73,7 @@ public:
         streamChunks_ = streamChunks;
         responseBodySequences_.clear();
         responseStatusSequences_.clear();
+        responseHeaderSequences_.clear();
         streamChunkSequences_.clear();
         streamFirstChunkDelaySequencesMs_.clear();
         lastTarget_.clear();
@@ -80,6 +81,7 @@ public:
         lastBody_.clear();
         lastAuthorization_.clear();
         lastUserAgent_.clear();
+        receivedHeaders_.clear();
         requestCount_ = 0;
         disconnectedCount_ = 0;
         return server_.listen(QHostAddress::LocalHost, 0);
@@ -92,6 +94,7 @@ public:
         responseBody_.clear();
         responseBodySequences_ = responseBodySequences;
         responseStatusSequences_ = responseStatusSequences;
+        responseHeaderSequences_.clear();
         streamChunks_.clear();
         streamChunkSequences_.clear();
         streamFirstChunkDelaySequencesMs_.clear();
@@ -100,6 +103,7 @@ public:
         lastBody_.clear();
         lastAuthorization_.clear();
         lastUserAgent_.clear();
+        receivedHeaders_.clear();
         requestCount_ = 0;
         disconnectedCount_ = 0;
         return server_.listen(QHostAddress::LocalHost, 0);
@@ -115,11 +119,13 @@ public:
         streamChunks_.clear();
         streamChunkSequences_ = streamChunkSequences;
         streamFirstChunkDelaySequencesMs_ = firstChunkDelaySequencesMs;
+        responseHeaderSequences_.clear();
         lastTarget_.clear();
         lastPath_.clear();
         lastBody_.clear();
         lastAuthorization_.clear();
         lastUserAgent_.clear();
+        receivedHeaders_.clear();
         requestCount_ = 0;
         disconnectedCount_ = 0;
         return server_.listen(QHostAddress::LocalHost, 0);
@@ -163,6 +169,19 @@ public:
     QByteArray lastUserAgent() const
     {
         return lastUserAgent_;
+    }
+
+    void setResponseHeaderSequences(
+        const QList<QMap<QByteArray, QByteArray> > &responseHeaderSequences)
+    {
+        responseHeaderSequences_ = responseHeaderSequences;
+    }
+
+    QMap<QByteArray, QByteArray> requestHeaders(int attemptIndex) const
+    {
+        return attemptIndex >= 0 && attemptIndex < receivedHeaders_.size()
+            ? receivedHeaders_.at(attemptIndex)
+            : QMap<QByteArray, QByteArray>();
     }
 
 signals:
@@ -222,6 +241,7 @@ private slots:
                 lastBody_ = buffer.mid(headerEnd + terminatorLength, contentLength);
                 lastAuthorization_ = headers.value("authorization");
                 lastUserAgent_ = headers.value("user-agent");
+                receivedHeaders_.append(headers);
                 emit requestReceived();
 
                 if (mode_ == LargeResponse || mode_ == JsonResponse) {
@@ -247,6 +267,17 @@ private slots:
                     response += "HTTP/1.1 " + QByteArray::number(statusCode) + " " + reason + "\r\n";
                     response += "Content-Type: application/json\r\n";
                     response += "X-Upstream-Attempt: " + QByteArray::number(requestCount_) + "\r\n";
+                    if (!responseHeaderSequences_.isEmpty()) {
+                        const int sequenceIndex = qMin(
+                            requestCount_ - 1, responseHeaderSequences_.size() - 1);
+                        const QMap<QByteArray, QByteArray> responseHeaders =
+                            responseHeaderSequences_.at(sequenceIndex);
+                        for (QMap<QByteArray, QByteArray>::const_iterator it =
+                                 responseHeaders.constBegin();
+                             it != responseHeaders.constEnd(); ++it) {
+                            response += it.key() + ": " + it.value() + "\r\n";
+                        }
+                    }
                     response += "Content-Length: " + QByteArray::number(body.size()) + "\r\n";
                     response += "Connection: close\r\n\r\n";
                     response += body;
@@ -299,6 +330,7 @@ private:
     QByteArray responseBody_;
     QList<QByteArray> responseBodySequences_;
     QList<int> responseStatusSequences_;
+    QList<QMap<QByteArray, QByteArray> > responseHeaderSequences_;
     QList<QByteArray> streamChunks_;
     QList<QList<QByteArray> > streamChunkSequences_;
     QList<int> streamFirstChunkDelaySequencesMs_;
@@ -307,6 +339,7 @@ private:
     QByteArray lastBody_;
     QByteArray lastAuthorization_;
     QByteArray lastUserAgent_;
+    QList<QMap<QByteArray, QByteArray> > receivedHeaders_;
     int requestCount_;
     int disconnectedCount_;
     int streamChunkDelayMs_;
@@ -887,6 +920,64 @@ private slots:
                  QString("upstream_http_error"));
     }
 
+    void sessionIdentityAndTurnStateSurviveGuardRetry()
+    {
+        QList<QByteArray> bodies;
+        bodies << "{\"usage\":{\"output_tokens_details\":{\"reasoning_tokens\":516}}}";
+        bodies << "{\"usage\":{\"output_tokens_details\":{\"reasoning_tokens\":128}}}";
+        TestUpstream upstream;
+        QVERIFY(upstream.startJsonResponses(bodies));
+
+        QList<QMap<QByteArray, QByteArray> > responseHeaders;
+        QMap<QByteArray, QByteArray> firstResponseHeaders;
+        firstResponseHeaders.insert("X-Codex-Turn-State", "sticky-turn-state");
+        responseHeaders << firstResponseHeaders << QMap<QByteArray, QByteArray>();
+        upstream.setResponseHeaderSequences(responseHeaders);
+
+        HttpProxyServer proxy;
+        ProxySettings settings = baseSettings(reserveFreePort(), upstream.port());
+        settings.guardRetryAttempts = 1;
+        QString error;
+        QVERIFY2(proxy.start(settings, &error), qPrintable(error));
+
+        QList<QPair<QByteArray, QByteArray> > headers;
+        headers << qMakePair(QByteArray("Session-Id"), QByteArray("session-42"));
+        headers << qMakePair(QByteArray("Thread-Id"), QByteArray("thread-42"));
+        headers << qMakePair(QByteArray("X-Client-Request-Id"), QByteArray("request-42"));
+        headers << qMakePair(QByteArray("X-Codex-Window-Id"), QByteArray("window-42"));
+        headers << qMakePair(QByteArray("X-Codex-Turn-Metadata"),
+                             QByteArray("{\"session_id\":\"session-42\",\"turn_id\":\"turn-42\"}"));
+        headers << qMakePair(QByteArray("Originator"), QByteArray("codex_cli_rs"));
+        headers << qMakePair(QByteArray("Connection"), QByteArray("close, X-Drop-Me"));
+        headers << qMakePair(QByteArray("X-Drop-Me"), QByteArray("hop-only"));
+        const QByteArray response = sendRequest(
+            settings.listenPort,
+            postRequestToPathWithHeaders("/v1/responses",
+                                         "{\"reasoning\":{\"effort\":\"xhigh\"}}",
+                                         headers),
+            3000);
+
+        QVERIFY2(response.contains("200 OK"), response.constData());
+        QVERIFY(response.contains("128"));
+        QVERIFY(response.toLower().contains(
+            "x-codex-turn-state: sticky-turn-state"));
+        QCOMPARE(upstream.requestCount(), 2);
+
+        const QList<QByteArray> stableHeaders = QList<QByteArray>()
+            << "session-id" << "thread-id" << "x-client-request-id"
+            << "x-codex-window-id" << "x-codex-turn-metadata" << "originator";
+        const QMap<QByteArray, QByteArray> first = upstream.requestHeaders(0);
+        const QMap<QByteArray, QByteArray> second = upstream.requestHeaders(1);
+        for (int i = 0; i < stableHeaders.size(); ++i) {
+            const QByteArray name = stableHeaders.at(i);
+            QVERIFY2(first.contains(name), name.constData());
+            QCOMPARE(second.value(name), first.value(name));
+        }
+        QVERIFY(!first.contains("x-drop-me"));
+        QVERIFY(!first.contains("x-codex-turn-state"));
+        QCOMPARE(second.value("x-codex-turn-state"), QByteArray("sticky-turn-state"));
+    }
+
     void responseBufferTimeout()
     {
         TestUpstream upstream;
@@ -1267,6 +1358,57 @@ private slots:
         QCOMPARE(loaded.responseBufferLimitBytes, config.responseBufferLimitBytes);
         QCOMPARE(loaded.firstTokenTimeoutSec, 30);
         QCOMPARE(loaded.streamAction, config.streamAction);
+    }
+
+    void configUiFontPointSizeSaveLoadRoundTrip()
+    {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString path = dir.filePath("config.json");
+
+        AppConfig config;
+        config.uiFontPointSize = 14;
+
+        QString error;
+        QVERIFY2(saveConfig(config, path, &error), qPrintable(error));
+
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        const QJsonObject object = QJsonDocument::fromJson(file.readAll()).object();
+        QCOMPARE(object.value("ui_font_point_size").toInt(), 14);
+
+        const AppConfig loaded = loadConfig(path);
+        QCOMPARE(loaded.uiFontPointSize, 14);
+    }
+
+    void configUiFontPointSizeLoadClampsToSupportedRange_data()
+    {
+        QTest::addColumn<int>("storedPointSize");
+        QTest::addColumn<int>("expectedPointSize");
+
+        QTest::newRow("system-default") << 0 << 0;
+        QTest::newRow("below-minimum") << 4 << 8;
+        QTest::newRow("above-maximum") << 30 << 20;
+    }
+
+    void configUiFontPointSizeLoadClampsToSupportedRange()
+    {
+        QFETCH(int, storedPointSize);
+        QFETCH(int, expectedPointSize);
+
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString path = dir.filePath("config.json");
+
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        QJsonObject object;
+        object.insert("ui_font_point_size", storedPointSize);
+        file.write(QJsonDocument(object).toJson(QJsonDocument::Indented));
+        file.close();
+
+        const AppConfig loaded = loadConfig(path);
+        QCOMPARE(loaded.uiFontPointSize, expectedPointSize);
     }
 
     void configDefaultsDoNotSetUpstreamBaseUrl()

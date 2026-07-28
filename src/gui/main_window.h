@@ -6,7 +6,14 @@
 #include "quiwidget.h"
 
 #include <QtCore/QJsonObject>
+#include <QtCore/QHash>
+#include <QtCore/QMargins>
+#include <QtCore/QPointer>
+#include <QtCore/QPoint>
+#include <QtCore/QRect>
+#include <QtCore/QSize>
 #include <QtCore/QTimer>
+#include <QtGui/QFont>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QLineEdit>
 #include <QtWidgets/QPlainTextEdit>
@@ -17,9 +24,13 @@
 class QAction;
 class QCheckBox;
 class QComboBox;
+class QEvent;
 class QGroupBox;
 class QMenu;
 class QMenuBar;
+class QScrollBar;
+class QShowEvent;
+class QWidget;
 
 class MainWindow : public QUIWidget {
     Q_OBJECT
@@ -27,6 +38,11 @@ class MainWindow : public QUIWidget {
 public:
     explicit MainWindow(QWidget *parent = 0);
     ~MainWindow();
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override;
+    void changeEvent(QEvent *event) override;
+    void showEvent(QShowEvent *event) override;
 
 private slots:
     void startProxy();
@@ -44,6 +60,7 @@ private slots:
     void switchToChinese();
     void switchToEnglish();
     void openUpstreamProfiles();
+    void openInterfaceSettings();
     void showAboutDialog();
     void handleUpstreamProfileChanged(int index);
     void showFromTray();
@@ -59,6 +76,24 @@ private:
     QWidget *buildInfoPanel();
     QWidget *buildLogPanel();
     void applyStyle();
+    Qt::Edges resizeEdgesAt(const QPoint &position) const;
+    void updateResizeCursor(Qt::Edges edges, QWidget *target = 0);
+    void restoreResizeCursor();
+    void continueManualResize(const QPoint &globalPosition);
+    void finishManualResize(bool applyGeometry,
+                            bool keepCursorSuppressed = false);
+    void cancelResizeGesture(bool keepCursorSuppressed = false);
+    bool canStartResizeFrom(QWidget *target, const QPoint &globalPosition) const;
+    bool isAtMaximumGeometry() const;
+    void captureUiScaleBaseline();
+    void applyUiScale(qreal scale);
+    qreal configuredUiScale(int pointSize) const;
+    int defaultUiFontPointSize() const;
+    void updateTitleAppIcon();
+    void updateMinimumSizeForCurrentScreen();
+    void constrainGeometryToCurrentScreen();
+    QRect currentAvailableGeometry() const;
+    void connectWindowScreenSignals();
     void retranslateUi();
     QString textFor(const QString &key) const;
     QString infoLine(const QString &labelKey, const QString &value) const;
@@ -91,6 +126,7 @@ private:
 
     QMenuBar *menuBar_;
     QAction *manageUpstreamProfilesAction_;
+    QAction *interfaceSettingsAction_;
     QMenu *languageMenu_;
     QAction *zhAction_;
     QAction *enAction_;
@@ -143,6 +179,7 @@ private:
     QPushButton *saveButton_;
 
     QPlainTextEdit *logEdit_;
+    QWidget *rootContent_;
     QJsonObject lastRuntimeSnapshot_;
 
     net_tunnel::UpstreamProfileStore *upstreamProfileStore_;
@@ -154,4 +191,29 @@ private:
     bool hasCurrentUpstreamProfile_;
     bool hasPendingUpstreamProfileSwitch_;
     bool upstreamProfileSwitchRestartPending_;
+    bool resizeGestureActive_;
+    bool suppressResizeCursor_;
+    bool resizeCursorOverrideActive_;
+    Qt::CursorShape resizeCursorShape_;
+    QPointer<QWidget> resizeCursorTarget_;
+    bool manualResizing_;
+    Qt::Edges manualResizeEdges_;
+    QPoint manualResizeStartGlobal_;
+    QRect manualResizeStartGeometry_;
+    QRect manualResizePreviewGeometry_;
+    QWidget *resizeOutline_;
+    QHash<QWidget *, QFont> baseTextControlFonts_;
+    QHash<QWidget *, QSize> baseMinimumSizes_;
+    QHash<QWidget *, QSize> baseMaximumSizes_;
+    QHash<QWidget *, int> baseInteractiveHeights_;
+    QHash<QScrollBar *, int> baseVerticalScrollBarWidths_;
+    QHash<QScrollBar *, int> baseHorizontalScrollBarHeights_;
+    QSize baselineWindowSize_;
+    QSize baselineMinimumSize_;
+    QSize baseTitleIconSize_;
+    int baseTitleHeight_;
+    int baseChromeExtent_;
+    qreal baseUiFontPointSize_;
+    qreal uiScale_;
+    bool screenSignalsConnected_;
 };

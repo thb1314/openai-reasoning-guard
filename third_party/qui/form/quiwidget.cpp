@@ -2,12 +2,14 @@
 
 int QUIWidget::deskWidth()
 {
-    return qApp->desktop()->availableGeometry().width();
+    QScreen *screen = QGuiApplication::primaryScreen();
+    return screen ? screen->availableGeometry().width() : 0;
 }
 
 int QUIWidget::deskHeight()
 {
-    return qApp->desktop()->availableGeometry().height();
+    QScreen *screen = QGuiApplication::primaryScreen();
+    return screen ? screen->availableGeometry().height() : 0;
 }
 
 QString QUIWidget::appName()
@@ -194,13 +196,26 @@ void QUIWidget::getQssColor(const QString &qss, QString &textColor, QString &pan
 
 void QUIWidget::setFormInCenter(QWidget *frm)
 {
-    int frmX = frm->width();
-    int frmY = frm->height();
-    QDesktopWidget w;
-    int deskWidth = w.availableGeometry().width();
-    int deskHeight = w.availableGeometry().height();
-    QPoint movePoint(deskWidth / 2 - frmX / 2, deskHeight / 2 - frmY / 2);
-    frm->move(movePoint);
+    if (!frm) {
+        return;
+    }
+
+    QScreen *screen = frm->windowHandle() ? frm->windowHandle()->screen() : 0;
+    if (!screen) {
+        screen = QGuiApplication::screenAt(frm->frameGeometry().center());
+    }
+    if (!screen) {
+        screen = QGuiApplication::primaryScreen();
+    }
+    if (!screen) {
+        return;
+    }
+
+    const QRect available = screen->availableGeometry();
+    const QSize boundedSize = frm->size().boundedTo(available.size());
+    const int x = available.left() + qMax(0, (available.width() - boundedSize.width()) / 2);
+    const int y = available.top() + qMax(0, (available.height() - boundedSize.height()) / 2);
+    frm->move(x, y);
 }
 
 void QUIWidget::setTranslator(const QString &qmFile)
@@ -1067,9 +1082,11 @@ QUIWidget::~QUIWidget()
 
 bool QUIWidget::eventFilter(QObject *obj, QEvent *evt)
 {
-    static QPoint mousePoint;
-    static bool mousePressed = false;
     const bool titleObject = (obj == this->widgetTitle || obj == this->labIco || obj == this->labTitle);
+
+    if (obj == this && (evt->type() == QEvent::WindowDeactivate || evt->type() == QEvent::Hide)) {
+        manualMoveActive = false;
+    }
 
     if (!titleObject) {
         return QWidget::eventFilter(obj, evt);
@@ -1078,17 +1095,27 @@ bool QUIWidget::eventFilter(QObject *obj, QEvent *evt)
     if (evt->type() == QEvent::MouseButtonPress) {
         QMouseEvent *event = static_cast<QMouseEvent *>(evt);
         if (event->button() == Qt::LeftButton) {
-            mousePressed = true;
-            mousePoint = event->globalPos() - this->pos();
+            QWindow *window = windowHandle();
+            if (window && window->startSystemMove()) {
+                return true;
+            }
+
+            if (!isMaximized()) {
+                manualMoveActive = true;
+                manualMoveOffset = event->globalPos() - frameGeometry().topLeft();
+            }
             return true;
         }
     } else if (evt->type() == QEvent::MouseButtonRelease) {
-        mousePressed = false;
+        manualMoveActive = false;
         return true;
     } else if (evt->type() == QEvent::MouseMove) {
         QMouseEvent *event = static_cast<QMouseEvent *>(evt);
-        if (!max && mousePressed && (event->buttons() & Qt::LeftButton)) {
-            this->move(event->globalPos() - mousePoint);
+        if (manualMoveActive && !(event->buttons() & Qt::LeftButton)) {
+            manualMoveActive = false;
+        }
+        if (manualMoveActive && (event->buttons() & Qt::LeftButton)) {
+            move(event->globalPos() - manualMoveOffset);
             return true;
         }
     } else if (evt->type() == QEvent::MouseButtonDblClick) {
@@ -1099,6 +1126,15 @@ bool QUIWidget::eventFilter(QObject *obj, QEvent *evt)
     }
 
     return QWidget::eventFilter(obj, evt);
+}
+
+void QUIWidget::changeEvent(QEvent *event)
+{
+    QDialog::changeEvent(event);
+
+    if (event->type() == QEvent::WindowStateChange) {
+        syncMaximizeButtonIcon();
+    }
 }
 
 QLabel *QUIWidget::getLabIco() const
@@ -1290,8 +1326,7 @@ void QUIWidget::initForm()
     setIcon(QUIWidget::BtnMenu_Normal, QUIConfig::IconNormal);
     setIcon(QUIWidget::BtnMenu_Close, QUIConfig::IconClose);
 
-    this->max = false;
-    this->location = this->geometry();
+    manualMoveActive = false;
     this->setProperty("form", true);
     this->widgetTitle->setProperty("form", "title");
     this->setWindowFlags(Qt::Window | Qt::FramelessWindowHint | Qt::CustomizeWindowHint);
@@ -1505,16 +1540,24 @@ void QUIWidget::on_btnMenu_Min_clicked()
 
 void QUIWidget::on_btnMenu_Max_clicked()
 {
-    if (max) {
-        this->setGeometry(location);
-        setIcon(QUIWidget::BtnMenu_Normal, QUIConfig::IconNormal);
+    if (isMaximized()) {
+        showNormal();
     } else {
-        location = this->geometry();
-        this->setGeometry(qApp->desktop()->availableGeometry());
-        setIcon(QUIWidget::BtnMenu_Max, QUIConfig::IconMax);
+        showMaximized();
     }
 
-    max = !max;
+    syncMaximizeButtonIcon();
+}
+
+void QUIWidget::syncMaximizeButtonIcon()
+{
+    const QFont referenceFont = btnMenu_Max->font();
+
+    if (isMaximized()) {
+        IconHelper::Instance()->setIcon(btnMenu_Max, QUIConfig::IconMax, referenceFont);
+    } else {
+        IconHelper::Instance()->setIcon(btnMenu_Max, QUIConfig::IconNormal, referenceFont);
+    }
 }
 
 void QUIWidget::on_btnMenu_Close_clicked()
@@ -2153,6 +2196,21 @@ void IconHelper::setIcon(QAbstractButton *btn, QChar c, quint32 size)
 {
     iconFont.setPointSize(size);
     btn->setFont(iconFont);
+    btn->setText(c);
+}
+
+void IconHelper::setIcon(QAbstractButton *btn, QChar c, const QFont &referenceFont)
+{
+    QFont font = iconFont;
+    if (referenceFont.pixelSize() > 0) {
+        font.setPixelSize(referenceFont.pixelSize());
+    } else if (referenceFont.pointSizeF() > 0) {
+        font.setPointSizeF(referenceFont.pointSizeF());
+    } else {
+        font.setPointSize(9);
+    }
+
+    btn->setFont(font);
     btn->setText(c);
 }
 

@@ -180,6 +180,8 @@ The first GUI screen is divided into four areas:
 - Upper-right real-time statistics.
 - Right-side information panel and console logs.
 
+All four edges and corners of the main window can be dragged to resize it, with native move and resize operations preferred from the system window manager. Resizing only changes the layout and never changes font or control scaling. The Interface Settings menu lets you follow the system default font or choose and persist a fixed font size from `8-20 pt`; when a large font makes the left configuration form wider than its viewport, a draggable horizontal scrollbar appears at the bottom of the panel as needed.
+
 The Upstream Profiles menu opens a modal management window. It supports add, view, edit, delete, display-name or Base URL search, header sorting, and pagination at 10, 20, 50, or 100 rows per page. Selecting a table row only chooses an operation target. When selection is not run-locked, Set Current switches it explicitly. Adding or importing the first profile into an empty database selects it automatically; deleting the current profile selects the next item in descending update-time order, or the previous item when no next item exists.
 
 The About menu opens a custom-drawn window consistent with the main window and provides links to the author, `thb1314`, and the project's GitHub repository.
@@ -229,6 +231,7 @@ Both forms use `/srv/reasoning-guard/upstream-profiles.sqlite3`. The application
 ```json
 {
   "lang": "zh",
+  "ui_font_point_size": 0,
   "proxy_host": "127.0.0.1",
   "proxy_port": "8010",
   "proxy_prefix": "/v1",
@@ -259,6 +262,7 @@ Legacy `upstream_proxy`, `upstream_http_proxy`, `upstream_https_proxy`, and `ups
 | Field | Default | Example | Description |
 | --- | --- | --- | --- |
 | `lang` | `zh` | `"en"` | GUI language. `zh` displays Chinese, and `en` displays English; it only affects the interface display and does not affect proxy behavior. |
+| `ui_font_point_size` | `0` | `14` | Fixed GUI font size in points. `0` follows the system default font; you can also choose `8-20 pt` in Interface Settings. Resizing the window does not change this value or the font and control scale. |
 | `proxy_host` | `127.0.0.1` | `"0.0.0.0"` | Local proxy listen address. Keep `127.0.0.1` when only local clients use it; set it to `0.0.0.0` when other machines on the LAN need access. |
 | `proxy_port` | `8010` | `8011` | Local proxy listen port. The client base URL needs to use this port, for example `http://127.0.0.1:8011/v1`. |
 | `proxy_prefix` | `/v1` | `""` or `"/api"` | Business path prefix used by clients to access the proxy. `"/v1"` means the client requests `/v1/responses`; an empty string means root proxy, and a request to `/responses` is forwarded directly. Under root proxy, `GET /` is forwarded to the upstream root path, and `/healthz` is used for health checks. |

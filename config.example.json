@@ -1,5 +1,6 @@
 {
     "lang": "zh",
+    "ui_font_point_size": 0,
     "proxy_host": "127.0.0.1",
     "proxy_port": "8010",
     "proxy_prefix": "/v1",

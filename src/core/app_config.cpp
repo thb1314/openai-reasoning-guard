@@ -263,6 +263,7 @@ static void copyLegacyConfigIfNeeded(const QString &targetPath)
 
 AppConfig::AppConfig()
     : lang("zh"),
+      uiFontPointSize(0),
       proxyHost("127.0.0.1"),
       proxyPort(8010),
       proxyPrefix("/v1"),
@@ -303,6 +304,11 @@ AppConfig appConfigFromJsonObject(const QJsonObject &object)
 {
     AppConfig config;
     config.lang = readString(object, "lang", config.lang);
+    config.uiFontPointSize = readInt(object, "ui_font_point_size",
+                                     config.uiFontPointSize);
+    if (config.uiFontPointSize != 0) {
+        config.uiFontPointSize = qBound(8, config.uiFontPointSize, 20);
+    }
     config.proxyHost = readString(object, "proxy_host", config.proxyHost);
     config.proxyPort = readInt(object, "proxy_port", config.proxyPort);
     config.proxyPrefix = readString(object, "proxy_prefix", config.proxyPrefix);
@@ -363,6 +369,7 @@ bool saveConfig(const AppConfig &config, const QString &path, QString *error)
     const QString resolvedPath = path.isEmpty() ? defaultConfigPath() : path;
     QJsonObject object;
     object.insert("lang", config.lang);
+    object.insert("ui_font_point_size", config.uiFontPointSize);
     object.insert("proxy_host", config.proxyHost);
     object.insert("proxy_port", QString::number(config.proxyPort));
     object.insert("proxy_prefix", config.proxyPrefix);

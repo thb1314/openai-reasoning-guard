@@ -1,21 +1,33 @@
 #include "gui/guard_dialog.h"
+#include "gui/scale_helpers.h"
 
 #include <QtCore/QDir>
 #include <QtCore/QEvent>
 #include <QtCore/QFileInfo>
+#include <QtCore/QVariant>
 #include <QtGui/QFont>
 #include <QtGui/QFontDatabase>
 #include <QtGui/QGuiApplication>
 #include <QtGui/QIcon>
 #include <QtGui/QMouseEvent>
 #include <QtGui/QPalette>
+#include <QtGui/QScreen>
+#include <QtGui/QShowEvent>
+#include <QtGui/QWindow>
+#include <QtWidgets/QAbstractButton>
+#include <QtWidgets/QApplication>
 #include <QtWidgets/QFileSystemModel>
+#include <QtWidgets/QFormLayout>
 #include <QtWidgets/QFrame>
+#include <QtWidgets/QHeaderView>
 #include <QtWidgets/QHBoxLayout>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QLineEdit>
+#include <QtWidgets/QLayout>
 #include <QtWidgets/QPushButton>
+#include <QtWidgets/QScrollBar>
 #include <QtWidgets/QStyle>
+#include <QtWidgets/QTableView>
 #include <QtWidgets/QToolButton>
 #include <QtWidgets/QTreeView>
 #include <QtWidgets/QVBoxLayout>
@@ -24,9 +36,51 @@ namespace net_tunnel_gui {
 
 namespace {
 
+const int kDialogScreenMargin = 24;
+
 QLabel *asLabel(QWidget *widget)
 {
     return static_cast<QLabel *>(widget);
+}
+
+QFont relativeFont(const QFont &base, qreal scale)
+{
+    QFont font(base);
+    if (font.pointSizeF() > 0.0) {
+        font.setPointSizeF(qMax(1.0, font.pointSizeF() * scale));
+    } else if (font.pixelSize() > 0) {
+        font.setPixelSize(qMax(1, qRound(font.pixelSize() * scale)));
+    }
+    return font;
+}
+
+int scaledMetric(int value, qreal scale)
+{
+    return qMax(0, qRound(value * scale));
+}
+
+QSize scaledSize(const QSize &size, qreal scale)
+{
+    return QSize(scaledMetric(size.width(), scale),
+                 scaledMetric(size.height(), scale));
+}
+
+QSize scaledMaximumSize(const QSize &size, qreal scale)
+{
+    return QSize(size.width() == QWIDGETSIZE_MAX
+                     ? QWIDGETSIZE_MAX
+                     : scaledMetric(size.width(), scale),
+                 size.height() == QWIDGETSIZE_MAX
+                     ? QWIDGETSIZE_MAX
+                     : scaledMetric(size.height(), scale));
+}
+
+QMargins scaledMargins(const QMargins &margins, qreal scale)
+{
+    return QMargins(scaledMetric(margins.left(), scale),
+                    scaledMetric(margins.top(), scale),
+                    scaledMetric(margins.right(), scale),
+                    scaledMetric(margins.bottom(), scale));
 }
 
 QStyle::StandardPixmap standardPixmapFor(GuardMessageIcon icon)
@@ -81,12 +135,15 @@ public:
                        GuardMessageIcon icon,
                        const QList<GuardMessageButton> &buttons,
                        QWidget *parent)
-        : GuardDialog(parent)
+        : GuardDialog(parent),
+          icon_(icon),
+          iconLabel_(0)
     {
         setProperty("guard_dialog_kind", "message");
         setWindowTitle(title);
         setMinimumWidth(400);
         setMaximumWidth(680);
+        setProperty("guard_logical_maximum_size", QSize(680, QWIDGETSIZE_MAX));
 
         QVBoxLayout *root = contentLayout();
         root->setContentsMargins(18, 16, 18, 16);
@@ -94,17 +151,18 @@ public:
 
         QHBoxLayout *messageRow = new QHBoxLayout;
         messageRow->setSpacing(12);
-        QLabel *iconLabel = new QLabel(this);
-        iconLabel->setObjectName("guardMessageIcon");
-        iconLabel->setPixmap(style()->standardIcon(standardPixmapFor(icon)).pixmap(28, 28));
-        iconLabel->setFixedSize(32, 32);
-        iconLabel->setAlignment(Qt::AlignCenter);
+        iconLabel_ = new QLabel(this);
+        iconLabel_->setObjectName("guardMessageIcon");
+        iconLabel_->setPixmap(style()->standardIcon(standardPixmapFor(icon)).pixmap(28, 28));
+        iconLabel_->setFixedSize(32, 32);
+        iconLabel_->setProperty("guard_logical_fixed_size", QSize(32, 32));
+        iconLabel_->setAlignment(Qt::AlignCenter);
         QLabel *messageLabel = new QLabel(message, this);
         messageLabel->setObjectName("guardMessageText");
         messageLabel->setTextFormat(Qt::PlainText);
         messageLabel->setWordWrap(true);
         messageLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
-        messageRow->addWidget(iconLabel, 0, Qt::AlignTop);
+        messageRow->addWidget(iconLabel_, 0, Qt::AlignTop);
         messageRow->addWidget(messageLabel, 1);
         root->addLayout(messageRow);
 
@@ -130,6 +188,19 @@ public:
         }
         root->addWidget(buttonBox);
     }
+
+protected:
+    void uiScaleChanged() override
+    {
+        if (!iconLabel_) return;
+        const int iconExtent = scaledMetric(28, uiScaleFactor());
+        iconLabel_->setPixmap(style()->standardIcon(standardPixmapFor(icon_)).pixmap(iconExtent,
+                                                                                       iconExtent));
+    }
+
+private:
+    GuardMessageIcon icon_;
+    QLabel *iconLabel_;
 };
 
 } // namespace
@@ -142,12 +213,17 @@ GuardDialog::GuardDialog(QWidget *parent)
       titleIcon_(new QLabel(titleBar_)),
       titleLabel_(new QLabel(titleBar_)),
       closeButton_(new QPushButton(titleBar_)),
-      dragging_(false)
+      dragging_(false),
+      uiScaleBaselineCaptured_(false),
+      logicalInitialSizeApplied_(false),
+      uiScale_(1.0)
 {
     setWindowFlags(Qt::Dialog | Qt::FramelessWindowHint | Qt::CustomizeWindowHint);
     setModal(true);
     setObjectName("guardDialog");
     setProperty("guard_dialog_root", true);
+    // A child dialog must start from the application font, not its already-scaled parent font.
+    setFont(QApplication::font());
     if (parent && !parent->windowIcon().isNull()) {
         setWindowIcon(parent->windowIcon());
     } else if (!QGuiApplication::windowIcon().isNull()) {
@@ -164,6 +240,7 @@ GuardDialog::GuardDialog(QWidget *parent)
     QLabel *iconLabel = asLabel(titleIcon_);
     iconLabel->setObjectName("guardDialogTitleIcon");
     iconLabel->setFixedSize(30, 30);
+    iconLabel->setProperty("guard_logical_fixed_size", QSize(30, 30));
     iconLabel->setAlignment(Qt::AlignCenter);
     QLabel *titleLabel = asLabel(titleLabel_);
     titleLabel->setObjectName("guardDialogTitleText");
@@ -174,6 +251,7 @@ GuardDialog::GuardDialog(QWidget *parent)
     closeButton_->setToolTip(tr("Close"));
     setGuardCloseGlyph(closeButton_);
     closeButton_->setFixedSize(30, 30);
+    closeButton_->setProperty("guard_logical_fixed_size", QSize(30, 30));
     closeButton_->setFocusPolicy(Qt::NoFocus);
 
     titleLayout->addWidget(iconLabel);
@@ -234,12 +312,23 @@ bool GuardDialog::event(QEvent *event)
     return QDialog::event(event);
 }
 
+void GuardDialog::showEvent(QShowEvent *event)
+{
+    applyInheritedUiScale();
+    QDialog::showEvent(event);
+    constrainToAvailableScreen();
+}
+
 bool GuardDialog::eventFilter(QObject *watched, QEvent *event)
 {
     Q_UNUSED(watched)
     if (event->type() == QEvent::MouseButtonPress) {
         QMouseEvent *mouseEvent = static_cast<QMouseEvent *>(event);
         if (mouseEvent->button() == Qt::LeftButton) {
+            if (windowHandle() && windowHandle()->startSystemMove()) {
+                dragging_ = false;
+                return true;
+            }
             dragging_ = true;
             dragOffset_ = mouseEvent->globalPos() - frameGeometry().topLeft();
             return true;
@@ -264,7 +353,305 @@ void GuardDialog::updateTitleChrome()
     }
     asLabel(titleLabel_)->setText(windowTitle());
     const QIcon icon = windowIcon();
-    asLabel(titleIcon_)->setPixmap(icon.isNull() ? QPixmap() : icon.pixmap(18, 18));
+    const int iconExtent = scaledMetric(18, uiScale_);
+    asLabel(titleIcon_)->setPixmap(icon.isNull() ? QPixmap() : icon.pixmap(iconExtent, iconExtent));
+}
+
+void GuardDialog::setLogicalInitialSize(const QSize &size)
+{
+    logicalInitialSize_ = size;
+    logicalInitialSizeApplied_ = false;
+}
+
+qreal GuardDialog::uiScaleFactor() const
+{
+    return uiScale_;
+}
+
+void GuardDialog::uiScaleChanged()
+{
+}
+
+void GuardDialog::captureUiScaleBaseline()
+{
+    baseFonts_.clear();
+    baseMinimumSizes_.clear();
+    baseMaximumSizes_.clear();
+    baseLayoutMargins_.clear();
+    baseLayoutSpacings_.clear();
+    baseFormSpacings_.clear();
+    baseButtonIconSizes_.clear();
+    baseTableRowHeights_.clear();
+    baseInteractiveHeights_.clear();
+    baseVerticalScrollBarWidths_.clear();
+    baseHorizontalScrollBarHeights_.clear();
+
+    QList<QWidget *> widgets;
+    widgets.append(this);
+    widgets.append(findChildren<QWidget *>());
+    for (int i = 0; i < widgets.size(); ++i) {
+        QWidget *widget = widgets.at(i);
+        if (!widget) continue;
+        baseFonts_.insert(widget, widget->font());
+
+        if (qobject_cast<QLineEdit *>(widget) ||
+            qobject_cast<QAbstractSpinBox *>(widget) ||
+            qobject_cast<QComboBox *>(widget) ||
+            qobject_cast<QAbstractButton *>(widget)) {
+            const int height = widget->sizeHint().height();
+            if (height > 0) {
+                baseInteractiveHeights_.insert(widget, height);
+            }
+        }
+        QScrollBar *scrollBar = qobject_cast<QScrollBar *>(widget);
+        if (scrollBar) {
+            if (scrollBar->orientation() == Qt::Vertical) {
+                const int width = scrollBar->sizeHint().width();
+                if (width > 0) {
+                    baseVerticalScrollBarWidths_.insert(scrollBar, width);
+                }
+            } else {
+                const int height = scrollBar->sizeHint().height();
+                if (height > 0) {
+                    baseHorizontalScrollBarHeights_.insert(scrollBar, height);
+                }
+            }
+        }
+
+        const QSize logicalFixedSize = widget->property("guard_logical_fixed_size").toSize();
+        if (logicalFixedSize.isValid()) {
+            baseMinimumSizes_.insert(widget, logicalFixedSize);
+            baseMaximumSizes_.insert(widget, logicalFixedSize);
+        } else {
+            const QSize minimum = widget->minimumSize();
+            if (!minimum.isNull()) {
+                baseMinimumSizes_.insert(widget, minimum);
+            }
+            const QSize maximum = widget->maximumSize();
+            const QSize logicalMaximum =
+                widget->property("guard_logical_maximum_size").toSize();
+            if (logicalMaximum.isValid()) {
+                baseMaximumSizes_.insert(widget, logicalMaximum);
+            } else if ((maximum.width() != QWIDGETSIZE_MAX &&
+                         minimum.width() == maximum.width()) ||
+                        (maximum.height() != QWIDGETSIZE_MAX &&
+                         minimum.height() == maximum.height())) {
+                baseMaximumSizes_.insert(widget, maximum);
+            }
+        }
+    }
+
+    const QList<QLayout *> layouts = findChildren<QLayout *>();
+    for (int i = 0; i < layouts.size(); ++i) {
+        QLayout *layout = layouts.at(i);
+        if (!layout) continue;
+        baseLayoutMargins_.insert(layout, layout->contentsMargins());
+        baseLayoutSpacings_.insert(layout, layout->spacing());
+        if (QFormLayout *form = qobject_cast<QFormLayout *>(layout)) {
+            baseFormSpacings_.insert(form,
+                                     QSize(form->horizontalSpacing(), form->verticalSpacing()));
+        }
+    }
+
+    const QList<QAbstractButton *> buttons = findChildren<QAbstractButton *>();
+    for (int i = 0; i < buttons.size(); ++i) {
+        QAbstractButton *button = buttons.at(i);
+        if (button) baseButtonIconSizes_.insert(button, button->iconSize());
+    }
+
+    const QList<QTableView *> tables = findChildren<QTableView *>();
+    for (int i = 0; i < tables.size(); ++i) {
+        QTableView *table = tables.at(i);
+        if (table && table->verticalHeader()) {
+            baseTableRowHeights_.insert(table, table->verticalHeader()->defaultSectionSize());
+        }
+    }
+
+    captureScaleSensitiveStyleBaselines(this);
+
+    uiScaleBaselineCaptured_ = true;
+}
+
+qreal GuardDialog::inheritedUiScaleFactor() const
+{
+    for (QWidget *widget = parentWidget(); widget; widget = widget->parentWidget()) {
+        const QVariant value = widget->property("ui_scale_factor");
+        bool converted = false;
+        const qreal scale = value.toDouble(&converted);
+        if (converted && scale > 0.0) {
+            return qMax<qreal>(0.5, scale);
+        }
+    }
+    return 1.0;
+}
+
+void GuardDialog::applyInheritedUiScale()
+{
+    if (!uiScaleBaselineCaptured_) {
+        captureUiScaleBaseline();
+    }
+
+    const qreal nextScale = inheritedUiScaleFactor();
+    const bool scaleChanged = qAbs(nextScale - uiScale_) >= 0.001;
+    uiScale_ = nextScale;
+    setProperty("ui_scale_factor", uiScale_);
+
+    if (scaleChanged) {
+        QHash<QWidget *, QFont>::const_iterator fontIt = baseFonts_.constBegin();
+        for (; fontIt != baseFonts_.constEnd(); ++fontIt) {
+            if (fontIt.key()) {
+                fontIt.key()->setFont(relativeFont(fontIt.value(), uiScale_));
+            }
+        }
+
+        QHash<QWidget *, QSize>::const_iterator minimumIt = baseMinimumSizes_.constBegin();
+        for (; minimumIt != baseMinimumSizes_.constEnd(); ++minimumIt) {
+            if (minimumIt.key()) {
+                minimumIt.key()->setMinimumSize(scaledSize(minimumIt.value(), uiScale_));
+            }
+        }
+
+        QHash<QWidget *, QSize>::const_iterator maximumIt = baseMaximumSizes_.constBegin();
+        for (; maximumIt != baseMaximumSizes_.constEnd(); ++maximumIt) {
+            if (maximumIt.key()) {
+                maximumIt.key()->setMaximumSize(scaledMaximumSize(maximumIt.value(), uiScale_));
+            }
+        }
+
+        QHash<QWidget *, int>::const_iterator interactiveIt =
+            baseInteractiveHeights_.constBegin();
+        for (; interactiveIt != baseInteractiveHeights_.constEnd(); ++interactiveIt) {
+            QWidget *widget = interactiveIt.key();
+            if (!widget) continue;
+            const int baseMinimum = baseMinimumSizes_.value(widget).height();
+            widget->setMinimumHeight(scaledMetric(baseMinimum > 0
+                                                      ? baseMinimum
+                                                      : interactiveIt.value(),
+                                                  uiScale_));
+        }
+
+        QHash<QScrollBar *, int>::const_iterator scrollBarIt =
+            baseVerticalScrollBarWidths_.constBegin();
+        for (; scrollBarIt != baseVerticalScrollBarWidths_.constEnd(); ++scrollBarIt) {
+            if (scrollBarIt.key()) {
+                scrollBarIt.key()->setFixedWidth(
+                    scaledMetric(scrollBarIt.value(), uiScale_));
+            }
+        }
+
+        QHash<QScrollBar *, int>::const_iterator horizontalScrollBarIt =
+            baseHorizontalScrollBarHeights_.constBegin();
+        for (; horizontalScrollBarIt != baseHorizontalScrollBarHeights_.constEnd();
+             ++horizontalScrollBarIt) {
+            if (horizontalScrollBarIt.key()) {
+                horizontalScrollBarIt.key()->setFixedHeight(
+                    scaledMetric(horizontalScrollBarIt.value(), uiScale_));
+            }
+        }
+
+        QHash<QLayout *, QMargins>::const_iterator marginIt = baseLayoutMargins_.constBegin();
+        for (; marginIt != baseLayoutMargins_.constEnd(); ++marginIt) {
+            if (marginIt.key()) {
+                marginIt.key()->setContentsMargins(scaledMargins(marginIt.value(), uiScale_));
+                marginIt.key()->invalidate();
+            }
+        }
+
+        QHash<QLayout *, int>::const_iterator spacingIt = baseLayoutSpacings_.constBegin();
+        for (; spacingIt != baseLayoutSpacings_.constEnd(); ++spacingIt) {
+            if (spacingIt.key() && spacingIt.value() >= 0) {
+                spacingIt.key()->setSpacing(scaledMetric(spacingIt.value(), uiScale_));
+            }
+        }
+
+        QHash<QFormLayout *, QSize>::const_iterator formSpacingIt = baseFormSpacings_.constBegin();
+        for (; formSpacingIt != baseFormSpacings_.constEnd(); ++formSpacingIt) {
+            QFormLayout *form = formSpacingIt.key();
+            const QSize baseSpacing = formSpacingIt.value();
+            if (!form) continue;
+            if (baseSpacing.width() >= 0) {
+                form->setHorizontalSpacing(scaledMetric(baseSpacing.width(), uiScale_));
+            }
+            if (baseSpacing.height() >= 0) {
+                form->setVerticalSpacing(scaledMetric(baseSpacing.height(), uiScale_));
+            }
+        }
+
+        QHash<QAbstractButton *, QSize>::const_iterator iconIt = baseButtonIconSizes_.constBegin();
+        for (; iconIt != baseButtonIconSizes_.constEnd(); ++iconIt) {
+            if (iconIt.key() && iconIt.value().isValid()) {
+                iconIt.key()->setIconSize(scaledSize(iconIt.value(), uiScale_));
+            }
+        }
+
+        QHash<QTableView *, int>::const_iterator rowHeightIt = baseTableRowHeights_.constBegin();
+        for (; rowHeightIt != baseTableRowHeights_.constEnd(); ++rowHeightIt) {
+            if (rowHeightIt.key() && rowHeightIt.key()->verticalHeader()) {
+                rowHeightIt.key()->verticalHeader()->setDefaultSectionSize(
+                    scaledMetric(rowHeightIt.value(), uiScale_));
+            }
+        }
+
+        applyScaleSensitiveSubcontrols(this, uiScale_);
+
+        updateTitleChrome();
+        uiScaleChanged();
+    }
+
+    if (!logicalInitialSizeApplied_ && logicalInitialSize_.isValid()) {
+        resize(scaledSize(logicalInitialSize_, uiScale_));
+        logicalInitialSizeApplied_ = true;
+    }
+
+    constrainToAvailableScreen();
+}
+
+void GuardDialog::constrainToAvailableScreen()
+{
+    QScreen *screen = 0;
+    QWidget *ownerWindow = parentWidget() ? parentWidget()->window() : 0;
+    if (ownerWindow && ownerWindow->windowHandle()) {
+        screen = ownerWindow->windowHandle()->screen();
+    }
+    if (!screen && ownerWindow) {
+        screen = QGuiApplication::screenAt(ownerWindow->frameGeometry().center());
+    }
+    if (!screen && windowHandle()) {
+        screen = windowHandle()->screen();
+    }
+    if (!screen) {
+        screen = QGuiApplication::primaryScreen();
+    }
+    if (!screen) return;
+
+    const QRect available = screen->availableGeometry();
+    const QSize sizeLimit(qMax(1, available.width() - 2 * kDialogScreenMargin),
+                          qMax(1, available.height() - 2 * kDialogScreenMargin));
+    const QSize boundedMinimum(qMin(minimumWidth(), sizeLimit.width()),
+                               qMin(minimumHeight(), sizeLimit.height()));
+    if (minimumSize() != boundedMinimum) {
+        setMinimumSize(boundedMinimum);
+    }
+
+    QSize boundedSize = size().boundedTo(sizeLimit);
+    boundedSize = boundedSize.expandedTo(boundedMinimum);
+    if (size() != boundedSize) {
+        resize(boundedSize);
+    }
+
+    const QRect ownerGeometry = ownerWindow ? ownerWindow->frameGeometry() : available;
+    const QRect visibleOwner = ownerGeometry.intersected(available);
+    const QPoint ownerCenter = visibleOwner.isEmpty() ? available.center()
+                                                       : visibleOwner.center();
+    const int maximumX = available.right() - kDialogScreenMargin - width() + 1;
+    const int maximumY = available.bottom() - kDialogScreenMargin - height() + 1;
+    const int targetX = qBound(available.left() + kDialogScreenMargin,
+                               ownerCenter.x() - width() / 2,
+                               maximumX);
+    const int targetY = qBound(available.top() + kDialogScreenMargin,
+                               ownerCenter.y() - height() / 2,
+                               maximumY);
+    move(targetX, targetY);
 }
 
 GuardMessageButton::GuardMessageButton(const QString &buttonText,
@@ -344,6 +731,7 @@ GuardFileDialog::GuardFileDialog(Mode mode,
     setWindowTitle(title);
     setMinimumSize(720, 480);
     resize(820, 560);
+    setLogicalInitialSize(size());
 
     QVBoxLayout *root = contentLayout();
     root->setContentsMargins(14, 14, 14, 14);

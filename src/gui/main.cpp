@@ -37,7 +37,9 @@ static void loadApplicationFonts()
         }
     }
     if (!families.isEmpty()) {
-        QApplication::setFont(QFont(families.first(), 10));
+        QFont font = QApplication::font();
+        font.setFamily(families.first());
+        QApplication::setFont(font);
     }
 }
 
@@ -48,6 +50,13 @@ int main(int argc, char **argv)
         fprintf(stderr, "%s\n", runtimeError.toLocal8Bit().constData());
         return 127;
     }
+
+    QCoreApplication::setAttribute(Qt::AA_EnableHighDpiScaling);
+    QCoreApplication::setAttribute(Qt::AA_UseHighDpiPixmaps);
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+    QGuiApplication::setHighDpiScaleFactorRoundingPolicy(
+        Qt::HighDpiScaleFactorRoundingPolicy::PassThrough);
+#endif
 
     QApplication app(argc, argv);
     QApplication::setApplicationName("openai-reasoning-guard-gui");

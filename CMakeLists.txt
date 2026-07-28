@@ -344,6 +344,49 @@ if(NET_TUNNEL_BUILD_TESTS)
     )
     add_test(NAME main-window-profile-test COMMAND main-window-profile-test -platform offscreen)
 
+    if(UNIX AND NOT APPLE AND NOT CMAKE_CROSSCOMPILING)
+        find_package(X11 QUIET)
+        find_program(NET_TUNNEL_XVFB_RUN_EXECUTABLE xvfb-run)
+        if(X11_FOUND AND X11_XTest_FOUND AND NET_TUNNEL_XVFB_RUN_EXECUTABLE)
+            add_executable(main-window-x11-resize-integration-test
+                tests/main_window_x11_resize_integration_test.cpp
+                src/gui/guard_dialog.h
+                src/gui/guard_dialog.cpp
+                src/gui/main_window.h
+                src/gui/main_window.cpp
+                src/gui/upstream_profile_dialog.h
+                src/gui/upstream_profile_dialog.cpp
+                assets/app_resources.qrc
+                third_party/qui/form/quiwidget.h
+                third_party/qui/form/quiwidget.cpp
+                third_party/qui/qui_resources.qrc
+            )
+            net_tunnel_add_private_compile_options(main-window-x11-resize-integration-test)
+            target_include_directories(main-window-x11-resize-integration-test PRIVATE
+                "${CMAKE_CURRENT_SOURCE_DIR}/third_party/qui"
+                "${CMAKE_CURRENT_SOURCE_DIR}/third_party/qui/form"
+                "${X11_INCLUDE_DIR}"
+            )
+            target_link_libraries(main-window-x11-resize-integration-test PRIVATE
+                net-tunnel-core
+                Qt5::Core
+                Qt5::Gui
+                Qt5::Widgets
+                Qt5::Network
+                Qt5::Sql
+                Qt5::Test
+                "${X11_X11_LIB}"
+                "${X11_XTest_LIB}"
+            )
+            add_test(
+                NAME main-window-x11-resize-integration-test
+                COMMAND "${NET_TUNNEL_XVFB_RUN_EXECUTABLE}" -a
+                        -s "-screen 0 3840x2160x24"
+                        $<TARGET_FILE:main-window-x11-resize-integration-test> -platform xcb
+            )
+        endif()
+    endif()
+
     add_executable(cli-profile-commands-test
         tests/cli_profile_commands_test.cpp
     )
@@ -389,6 +432,12 @@ if(NET_TUNNEL_BUILD_TESTS)
         qui-widget-test
         PROPERTIES ENVIRONMENT "QT_PLUGIN_PATH=${_qt_root}/plugins"
     )
+    if(TARGET main-window-x11-resize-integration-test)
+        set_tests_properties(
+            main-window-x11-resize-integration-test
+            PROPERTIES ENVIRONMENT "QT_PLUGIN_PATH=${_qt_root}/plugins"
+        )
+    endif()
 endif()
 
 install(TARGETS net-tunnel-cli net-tunnel-gui RUNTIME DESTINATION bin)

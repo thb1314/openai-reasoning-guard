@@ -29,6 +29,9 @@ public slots:
 signals:
     void selectedProfileChanged(const QString &profileId);
 
+protected:
+    void uiScaleChanged() override;
+
 private slots:
     void addProfile();
     void viewOrEditSelectedProfile();

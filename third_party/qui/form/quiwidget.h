@@ -261,6 +261,7 @@ public:
 
 protected:
     bool eventFilter(QObject *obj, QEvent *evt);
+    void changeEvent(QEvent *event) override;
 
 private:
     QVBoxLayout *verticalLayout1;
@@ -280,8 +281,8 @@ private:
     QVBoxLayout *verticalLayout3;
 
 private:
-    bool max;                       //是否处于最大化状态
-    QRect location;                 //鼠标移动窗体后的坐标位置
+    QPoint manualMoveOffset;        //手动拖动时鼠标相对窗体左上角的偏移
+    bool manualMoveActive;          //当前是否正在使用手动拖动回退
 
     QString title;                  //标题
     Qt::Alignment alignment;        //标题文本对齐
@@ -307,6 +308,9 @@ private slots:
     void initControl();             //初始化控件
     void initForm();                //初始化窗体
     void changeStyle();             //更换样式
+
+private:
+    void syncMaximizeButtonIcon();  //根据真实窗口状态同步最大化按钮
 
 private slots:
     void on_btnMenu_Min_clicked();
@@ -515,6 +519,8 @@ public:
 
     void setIcon(QLabel *lab, QChar c, quint32 size = 9);
     void setIcon(QAbstractButton *btn, QChar c, quint32 size = 9);
+    // Uses the icon font while preserving the reference font's size unit.
+    void setIcon(QAbstractButton *btn, QChar c, const QFont &referenceFont);
     QPixmap getPixmap(const QString &color, QChar c, quint32 size = 9,
                       quint32 pixWidth = 10, quint32 pixHeight = 10);
 

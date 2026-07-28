@@ -2,39 +2,124 @@
 
 #include "gui/app_icon.h"
 #include "gui/guard_dialog.h"
+#include "gui/scale_helpers.h"
 #include "gui/upstream_profile_dialog.h"
 
 #include <QtCore/QDateTime>
+#include <QtCore/QEvent>
 #include <QtCore/QFile>
 #include <QtCore/QJsonDocument>
 #include <QtCore/QJsonObject>
 #include <QtCore/QSet>
 #include <QtCore/QSignalBlocker>
 #include <QtCore/QSize>
+#include <QtCore/QVariant>
+#include <QtGui/QColor>
+#include <QtGui/QCursor>
 #include <QtGui/QFont>
+#include <QtGui/QFontMetrics>
+#include <QtGui/QMouseEvent>
+#include <QtGui/QPainter>
+#include <QtGui/QPalette>
+#include <QtGui/QRegion>
+#include <QtGui/QScreen>
+#include <QtGui/QShowEvent>
+#include <QtGui/QWindow>
 #include <QtWidgets/QAction>
+#include <QtWidgets/QAbstractButton>
+#include <QtWidgets/QAbstractItemView>
+#include <QtWidgets/QAbstractScrollArea>
+#include <QtWidgets/QAbstractSpinBox>
 #include <QtGui/QClipboard>
 #include <QtGui/QIcon>
 #include <QtGui/QTextOption>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
-#include <QtWidgets/QDesktopWidget>
+#include <QtWidgets/QDialogButtonBox>
 #include <QtWidgets/QFormLayout>
 #include <QtWidgets/QGridLayout>
 #include <QtWidgets/QGroupBox>
 #include <QtWidgets/QHBoxLayout>
 #include <QtWidgets/QMenu>
 #include <QtWidgets/QMenuBar>
+#include <QtWidgets/QPlainTextEdit>
 #include <QtWidgets/QScrollArea>
+#include <QtWidgets/QScrollBar>
 #include <QtWidgets/QSizePolicy>
 #include <QtWidgets/QSplitter>
 #include <QtWidgets/QStyle>
 #include <QtWidgets/QSystemTrayIcon>
 #include <QtWidgets/QToolBar>
+#include <QtWidgets/QToolButton>
 #include <QtWidgets/QVBoxLayout>
 
 using namespace net_tunnel;
+using net_tunnel_gui::applyScaleSensitiveSubcontrols;
+using net_tunnel_gui::captureScaleSensitiveStyleBaselines;
+
+static QFont relativeFont(const QFont &base, qreal factor, bool bold = false)
+{
+    QFont font(base);
+    if (font.pointSizeF() > 0.0) {
+        font.setPointSizeF(qMax(1.0, font.pointSizeF() * factor));
+    } else if (font.pixelSize() > 0) {
+        font.setPixelSize(qMax(1, qRound(font.pixelSize() * factor)));
+    }
+    if (bold) {
+        font.setBold(true);
+    }
+    return font;
+}
+
+static int scaledMetric(int value, qreal scale)
+{
+    return qMax(0, qRound(value * scale));
+}
+
+static QSize scaledSize(const QSize &size, qreal scale)
+{
+    return QSize(scaledMetric(size.width(), scale),
+                 scaledMetric(size.height(), scale));
+}
+
+static QMargins scaledMargins(const QMargins &margins, qreal scale)
+{
+    return QMargins(scaledMetric(margins.left(), scale),
+                    scaledMetric(margins.top(), scale),
+                    scaledMetric(margins.right(), scale),
+                    scaledMetric(margins.bottom(), scale));
+}
+
+static QVariantList marginsToVariant(const QMargins &margins)
+{
+    return QVariantList() << margins.left() << margins.top()
+                          << margins.right() << margins.bottom();
+}
+
+static QMargins marginsFromVariant(const QVariant &value)
+{
+    const QVariantList values = value.toList();
+    if (values.size() != 4) {
+        return QMargins();
+    }
+    return QMargins(values.at(0).toInt(), values.at(1).toInt(),
+                    values.at(2).toInt(), values.at(3).toInt());
+}
+
+static bool isDirectFontScaleTarget(QWidget *widget)
+{
+    return qobject_cast<QLabel *>(widget) ||
+        qobject_cast<QLineEdit *>(widget) ||
+        qobject_cast<QAbstractSpinBox *>(widget) ||
+        qobject_cast<QComboBox *>(widget) ||
+        qobject_cast<QAbstractButton *>(widget) ||
+        qobject_cast<QPlainTextEdit *>(widget) ||
+        qobject_cast<QAbstractItemView *>(widget) ||
+        qobject_cast<QGroupBox *>(widget) ||
+        qobject_cast<QMenuBar *>(widget) ||
+        qobject_cast<QMenu *>(widget);
+}
 
 static QLabel *makeI18nLabel(const QString &key, QWidget *parent)
 {
@@ -50,6 +135,7 @@ static QLabel *makeMetricLabel(const QString &key, QWidget *parent)
     label->setWordWrap(false);
     label->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     label->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    label->setFont(relativeFont(label->font(), 0.92));
     return label;
 }
 
@@ -99,6 +185,43 @@ static bool configHasLegacyUpstreamFields(const QString &path)
 }
 
 namespace {
+
+class ResizeOutlineWidget : public QWidget {
+public:
+    ResizeOutlineWidget()
+        : QWidget(0, Qt::ToolTip | Qt::FramelessWindowHint |
+                         Qt::BypassWindowManagerHint |
+                         Qt::WindowDoesNotAcceptFocus |
+                         Qt::WindowTransparentForInput)
+    {
+        setObjectName("resizeOutline");
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+        setAttribute(Qt::WA_ShowWithoutActivating);
+        setAttribute(Qt::WA_TranslucentBackground);
+        setAttribute(Qt::WA_NoSystemBackground);
+        setFocusPolicy(Qt::NoFocus);
+    }
+
+protected:
+    void resizeEvent(QResizeEvent *event) override
+    {
+        QWidget::resizeEvent(event);
+        const int thickness = 3;
+        QRegion outline(rect());
+        if (width() > 2 * thickness && height() > 2 * thickness) {
+            outline = outline.subtracted(
+                QRegion(rect().adjusted(thickness, thickness,
+                                        -thickness, -thickness)));
+        }
+        setMask(outline);
+    }
+
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter painter(this);
+        painter.fillRect(rect(), QColor(43, 143, 202));
+    }
+};
 
 class AboutDialog : public net_tunnel_gui::GuardDialog {
 public:
@@ -175,6 +298,77 @@ private:
     }
 };
 
+class InterfaceSettingsDialog : public net_tunnel_gui::GuardDialog {
+public:
+    InterfaceSettingsDialog(const QString &title,
+                            const QString &useSystemText,
+                            const QString &fontSizeText,
+                            const QString &applyText,
+                            const QString &cancelText,
+                            int configuredPointSize,
+                            int defaultPointSize,
+                            QWidget *parent)
+        : GuardDialog(parent),
+          useSystemFont_(new QCheckBox(useSystemText, this)),
+          fontSizeSpin_(new QSpinBox(this))
+    {
+        setObjectName("interfaceSettingsDialog");
+        setProperty("guard_dialog_kind", "interface_settings");
+        setWindowTitle(title);
+        setLogicalInitialSize(QSize(430, 180));
+        setMinimumWidth(380);
+
+        QVBoxLayout *root = contentLayout();
+        root->setContentsMargins(18, 16, 18, 16);
+        root->setSpacing(14);
+
+        useSystemFont_->setObjectName("interfaceUseSystemFontCheck");
+        useSystemFont_->setChecked(configuredPointSize == 0);
+        root->addWidget(useSystemFont_);
+
+        QFormLayout *form = new QFormLayout;
+        form->setContentsMargins(0, 0, 0, 0);
+        form->setHorizontalSpacing(14);
+        form->setVerticalSpacing(8);
+        QLabel *fontSizeLabel = new QLabel(fontSizeText, this);
+        fontSizeLabel->setObjectName("interfaceFontSizeLabel");
+        fontSizeSpin_->setObjectName("interfaceFontSizeSpin");
+        fontSizeSpin_->setRange(8, 20);
+        fontSizeSpin_->setSuffix(" pt");
+        fontSizeSpin_->setValue(configuredPointSize > 0
+                                    ? configuredPointSize
+                                    : qBound(8, defaultPointSize, 20));
+        fontSizeSpin_->setEnabled(!useSystemFont_->isChecked());
+        form->addRow(fontSizeLabel, fontSizeSpin_);
+        root->addLayout(form);
+
+        QDialogButtonBox *buttons = new QDialogButtonBox(this);
+        buttons->setObjectName("interfaceSettingsButtons");
+        QPushButton *cancelButton = buttons->addButton(
+            cancelText, QDialogButtonBox::RejectRole);
+        QPushButton *applyButton = buttons->addButton(
+            applyText, QDialogButtonBox::AcceptRole);
+        cancelButton->setObjectName("interfaceSettingsCancelButton");
+        applyButton->setObjectName("interfaceSettingsApplyButton");
+        applyButton->setDefault(true);
+        root->addWidget(buttons);
+
+        connect(useSystemFont_, &QCheckBox::toggled,
+                fontSizeSpin_, &QWidget::setDisabled);
+        connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
+        connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
+    }
+
+    int selectedPointSize() const
+    {
+        return useSystemFont_->isChecked() ? 0 : fontSizeSpin_->value();
+    }
+
+private:
+    QCheckBox *useSystemFont_;
+    QSpinBox *fontSizeSpin_;
+};
+
 } // namespace
 
 MainWindow::MainWindow(QWidget *parent)
@@ -184,6 +378,7 @@ MainWindow::MainWindow(QWidget *parent)
       proxy_(this),
       menuBar_(0),
       manageUpstreamProfilesAction_(0),
+      interfaceSettingsAction_(0),
       languageMenu_(0),
       zhAction_(0),
       enAction_(0),
@@ -233,17 +428,52 @@ MainWindow::MainWindow(QWidget *parent)
       copyProxyButton_(0),
       saveButton_(0),
       logEdit_(0),
+      rootContent_(0),
       upstreamProfileStore_(new UpstreamProfileStore(upstreamProfileDatabasePath(configPath_))),
       upstreamProfileRunLock_(new UpstreamProfileRunLock(upstreamProfileDatabasePath(configPath_))),
       legacyUpstreamMigrationComplete_(!configHasLegacyUpstreamFields(configPath_)),
       upstreamProfilesReady_(false),
       hasCurrentUpstreamProfile_(false),
       hasPendingUpstreamProfileSwitch_(false),
-      upstreamProfileSwitchRestartPending_(false)
+      upstreamProfileSwitchRestartPending_(false),
+      resizeGestureActive_(false),
+      suppressResizeCursor_(false),
+      resizeCursorOverrideActive_(false),
+      resizeCursorShape_(Qt::ArrowCursor),
+      manualResizing_(false),
+      manualResizeEdges_(Qt::Edges()),
+      resizeOutline_(0),
+      baselineWindowSize_(1080, 680),
+      baselineMinimumSize_(980, 580),
+      baseTitleIconSize_(22, 22),
+      baseTitleHeight_(42),
+      baseChromeExtent_(36),
+      baseUiFontPointSize_(QApplication::font().pointSizeF()),
+      uiScale_(1.0),
+      screenSignalsConnected_(false)
 {
     buildUi();
-    setupTrayIcon();
     applyStyle();
+    const QColor resizeBackground = palette().color(QPalette::Window);
+    setAutoFillBackground(true);
+    if (rootContent_) {
+        QPalette rootPalette = rootContent_->palette();
+        rootPalette.setColor(QPalette::Window, resizeBackground);
+        rootContent_->setPalette(rootPalette);
+        rootContent_->setAutoFillBackground(true);
+    }
+    captureUiScaleBaseline();
+    setProperty("ui_scale_factor", uiScale_);
+    updateMinimumSizeForCurrentScreen();
+    applyUiScale(configuredUiScale(config_.uiFontPointSize));
+    setMouseTracking(true);
+    const QList<QWidget *> trackedWidgets = findChildren<QWidget *>();
+    for (int i = 0; i < trackedWidgets.size(); ++i) {
+        trackedWidgets.at(i)->setMouseTracking(true);
+    }
+    qApp->installEventFilter(this);
+    connectWindowScreenSignals();
+    setupTrayIcon();
     initializeUpstreamProfiles();
     loadSettingsToUi();
     retranslateUi();
@@ -263,6 +493,10 @@ MainWindow::MainWindow(QWidget *parent)
 
 MainWindow::~MainWindow()
 {
+    cancelResizeGesture();
+    delete resizeOutline_;
+    resizeOutline_ = 0;
+    qApp->removeEventFilter(this);
     if (trayIcon_) {
         trayIcon_->hide();
     }
@@ -277,21 +511,39 @@ void MainWindow::buildUi()
     setTitle(textFor("window_title"));
     setAlignment(Qt::AlignCenter);
     setVisible(QUIWidget::BtnMenu, false);
-    setBtnWidth(36);
-    setTitleHeight(42);
+    const QFont applicationFont = QApplication::font();
+    const int chromeExtent = qMax(36, QFontMetrics(applicationFont).height() + 18);
+    baseChromeExtent_ = chromeExtent;
+    baseTitleHeight_ = qMax(42, QFontMetrics(applicationFont).height() + 20);
+    setBtnWidth(chromeExtent);
+    setTitleHeight(baseTitleHeight_);
+    getLabTitle()->setFont(applicationFont);
+    const QList<QWidget *> chromeButtons = QList<QWidget *>()
+        << getBtnMenu() << getBtnMenuMin() << getBtnMenuMax() << getBtnMenuMClose();
+    for (int i = 0; i < chromeButtons.size(); ++i) {
+        QFont iconFont = chromeButtons.at(i)->font();
+        if (applicationFont.pointSizeF() > 0.0) {
+            iconFont.setPointSizeF(applicationFont.pointSizeF());
+        } else if (applicationFont.pixelSize() > 0) {
+            iconFont.setPixelSize(applicationFont.pixelSize());
+        }
+        chromeButtons.at(i)->setFont(iconFont);
+    }
     setWindowIcon(makeAppIcon());
-    setPixmap(QUIWidget::Lab_Ico, QStringLiteral(":/app-icon-22.png"), QSize(22, 22));
-    setMinimumSize(980, 580);
+    const int iconExtent = qMax(22, qRound(22.0 * chromeExtent / 36.0));
+    baseTitleIconSize_ = QSize(iconExtent, iconExtent);
+    updateTitleAppIcon();
+    setMinimumSize(baselineMinimumSize_);
 
-    QWidget *root = new QWidget;
-    root->setObjectName("rootContent");
-    QVBoxLayout *rootLayout = new QVBoxLayout(root);
+    rootContent_ = new QWidget;
+    rootContent_->setObjectName("rootContent");
+    QVBoxLayout *rootLayout = new QVBoxLayout(rootContent_);
     rootLayout->setContentsMargins(8, 8, 8, 8);
     rootLayout->setSpacing(8);
     rootLayout->setMenuBar(buildMenuBar());
     rootLayout->addWidget(buildHeader());
 
-    QSplitter *splitter = new QSplitter(Qt::Horizontal, root);
+    QSplitter *splitter = new QSplitter(Qt::Horizontal, rootContent_);
     QWidget *left = new QWidget(splitter);
     QVBoxLayout *leftLayout = new QVBoxLayout(left);
     leftLayout->setContentsMargins(0, 0, 0, 0);
@@ -314,10 +566,15 @@ void MainWindow::buildUi()
     splitter->setSizes(QList<int>() << 700 << 430);
     rootLayout->addWidget(splitter, 1);
 
-    setMainWidget(root);
-    const QRect available = QApplication::desktop()->availableGeometry(this);
-    const int normalWidth = qMin(1080, qMax(980, available.width() - 220));
-    const int normalHeight = qMin(680, qMax(580, available.height() - 160));
+    setMainWidget(rootContent_);
+    updateMinimumSizeForCurrentScreen();
+    const QRect available = currentAvailableGeometry();
+    const int normalWidth = qBound(
+        minimumWidth(), baselineWindowSize_.width(),
+        qMax(minimumWidth(), available.width() - 32));
+    const int normalHeight = qBound(
+        minimumHeight(), baselineWindowSize_.height(),
+        qMax(minimumHeight(), available.height() - 32));
     resize(normalWidth, normalHeight);
     QUIWidget::setFormInCenter(this);
     setWindowState(Qt::WindowNoState);
@@ -353,6 +610,9 @@ QMenuBar *MainWindow::buildMenuBar()
     manageUpstreamProfilesAction_ = bar->addAction("");
     manageUpstreamProfilesAction_->setObjectName("manageUpstreamProfilesAction");
     connect(manageUpstreamProfilesAction_, SIGNAL(triggered()), this, SLOT(openUpstreamProfiles()));
+    interfaceSettingsAction_ = bar->addAction("");
+    interfaceSettingsAction_->setObjectName("interfaceSettingsAction");
+    connect(interfaceSettingsAction_, SIGNAL(triggered()), this, SLOT(openInterfaceSettings()));
     languageMenu_ = bar->addMenu("");
     zhAction_ = languageMenu_->addAction("");
     enAction_ = languageMenu_->addAction("");
@@ -377,6 +637,7 @@ QWidget *MainWindow::buildHeader()
 
     QLabel *title = new QLabel("OpenAI Reasoning Guard", box);
     title->setObjectName("titleLabel");
+    title->setFont(relativeFont(title->font(), 1.45, true));
     QLabel *subtitle = makeI18nLabel("subtitle", box);
     subtitle->setObjectName("subtitleLabel");
 
@@ -405,6 +666,9 @@ QWidget *MainWindow::buildProxyPanel()
 
     QWidget *content = new QWidget(box);
     content->setObjectName("proxyFormContent");
+    // Keep the form's layout-derived minimum width so a fixed large interface
+    // font can be reached through the scroll area instead of squeezing fields.
+    content->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::MinimumExpanding);
     QVBoxLayout *contentLayout = new QVBoxLayout(content);
     contentLayout->setContentsMargins(0, 0, 0, 0);
     contentLayout->setSpacing(10);
@@ -552,8 +816,8 @@ QWidget *MainWindow::buildProxyPanel()
     scrollArea->setObjectName("proxyScrollArea");
     scrollArea->setWidgetResizable(true);
     scrollArea->setFrameShape(QFrame::NoFrame);
-    scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    scrollArea->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    scrollArea->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOn);
     scrollArea->setWidget(content);
     outer->addWidget(scrollArea, 1);
 
@@ -612,6 +876,7 @@ QWidget *MainWindow::buildRuntimePanel()
            << guardMatchRateMetric_ << blockedMetric_ << retryMetric_ << latencyMetric_ << uptimeMetric_;
     for (int i = 0; i < values.size(); ++i) {
         values.at(i)->setObjectName("metricValue");
+        values.at(i)->setFont(relativeFont(values.at(i)->font(), 1.05, true));
         values.at(i)->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
         values.at(i)->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     }
@@ -699,15 +964,661 @@ QWidget *MainWindow::buildLogPanel()
     clearAction->setProperty("i18n_tooltip_key", "console_clear");
     connect(clearAction, SIGNAL(triggered()), this, SLOT(clearConsole()));
 
+    const QList<QToolButton *> toolButtons = tools->findChildren<QToolButton *>();
+    for (int i = 0; i < toolButtons.size(); ++i) {
+        toolButtons.at(i)->setMinimumSize(28, 28);
+    }
+
     content->addWidget(tools);
     layout->addLayout(content);
     return box;
 }
 
+bool MainWindow::eventFilter(QObject *watched, QEvent *event)
+{
+    if (event->type() == QEvent::ApplicationDeactivate ||
+        (event->type() == QEvent::ApplicationStateChange &&
+         QGuiApplication::applicationState() != Qt::ApplicationActive)) {
+        cancelResizeGesture();
+        return QUIWidget::eventFilter(watched, event);
+    }
+
+    QWidget *target = qobject_cast<QWidget *>(watched);
+    const bool belongsToWindow = target &&
+        (target == this || target == resizeOutline_ ||
+         (isAncestorOf(target) && target->window() == this));
+    if (!belongsToWindow) {
+        return QUIWidget::eventFilter(watched, event);
+    }
+
+    if (event->type() == QEvent::Hide || event->type() == QEvent::Close) {
+        cancelResizeGesture();
+    } else if (event->type() == QEvent::WindowDeactivate &&
+               !(manualResizing_ && resizeOutline_ &&
+                 resizeOutline_->isVisible())) {
+        // The top-level resize outline can transiently deactivate this window.
+        // ApplicationDeactivate still handles a real application switch.
+        cancelResizeGesture();
+    }
+
+    if (event->type() == QEvent::MouseButtonPress) {
+        QMouseEvent *mouse = static_cast<QMouseEvent *>(event);
+        const Qt::Edges edges = resizeEdgesAt(mapFromGlobal(mouse->globalPos()));
+        if (mouse->button() == Qt::LeftButton && edges != Qt::Edges() &&
+            canStartResizeFrom(target, mouse->globalPos())) {
+            resizeGestureActive_ = true;
+            suppressResizeCursor_ = false;
+            updateResizeCursor(edges, target);
+            if (QGuiApplication::platformName() != QLatin1String("xcb") &&
+                windowHandle() && windowHandle()->startSystemResize(edges)) {
+                setProperty("resize_uses_native_gesture", true);
+                restoreResizeCursor();
+                return true;
+            }
+            setProperty("resize_uses_native_gesture", false);
+            manualResizing_ = true;
+            manualResizeEdges_ = edges;
+            manualResizeStartGlobal_ = mouse->globalPos();
+            manualResizeStartGeometry_ = geometry();
+            manualResizePreviewGeometry_ = manualResizeStartGeometry_;
+            if (!resizeOutline_) {
+                resizeOutline_ = new ResizeOutlineWidget;
+            }
+            resizeOutline_->setGeometry(manualResizePreviewGeometry_);
+            resizeOutline_->show();
+            resizeOutline_->raise();
+            setProperty("resize_preview_geometry", manualResizePreviewGeometry_);
+            grabMouse(QCursor(resizeCursorShape_));
+            return true;
+        }
+    } else if (event->type() == QEvent::MouseMove) {
+        QMouseEvent *mouse = static_cast<QMouseEvent *>(event);
+        if (manualResizing_ && (mouse->buttons() & Qt::LeftButton)) {
+            continueManualResize(mouse->globalPos());
+            return true;
+        }
+        if (manualResizing_) {
+            finishManualResize(true, true);
+            return true;
+        }
+        if (mouse->buttons() == Qt::NoButton) {
+            if (resizeGestureActive_) {
+                // Native window managers can consume the release event. A hover event
+                // with no buttons is the portable completion signal for that gesture.
+                cancelResizeGesture(true);
+            }
+            const Qt::Edges edges = resizeEdgesAt(mapFromGlobal(mouse->globalPos()));
+            const bool canResize = canStartResizeFrom(target, mouse->globalPos());
+            if (suppressResizeCursor_) {
+                restoreResizeCursor();
+                if (edges == Qt::Edges()) {
+                    suppressResizeCursor_ = false;
+                }
+            } else {
+                updateResizeCursor(canResize ? edges : Qt::Edges(),
+                                   target);
+            }
+        }
+    } else if (event->type() == QEvent::MouseButtonRelease) {
+        QMouseEvent *mouse = static_cast<QMouseEvent *>(event);
+        if (mouse->button() == Qt::LeftButton &&
+            (manualResizing_ || resizeGestureActive_)) {
+            const bool wasManualResize = manualResizing_;
+            if (wasManualResize) {
+                continueManualResize(mouse->globalPos());
+                finishManualResize(true, true);
+            } else {
+                cancelResizeGesture(true);
+            }
+            return wasManualResize;
+        }
+    } else if (event->type() == QEvent::Leave && !manualResizing_ &&
+               target == this) {
+        restoreResizeCursor();
+        suppressResizeCursor_ = false;
+    }
+
+    return QUIWidget::eventFilter(watched, event);
+}
+
+Qt::Edges MainWindow::resizeEdgesAt(const QPoint &position) const
+{
+    if (isAtMaximumGeometry()) {
+        return Qt::Edges();
+    }
+    const int edgeThickness = 10;
+    const int cornerExtent = 24;
+    const int diagonalThreshold = qMax(34, cornerExtent + edgeThickness);
+    const int leftDistance = position.x();
+    const int rightDistance = width() - position.x() - 1;
+    const int topDistance = position.y();
+    const int bottomDistance = height() - position.y() - 1;
+    const bool left = position.x() >= 0 && position.x() <= edgeThickness;
+    const bool right = position.x() < width() &&
+        position.x() >= width() - edgeThickness - 1;
+    const bool top = position.y() >= 0 && position.y() <= edgeThickness;
+    const bool bottom = position.y() < height() &&
+        position.y() >= height() - edgeThickness - 1;
+    const bool nearLeft = position.x() >= 0 && position.x() <= cornerExtent;
+    const bool nearRight = position.x() < width() &&
+        position.x() >= width() - cornerExtent - 1;
+    const bool nearTop = position.y() >= 0 && position.y() <= cornerExtent;
+    const bool nearBottom = position.y() < height() &&
+        position.y() >= height() - cornerExtent - 1;
+
+    if (nearTop && nearLeft &&
+        topDistance + leftDistance <= diagonalThreshold) {
+        return Qt::TopEdge | Qt::LeftEdge;
+    }
+    if (nearTop && nearRight &&
+        topDistance + rightDistance <= diagonalThreshold) {
+        return Qt::TopEdge | Qt::RightEdge;
+    }
+    if (nearBottom && nearLeft &&
+        bottomDistance + leftDistance <= diagonalThreshold) {
+        return Qt::BottomEdge | Qt::LeftEdge;
+    }
+    if (nearBottom && nearRight &&
+        bottomDistance + rightDistance <= diagonalThreshold) {
+        return Qt::BottomEdge | Qt::RightEdge;
+    }
+
+    Qt::Edges edges;
+    if (left) edges |= Qt::LeftEdge;
+    if (right) edges |= Qt::RightEdge;
+    if (top) edges |= Qt::TopEdge;
+    if (bottom) edges |= Qt::BottomEdge;
+    return edges;
+}
+
+void MainWindow::cancelResizeGesture(bool keepCursorSuppressed)
+{
+    const bool wasManualResize = manualResizing_;
+    manualResizing_ = false;
+    manualResizeEdges_ = Qt::Edges();
+    resizeGestureActive_ = false;
+    if (wasManualResize && QWidget::mouseGrabber() == this) {
+        releaseMouse();
+    }
+    if (resizeOutline_) {
+        resizeOutline_->hide();
+    }
+    manualResizePreviewGeometry_ = QRect();
+    suppressResizeCursor_ = keepCursorSuppressed;
+    restoreResizeCursor();
+}
+
+bool MainWindow::canStartResizeFrom(QWidget *target,
+                                    const QPoint &globalPosition) const
+{
+    QWidget *hit = childAt(mapFromGlobal(globalPosition));
+    if (!hit) {
+        hit = target;
+    }
+
+    for (QWidget *widget = hit; widget && widget != this;
+         widget = widget->parentWidget()) {
+        if (widget == getBtnMenu() || widget == getBtnMenuMin() ||
+            widget == getBtnMenuMax() || widget == getBtnMenuMClose() ||
+            qobject_cast<QAbstractButton *>(widget) ||
+            qobject_cast<QAbstractSpinBox *>(widget) ||
+            qobject_cast<QComboBox *>(widget) ||
+            qobject_cast<QLineEdit *>(widget) ||
+            qobject_cast<QPlainTextEdit *>(widget) ||
+            qobject_cast<QAbstractItemView *>(widget) ||
+            qobject_cast<QScrollBar *>(widget) ||
+            qobject_cast<QMenuBar *>(widget) ||
+            qobject_cast<QToolBar *>(widget)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void MainWindow::updateResizeCursor(Qt::Edges edges, QWidget *target)
+{
+    Qt::CursorShape shape = Qt::ArrowCursor;
+    if (edges == (Qt::TopEdge | Qt::LeftEdge) ||
+        edges == (Qt::BottomEdge | Qt::RightEdge)) {
+        shape = Qt::SizeFDiagCursor;
+    } else if (edges == (Qt::TopEdge | Qt::RightEdge) ||
+               edges == (Qt::BottomEdge | Qt::LeftEdge)) {
+        shape = Qt::SizeBDiagCursor;
+    } else if (edges.testFlag(Qt::LeftEdge) || edges.testFlag(Qt::RightEdge)) {
+        shape = Qt::SizeHorCursor;
+    } else if (edges.testFlag(Qt::TopEdge) || edges.testFlag(Qt::BottomEdge)) {
+        shape = Qt::SizeVerCursor;
+    }
+
+    if (edges == Qt::Edges()) {
+        restoreResizeCursor();
+        return;
+    }
+
+    QWidget *cursorTarget = target ? target : this;
+    if (resizeCursorTarget_ && resizeCursorTarget_ != cursorTarget) {
+        resizeCursorTarget_->unsetCursor();
+    }
+    if (!resizeCursorOverrideActive_ || resizeCursorTarget_ != cursorTarget ||
+        resizeCursorShape_ != shape) {
+        setCursor(QCursor(shape));
+        if (cursorTarget != this) {
+            cursorTarget->setCursor(QCursor(shape));
+        }
+        resizeCursorOverrideActive_ = true;
+        resizeCursorShape_ = shape;
+        resizeCursorTarget_ = cursorTarget;
+    }
+}
+
+void MainWindow::restoreResizeCursor()
+{
+    if (resizeCursorOverrideActive_ && resizeCursorTarget_) {
+        resizeCursorTarget_->unsetCursor();
+    }
+    unsetCursor();
+    resizeCursorOverrideActive_ = false;
+    resizeCursorShape_ = Qt::ArrowCursor;
+    resizeCursorTarget_.clear();
+}
+
+void MainWindow::continueManualResize(const QPoint &globalPosition)
+{
+    const QPoint delta = globalPosition - manualResizeStartGlobal_;
+    QRect next = manualResizeStartGeometry_;
+    if (manualResizeEdges_.testFlag(Qt::LeftEdge)) next.setLeft(next.left() + delta.x());
+    if (manualResizeEdges_.testFlag(Qt::RightEdge)) next.setRight(next.right() + delta.x());
+    if (manualResizeEdges_.testFlag(Qt::TopEdge)) next.setTop(next.top() + delta.y());
+    if (manualResizeEdges_.testFlag(Qt::BottomEdge)) next.setBottom(next.bottom() + delta.y());
+
+    if (next.width() < minimumWidth()) {
+        if (manualResizeEdges_.testFlag(Qt::LeftEdge)) {
+            next.setLeft(next.right() - minimumWidth() + 1);
+        } else {
+            next.setRight(next.left() + minimumWidth() - 1);
+        }
+    }
+    if (next.height() < minimumHeight()) {
+        if (manualResizeEdges_.testFlag(Qt::TopEdge)) {
+            next.setTop(next.bottom() - minimumHeight() + 1);
+        } else {
+            next.setBottom(next.top() + minimumHeight() - 1);
+        }
+    }
+    manualResizePreviewGeometry_ = next;
+    setProperty("resize_preview_geometry", manualResizePreviewGeometry_);
+    if (resizeOutline_) {
+        resizeOutline_->setGeometry(manualResizePreviewGeometry_);
+        resizeOutline_->raise();
+    }
+}
+
+void MainWindow::finishManualResize(bool applyGeometry,
+                                    bool keepCursorSuppressed)
+{
+    if (!manualResizing_) {
+        return;
+    }
+
+    const QRect targetGeometry = manualResizePreviewGeometry_;
+    cancelResizeGesture(keepCursorSuppressed);
+    if (applyGeometry && targetGeometry.isValid() && targetGeometry != geometry()) {
+        setGeometry(targetGeometry);
+        repaint();
+    }
+}
+
+bool MainWindow::isAtMaximumGeometry() const
+{
+    return isMaximized() || isFullScreen();
+}
+
+void MainWindow::captureUiScaleBaseline()
+{
+    baseTextControlFonts_.clear();
+    baseMinimumSizes_.clear();
+    baseMaximumSizes_.clear();
+    baseInteractiveHeights_.clear();
+    baseVerticalScrollBarWidths_.clear();
+    baseHorizontalScrollBarHeights_.clear();
+
+    const QList<QWidget *> widgets = findChildren<QWidget *>();
+    for (int i = 0; i < widgets.size(); ++i) {
+        QWidget *widget = widgets.at(i);
+        if (isDirectFontScaleTarget(widget)) {
+            baseTextControlFonts_.insert(widget, widget->font());
+        }
+
+        const QSize minimum = widget->minimumSize();
+        if (!minimum.isNull()) {
+            baseMinimumSizes_.insert(widget, minimum);
+        }
+        const QSize maximum = widget->maximumSize();
+        if ((maximum.width() != QWIDGETSIZE_MAX &&
+             minimum.width() == maximum.width()) ||
+            (maximum.height() != QWIDGETSIZE_MAX &&
+             minimum.height() == maximum.height())) {
+            baseMaximumSizes_.insert(widget, maximum);
+        }
+
+        if (qobject_cast<QLineEdit *>(widget) ||
+            qobject_cast<QAbstractSpinBox *>(widget) ||
+            qobject_cast<QComboBox *>(widget) ||
+            qobject_cast<QAbstractButton *>(widget)) {
+            const int height = widget->sizeHint().height();
+            if (height > 0) {
+                baseInteractiveHeights_.insert(widget, height);
+            }
+        }
+        QScrollBar *scrollBar = qobject_cast<QScrollBar *>(widget);
+        if (scrollBar) {
+            if (scrollBar->orientation() == Qt::Vertical) {
+                const int width = scrollBar->sizeHint().width();
+                if (width > 0) {
+                    baseVerticalScrollBarWidths_.insert(scrollBar, width);
+                }
+            } else {
+                const int height = scrollBar->sizeHint().height();
+                if (height > 0) {
+                    baseHorizontalScrollBarHeights_.insert(scrollBar, height);
+                }
+            }
+        }
+    }
+
+    const QList<QLayout *> layouts = findChildren<QLayout *>();
+    for (int i = 0; i < layouts.size(); ++i) {
+        QLayout *layout = layouts.at(i);
+        layout->setProperty("guard_base_margins",
+                            marginsToVariant(layout->contentsMargins()));
+        layout->setProperty("guard_base_spacing", layout->spacing());
+        if (QGridLayout *grid = qobject_cast<QGridLayout *>(layout)) {
+            grid->setProperty("guard_base_horizontal_spacing",
+                              grid->horizontalSpacing());
+            grid->setProperty("guard_base_vertical_spacing",
+                              grid->verticalSpacing());
+            QVariantList columnMinimums;
+            for (int column = 0; column < grid->columnCount(); ++column) {
+                columnMinimums.append(grid->columnMinimumWidth(column));
+            }
+            grid->setProperty("guard_base_column_minimums", columnMinimums);
+        }
+    }
+
+    const QList<QToolBar *> toolBars = findChildren<QToolBar *>();
+    for (int i = 0; i < toolBars.size(); ++i) {
+        toolBars.at(i)->setProperty("guard_base_icon_size", toolBars.at(i)->iconSize());
+    }
+    captureScaleSensitiveStyleBaselines(this);
+}
+
+int MainWindow::defaultUiFontPointSize() const
+{
+    return baseUiFontPointSize_ > 0.0 ? qRound(baseUiFontPointSize_) : 9;
+}
+
+qreal MainWindow::configuredUiScale(int pointSize) const
+{
+    if (pointSize == 0) {
+        return 1.0;
+    }
+    const qreal basePointSize = baseUiFontPointSize_ > 0.0
+        ? baseUiFontPointSize_
+        : qreal(defaultUiFontPointSize());
+    return qBound<qreal>(0.5,
+                         qreal(qBound(8, pointSize, 20)) /
+                             basePointSize,
+                         2.5);
+}
+
+void MainWindow::applyUiScale(qreal nextScale)
+{
+    nextScale = qBound<qreal>(0.5, nextScale, 2.5);
+    if (qAbs(nextScale - uiScale_) < 0.001) {
+        updateMinimumSizeForCurrentScreen();
+        return;
+    }
+
+    const bool updatesWereEnabled = updatesEnabled();
+    if (updatesWereEnabled) {
+        setUpdatesEnabled(false);
+    }
+
+    uiScale_ = nextScale;
+    setProperty("ui_scale_factor", uiScale_);
+    QHash<QWidget *, QFont>::const_iterator fontIt = baseTextControlFonts_.constBegin();
+    for (; fontIt != baseTextControlFonts_.constEnd(); ++fontIt) {
+        if (fontIt.key()) {
+            fontIt.key()->setFont(relativeFont(fontIt.value(), uiScale_));
+        }
+    }
+
+    QHash<QWidget *, QSize>::const_iterator minimumIt = baseMinimumSizes_.constBegin();
+    for (; minimumIt != baseMinimumSizes_.constEnd(); ++minimumIt) {
+        if (minimumIt.key()) {
+            minimumIt.key()->setMinimumSize(scaledSize(minimumIt.value(), uiScale_));
+        }
+    }
+
+    QHash<QWidget *, QSize>::const_iterator maximumIt = baseMaximumSizes_.constBegin();
+    for (; maximumIt != baseMaximumSizes_.constEnd(); ++maximumIt) {
+        QWidget *widget = maximumIt.key();
+        const QSize baseMinimum = baseMinimumSizes_.value(widget);
+        const QSize baseMaximum = maximumIt.value();
+        if (widget && baseMaximum.width() != QWIDGETSIZE_MAX &&
+            baseMinimum.width() == baseMaximum.width()) {
+            widget->setMaximumWidth(scaledMetric(baseMaximum.width(), uiScale_));
+        }
+        if (widget && baseMaximum.height() != QWIDGETSIZE_MAX &&
+            baseMinimum.height() == baseMaximum.height()) {
+            widget->setMaximumHeight(scaledMetric(baseMaximum.height(), uiScale_));
+        }
+    }
+
+    QHash<QWidget *, int>::const_iterator interactiveIt =
+        baseInteractiveHeights_.constBegin();
+    for (; interactiveIt != baseInteractiveHeights_.constEnd(); ++interactiveIt) {
+        QWidget *widget = interactiveIt.key();
+        if (!widget) {
+            continue;
+        }
+        const int baseMinimum = baseMinimumSizes_.value(widget).height();
+        widget->setMinimumHeight(scaledMetric(baseMinimum > 0
+                                                  ? baseMinimum
+                                                  : interactiveIt.value(),
+                                              uiScale_));
+    }
+
+    QHash<QScrollBar *, int>::const_iterator scrollBarIt =
+        baseVerticalScrollBarWidths_.constBegin();
+    for (; scrollBarIt != baseVerticalScrollBarWidths_.constEnd(); ++scrollBarIt) {
+        if (scrollBarIt.key()) {
+            scrollBarIt.key()->setFixedWidth(scaledMetric(scrollBarIt.value(), uiScale_));
+        }
+    }
+
+    QHash<QScrollBar *, int>::const_iterator horizontalScrollBarIt =
+        baseHorizontalScrollBarHeights_.constBegin();
+    for (; horizontalScrollBarIt != baseHorizontalScrollBarHeights_.constEnd();
+         ++horizontalScrollBarIt) {
+        if (horizontalScrollBarIt.key()) {
+            horizontalScrollBarIt.key()->setFixedHeight(
+                scaledMetric(horizontalScrollBarIt.value(), uiScale_));
+        }
+    }
+
+    const QList<QLayout *> layouts = findChildren<QLayout *>();
+    for (int i = 0; i < layouts.size(); ++i) {
+        QLayout *layout = layouts.at(i);
+        const QVariant margins = layout->property("guard_base_margins");
+        if (margins.isValid()) {
+            layout->setContentsMargins(scaledMargins(marginsFromVariant(margins), uiScale_));
+        }
+        const QVariant spacing = layout->property("guard_base_spacing");
+        if (spacing.isValid() && spacing.toInt() >= 0) {
+            layout->setSpacing(scaledMetric(spacing.toInt(), uiScale_));
+        }
+        if (QGridLayout *grid = qobject_cast<QGridLayout *>(layout)) {
+            const QVariant horizontal = grid->property("guard_base_horizontal_spacing");
+            const QVariant vertical = grid->property("guard_base_vertical_spacing");
+            if (horizontal.isValid() && horizontal.toInt() >= 0) {
+                grid->setHorizontalSpacing(scaledMetric(horizontal.toInt(), uiScale_));
+            }
+            if (vertical.isValid() && vertical.toInt() >= 0) {
+                grid->setVerticalSpacing(scaledMetric(vertical.toInt(), uiScale_));
+            }
+            const QVariantList columnMinimums =
+                grid->property("guard_base_column_minimums").toList();
+            for (int column = 0; column < columnMinimums.size(); ++column) {
+                grid->setColumnMinimumWidth(
+                    column, scaledMetric(columnMinimums.at(column).toInt(), uiScale_));
+            }
+        }
+        layout->invalidate();
+    }
+
+    setBtnWidth(scaledMetric(baseChromeExtent_, uiScale_));
+    setTitleHeight(scaledMetric(baseTitleHeight_, uiScale_));
+    updateTitleAppIcon();
+
+    const QList<QToolBar *> toolBars = findChildren<QToolBar *>();
+    for (int i = 0; i < toolBars.size(); ++i) {
+        const QVariant baseIconSize = toolBars.at(i)->property("guard_base_icon_size");
+        if (baseIconSize.isValid()) {
+            toolBars.at(i)->setIconSize(scaledSize(baseIconSize.toSize(), uiScale_));
+        }
+    }
+
+    applyScaleSensitiveSubcontrols(this, uiScale_);
+
+    updateMinimumSizeForCurrentScreen();
+    updateGeometry();
+    if (layout()) {
+        layout()->activate();
+    }
+    if (updatesWereEnabled) {
+        setUpdatesEnabled(true);
+        update();
+    }
+}
+
+void MainWindow::updateTitleAppIcon()
+{
+    const QSize logicalSize = scaledSize(baseTitleIconSize_, uiScale_);
+    const qreal devicePixelRatio = windowHandle()
+        ? windowHandle()->devicePixelRatio()
+        : devicePixelRatioF();
+    const QIcon icon = makeAppIcon();
+    const QSize nativeSize(qCeil(logicalSize.width() * devicePixelRatio),
+                           qCeil(logicalSize.height() * devicePixelRatio));
+    QPixmap pixmap = icon.pixmap(nativeSize);
+    if (!pixmap.isNull()) {
+        pixmap.setDevicePixelRatio(devicePixelRatio);
+    }
+    if (pixmap.isNull()) {
+        pixmap = QPixmap(QStringLiteral(":/app-icon-256.png"));
+        pixmap = pixmap.scaled(nativeSize,
+                               Qt::KeepAspectRatio,
+                               Qt::SmoothTransformation);
+        pixmap.setDevicePixelRatio(devicePixelRatio);
+    }
+    getLabIco()->setPixmap(pixmap);
+}
+
+QRect MainWindow::currentAvailableGeometry() const
+{
+    if (windowHandle() && windowHandle()->screen()) {
+        return windowHandle()->screen()->availableGeometry();
+    }
+    if (QScreen *screen = QGuiApplication::screenAt(mapToGlobal(rect().center()))) {
+        return screen->availableGeometry();
+    }
+    if (QScreen *screen = QGuiApplication::primaryScreen()) {
+        return screen->availableGeometry();
+    }
+    return QRect(QPoint(), baselineWindowSize_);
+}
+
+void MainWindow::updateMinimumSizeForCurrentScreen()
+{
+    const QRect available = currentAvailableGeometry();
+    if (!available.isValid()) {
+        return;
+    }
+
+    const int margin = 24;
+    const int width = qMin(baselineMinimumSize_.width(),
+                           qMax(1, available.width() - margin));
+    const int height = qMin(baselineMinimumSize_.height(),
+                            qMax(1, available.height() - margin));
+    setMinimumSize(width, height);
+}
+
+void MainWindow::constrainGeometryToCurrentScreen()
+{
+    if (isAtMaximumGeometry()) {
+        return;
+    }
+
+    const QRect available = currentAvailableGeometry();
+    if (!available.isValid()) {
+        return;
+    }
+
+    QRect next = geometry();
+    next.setSize(next.size().boundedTo(available.size()));
+    const int maxLeft = available.right() - next.width() + 1;
+    const int maxTop = available.bottom() - next.height() + 1;
+    next.moveLeft(qBound(available.left(), next.left(), maxLeft));
+    next.moveTop(qBound(available.top(), next.top(), maxTop));
+    if (next != geometry()) {
+        setGeometry(next);
+    }
+}
+
+void MainWindow::connectWindowScreenSignals()
+{
+    if (screenSignalsConnected_ || !windowHandle()) {
+        return;
+    }
+    screenSignalsConnected_ = true;
+    connect(windowHandle(), &QWindow::screenChanged, this, [this](QScreen *) {
+        QTimer::singleShot(0, this, [this]() {
+            updateTitleAppIcon();
+            updateMinimumSizeForCurrentScreen();
+            constrainGeometryToCurrentScreen();
+        });
+    });
+}
+
+void MainWindow::changeEvent(QEvent *event)
+{
+    QUIWidget::changeEvent(event);
+    if (event->type() == QEvent::WindowStateChange) {
+        cancelResizeGesture();
+        QTimer::singleShot(0, this, [this]() {
+            updateMinimumSizeForCurrentScreen();
+            constrainGeometryToCurrentScreen();
+        });
+    }
+}
+
+void MainWindow::showEvent(QShowEvent *event)
+{
+    QUIWidget::showEvent(event);
+    connectWindowScreenSignals();
+    QTimer::singleShot(0, this, [this]() {
+        updateTitleAppIcon();
+        updateMinimumSizeForCurrentScreen();
+        constrainGeometryToCurrentScreen();
+    });
+}
+
 void MainWindow::applyStyle()
 {
-    setStyleSheet(
-        "QWidget#rootContent, QWidget#rootContent QWidget { background: #eaf6fd; color: #2c5f87; font-family: 'DejaVu Sans', 'Droid Sans Fallback'; font-size: 13px; }"
+    const QString style = QStringLiteral(
+        "QWidget#rootContent { background: #eaf6fd; color: #2c5f87; }"
+        "QWidget#rootContent QWidget { color: #2c5f87; }"
         "QMenuBar#customMenuBar { background: transparent; color: #255b82; spacing: 4px; }"
         "QMenuBar#customMenuBar::item { background: transparent; padding: 3px 9px; border-radius: 4px; }"
         "QMenuBar#customMenuBar::item:selected { background: #c7e3f5; }"
@@ -722,8 +1633,12 @@ void MainWindow::applyStyle()
         "QWidget#rootContent QScrollArea#proxyScrollArea QScrollBar::handle:vertical { background: #9fcce8; border-radius: 4px; min-height: 24px; }"
         "QWidget#rootContent QScrollArea#proxyScrollArea QScrollBar::add-line:vertical, QWidget#rootContent QScrollArea#proxyScrollArea QScrollBar::sub-line:vertical { height: 0; }"
         "QWidget#rootContent QScrollArea#proxyScrollArea QScrollBar::add-page:vertical, QWidget#rootContent QScrollArea#proxyScrollArea QScrollBar::sub-page:vertical { background: transparent; }"
-        "QWidget#rootContent QLabel#titleLabel { font-size: 20px; font-weight: 600; color: #174e78; }"
+        "QWidget#rootContent QScrollArea#proxyScrollArea QScrollBar:horizontal { background: #e1f1fb; border: 0; height: 9px; margin: 0; }"
+        "QWidget#rootContent QScrollArea#proxyScrollArea QScrollBar::handle:horizontal { background: #9fcce8; border-radius: 4px; min-width: 24px; }"
+        "QWidget#rootContent QScrollArea#proxyScrollArea QScrollBar::add-line:horizontal, QWidget#rootContent QScrollArea#proxyScrollArea QScrollBar::sub-line:horizontal { width: 0; }"
+        "QWidget#rootContent QScrollArea#proxyScrollArea QScrollBar::add-page:horizontal, QWidget#rootContent QScrollArea#proxyScrollArea QScrollBar::sub-page:horizontal { background: transparent; }"
         "QWidget#rootContent QLabel#subtitleLabel { color: #5f86a5; }"
+        "QWidget#rootContent QLabel#titleLabel { font-weight: 600; color: #174e78; }"
         "QWidget#rootContent QLineEdit, QWidget#rootContent QSpinBox, QWidget#rootContent QComboBox, QWidget#rootContent QPlainTextEdit { background: #f8fcff; border: 1px solid #bfdcf0; border-radius: 4px; padding: 4px 6px; selection-background-color: #8cc5e9; }"
         "QWidget#rootContent QPlainTextEdit { font-family: 'DejaVu Sans Mono', monospace; color: #204d70; }"
         "QWidget#rootContent QPlainTextEdit#infoTextEdit { background: #eef9ff; border: 0; color: #204d70; padding: 0; }"
@@ -736,17 +1651,18 @@ void MainWindow::applyStyle()
         "QWidget#rootContent QPushButton:pressed { background: #b8dbf1; }"
         "QWidget#rootContent QPushButton:disabled { color: #8aabc1; background: #e1edf5; }"
         "QWidget#rootContent QToolBar#consoleToolBar { background: #eef9ff; border: 0; spacing: 5px; }"
-        "QWidget#rootContent QToolBar#consoleToolBar QToolButton { background: #cde7f8; border: 1px solid #accfe6; border-radius: 4px; min-width: 28px; min-height: 28px; padding: 2px; color: #255b82; }"
+        "QWidget#rootContent QToolBar#consoleToolBar QToolButton { background: #cde7f8; border: 1px solid #accfe6; border-radius: 4px; padding: 2px; color: #255b82; }"
         "QWidget#rootContent QToolBar#consoleToolBar QToolButton:hover { background: #dff1fb; }"
         "QWidget#rootContent QToolBar#consoleToolBar QToolButton:pressed { background: #b8dbf1; }"
         "QWidget#rootContent QLabel[state='ok'] { color: #16824a; font-weight: 600; }"
         "QWidget#rootContent QLabel[state='warn'] { color: #9b6a00; font-weight: 600; }"
         "QWidget#rootContent QLabel[state='bad'] { color: #b13b3b; font-weight: 600; }"
         "QWidget#rootContent QLabel[state='idle'] { color: #5f86a5; font-weight: 600; }"
-        "QWidget#rootContent QLabel#metricLabel { font-size: 12px; color: #3d6e93; }"
-        "QWidget#rootContent QLabel#metricValue { font-size: 14px; font-weight: 600; color: #174e78; }"
         "QWidget#rootContent QLabel#infoValue { color: #204d70; }"
+        "QWidget#rootContent QLabel#metricLabel { color: #3d6e93; }"
+        "QWidget#rootContent QLabel#metricValue { font-weight: 600; color: #174e78; }"
     );
+    setStyleSheet(style);
 }
 
 QString MainWindow::currentLanguage() const
@@ -761,8 +1677,14 @@ QString MainWindow::textFor(const QString &key) const
     if (key == "window_title") return "OpenAI Reasoning Guard";
     if (key == "window_subtitle") return en ? "Qt + C++11 intelligent OpenAI-compatible proxy" : "Qt + C++11 智能拦截 / OpenAI 兼容转发";
     if (key == "menu_upstream_profiles") return en ? "Upstream Profiles" : "上游配置";
+    if (key == "menu_interface_settings") return en ? "Interface Settings" : "界面设置";
     if (key == "menu_language") return en ? "Language" : "语言";
     if (key == "menu_about") return en ? "About" : "关于";
+    if (key == "interface_settings_title") return en ? "Interface Settings" : "界面设置";
+    if (key == "interface_use_system_font") return en ? "Use system default font size" : "使用系统默认字体大小";
+    if (key == "interface_font_size") return en ? "Font size" : "字体大小";
+    if (key == "interface_apply") return en ? "Apply" : "应用";
+    if (key == "interface_cancel") return en ? "Cancel" : "取消";
     if (key == "about_title") return en ? "About" : "关于";
     if (key == "about_author") return en ? "Author" : "作者";
     if (key == "about_project") return en ? "Project" : "项目地址";
@@ -904,6 +1826,9 @@ void MainWindow::retranslateUi()
     if (manageUpstreamProfilesAction_) {
         manageUpstreamProfilesAction_->setText(textFor("menu_upstream_profiles"));
     }
+    if (interfaceSettingsAction_) {
+        interfaceSettingsAction_->setText(textFor("menu_interface_settings"));
+    }
     if (languageMenu_) {
         languageMenu_->setTitle(textFor("menu_language"));
     }
@@ -1013,6 +1938,32 @@ void MainWindow::showAboutDialog()
                        textFor("about_close"),
                        this);
     dialog.exec();
+}
+
+void MainWindow::openInterfaceSettings()
+{
+    InterfaceSettingsDialog dialog(textFor("interface_settings_title"),
+                                   textFor("interface_use_system_font"),
+                                   textFor("interface_font_size"),
+                                   textFor("interface_apply"),
+                                   textFor("interface_cancel"),
+                                   config_.uiFontPointSize,
+                                   defaultUiFontPointSize(),
+                                   this);
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+
+    AppConfig updated = config_;
+    updated.uiFontPointSize = dialog.selectedPointSize();
+    QString error;
+    if (!saveConfig(updated, configPath_, &error)) {
+        handleFailure(textFor("error_save_config_failed").arg(error));
+        return;
+    }
+
+    config_ = updated;
+    applyUiScale(configuredUiScale(config_.uiFontPointSize));
 }
 
 void MainWindow::showFromTray()

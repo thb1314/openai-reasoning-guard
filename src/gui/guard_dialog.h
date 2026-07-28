@@ -1,14 +1,24 @@
 #pragma once
 
+#include <QtCore/QHash>
 #include <QtCore/QList>
+#include <QtCore/QMargins>
 #include <QtCore/QPoint>
+#include <QtCore/QSize>
 #include <QtCore/QString>
+#include <QtGui/QFont>
 #include <QtWidgets/QDialog>
 #include <QtWidgets/QDialogButtonBox>
 
+class QAbstractButton;
 class QFileSystemModel;
+class QFormLayout;
 class QLineEdit;
+class QLayout;
 class QPushButton;
+class QScrollBar;
+class QShowEvent;
+class QTableView;
 class QTreeView;
 class QVBoxLayout;
 class QWidget;
@@ -25,8 +35,18 @@ public:
 protected:
     bool event(QEvent *event) override;
     bool eventFilter(QObject *watched, QEvent *event) override;
+    void showEvent(QShowEvent *event) override;
+
+    // Dialogs with an intentional starting geometry register it in logical pixels.
+    void setLogicalInitialSize(const QSize &size);
+    qreal uiScaleFactor() const;
+    virtual void uiScaleChanged();
 
 private:
+    void captureUiScaleBaseline();
+    void applyInheritedUiScale();
+    void constrainToAvailableScreen();
+    qreal inheritedUiScaleFactor() const;
     void updateTitleChrome();
 
     QWidget *titleBar_;
@@ -37,6 +57,21 @@ private:
     QPushButton *closeButton_;
     bool dragging_;
     QPoint dragOffset_;
+    bool uiScaleBaselineCaptured_;
+    bool logicalInitialSizeApplied_;
+    qreal uiScale_;
+    QSize logicalInitialSize_;
+    QHash<QWidget *, QFont> baseFonts_;
+    QHash<QWidget *, QSize> baseMinimumSizes_;
+    QHash<QWidget *, QSize> baseMaximumSizes_;
+    QHash<QLayout *, QMargins> baseLayoutMargins_;
+    QHash<QLayout *, int> baseLayoutSpacings_;
+    QHash<QFormLayout *, QSize> baseFormSpacings_;
+    QHash<QAbstractButton *, QSize> baseButtonIconSizes_;
+    QHash<QTableView *, int> baseTableRowHeights_;
+    QHash<QWidget *, int> baseInteractiveHeights_;
+    QHash<QScrollBar *, int> baseVerticalScrollBarWidths_;
+    QHash<QScrollBar *, int> baseHorizontalScrollBarHeights_;
 };
 
 enum GuardMessageIcon {

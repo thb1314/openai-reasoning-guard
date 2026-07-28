@@ -1073,6 +1073,7 @@ private slots:
             reply->deleteLater();
             return;
         }
+        rememberUpstreamTurnState(reply);
         currentReply_ = 0;
         responseBufferTimer_.stop();
         firstTokenTimeoutTimer_.stop();
@@ -1670,6 +1671,7 @@ private:
         requestKind_ = detectRequestKind(headers_, requestJson_);
         requestReasoningEffort_ = requestReasoningEffort(requestJson_);
         requestIsStream_ = requestJson_.value("stream").toBool(false);
+        upstreamTurnState_ = headers_.value("x-codex-turn-state").trimmed();
         startUpstreamRequest();
     }
 
@@ -1729,23 +1731,34 @@ private:
             }
         }
 
-        const QStringList passthroughHeaders = QStringList()
-            << "openai-organization"
-            << "openai-project"
-            << "openai-beta"
-            << "idempotency-key";
-        for (int i = 0; i < passthroughHeaders.size(); ++i) {
-            const QString key = passthroughHeaders.at(i);
-            const QByteArray value = headers_.value(key);
-            if (!value.isEmpty()) {
-                request.setRawHeader(key.toLatin1(), value);
+        QStringList excludedHeaders = hopByHopHeaders();
+        excludedHeaders << "host" << "content-length" << "authorization"
+                        << "accept" << "accept-encoding" << "content-type"
+                        << "user-agent";
+        const QStringList connectionHeaders = headerValue(headers_, "connection")
+            .toLower().split(',', QString::SkipEmptyParts);
+        for (int i = 0; i < connectionHeaders.size(); ++i) {
+            excludedHeaders.append(connectionHeaders.at(i).trimmed());
+        }
+        for (QMap<QString, QByteArray>::const_iterator it = headers_.constBegin();
+             it != headers_.constEnd(); ++it) {
+            if (!excludedHeaders.contains(it.key()) && !it.value().isEmpty()) {
+                request.setRawHeader(it.key().toLatin1(), it.value());
             }
+        }
+        if (!upstreamTurnState_.isEmpty()) {
+            request.setRawHeader("x-codex-turn-state", upstreamTurnState_);
         }
 
         currentReply_ = manager_->sendCustomRequest(request, method_.toLatin1(), requestBody_);
         QNetworkReply *reply = currentReply_;
         connect(reply, SIGNAL(readyRead()), this, SLOT(upstreamReadyRead()));
         connect(reply, SIGNAL(finished()), this, SLOT(upstreamFinished()));
+        connect(reply, &QNetworkReply::metaDataChanged, this, [this, reply]() {
+            if (!shuttingDown_ && currentReply_ == reply) {
+                rememberUpstreamTurnState(reply);
+            }
+        });
         startFirstTokenTimeoutTimer();
         startResponseBufferTimer();
         if (settings.upstreamTimeoutSec > 0) {
@@ -1800,6 +1813,7 @@ private:
         if (statusCode <= 0) {
             return false;
         }
+        rememberUpstreamTurnState(reply);
         const QString contentType = QString::fromLatin1(reply->rawHeader("Content-Type"));
         upstreamResponseStatus_ = statusCode;
         upstreamIsJson_ = isJsonContent(contentType);
@@ -1837,15 +1851,32 @@ private:
         }
         const QList<QNetworkReply::RawHeaderPair> pairs = reply->rawHeaderPairs();
         const QStringList hopHeaders = hopByHopHeaders();
+        bool hasTurnState = false;
         for (int i = 0; i < pairs.size(); ++i) {
             const QByteArray name = pairs.at(i).first;
             const QString lower = QString::fromLatin1(name).toLower();
             if (hopHeaders.contains(lower) || lower == "content-length") {
                 continue;
             }
+            hasTurnState = hasTurnState || lower == "x-codex-turn-state";
             headers.append(qMakePair(name, pairs.at(i).second));
         }
+        if (!hasTurnState && !upstreamTurnState_.isEmpty()) {
+            headers.append(qMakePair(QByteArray("x-codex-turn-state"),
+                                     upstreamTurnState_));
+        }
         return headers;
+    }
+
+    void rememberUpstreamTurnState(QNetworkReply *reply)
+    {
+        if (!reply || !upstreamTurnState_.isEmpty()) {
+            return;
+        }
+        const QByteArray state = reply->rawHeader("x-codex-turn-state").trimmed();
+        if (!state.isEmpty()) {
+            upstreamTurnState_ = state;
+        }
     }
 
     void writeStreamingResponseHead(int statusCode,
@@ -2200,6 +2231,15 @@ private:
         QList<QPair<QByteArray, QByteArray> > headers;
         headers.append(qMakePair(QByteArray("Content-Type"), QByteArray("application/json; charset=utf-8")));
         headers.append(extraHeaders);
+        bool hasTurnState = false;
+        for (int i = 0; i < headers.size(); ++i) {
+            hasTurnState = hasTurnState ||
+                headers.at(i).first.toLower() == "x-codex-turn-state";
+        }
+        if (!hasTurnState && !upstreamTurnState_.isEmpty()) {
+            headers.append(qMakePair(QByteArray("x-codex-turn-state"),
+                                     upstreamTurnState_));
+        }
         writeResponse(statusCode, headers, method_.toUpper() == "HEAD" ? QByteArray() : body);
     }
 
@@ -2367,6 +2407,7 @@ private:
     bool requestUsesChunkedEncoding_;
     QByteArray buffer_;
     QByteArray requestBody_;
+    QByteArray upstreamTurnState_;
     QByteArray clientWriteBacklog_;
     QMap<QString, QByteArray> headers_;
     QString method_;

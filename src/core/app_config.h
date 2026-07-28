@@ -9,6 +9,7 @@ namespace net_tunnel {
 
 struct AppConfig {
     QString lang;
+    int uiFontPointSize;
 
     QString proxyHost;
     int proxyPort;

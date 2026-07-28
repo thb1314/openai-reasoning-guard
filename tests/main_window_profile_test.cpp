@@ -14,6 +14,7 @@
 #include <QtNetwork/QHostAddress>
 #include <QtNetwork/QTcpServer>
 #include <QtNetwork/QTcpSocket>
+#include <QtGui/QGuiApplication>
 #include <QtTest/QTest>
 #include <QtWidgets/QAction>
 #include <QtWidgets/QApplication>
@@ -23,6 +24,8 @@
 #include <QtWidgets/QDialog>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QPushButton>
+#include <QtWidgets/QScrollArea>
+#include <QtWidgets/QScrollBar>
 #include <QtWidgets/QSpinBox>
 
 #include <functional>
@@ -30,6 +33,17 @@
 using namespace net_tunnel;
 
 namespace {
+
+template <typename T>
+T *findWindowChild(MainWindow *window, const char *objectName = 0)
+{
+    if (!window) {
+        return 0;
+    }
+    return objectName
+        ? window->findChild<T *>(objectName)
+        : window->findChild<T *>();
+}
 
 quint16 reservePort()
 {
@@ -54,6 +68,60 @@ bool waitUntil(const std::function<bool()> &predicate, int timeoutMs = 3000)
     QCoreApplication::processEvents(QEventLoop::AllEvents, 25);
     return predicate();
 }
+
+QWidget *findResizeOutline()
+{
+    const QWidgetList topLevels = QApplication::topLevelWidgets();
+    for (int i = 0; i < topLevels.size(); ++i) {
+        QWidget *widget = topLevels.at(i);
+        if (widget && widget->objectName() == QLatin1String("resizeOutline")) {
+            return widget;
+        }
+    }
+    return 0;
+}
+
+class WindowPresentationChangeCounter : public QObject {
+public:
+    explicit WindowPresentationChangeCounter(MainWindow *window)
+        : root_(window ? window->findChild<QWidget *>("rootContent") : 0),
+          styleCount_(0),
+          fontCount_(0)
+    {
+    }
+
+    int styleCount() const { return styleCount_; }
+    int fontCount() const { return fontCount_; }
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override
+    {
+        QWidget *widget = qobject_cast<QWidget *>(watched);
+        if (widget && root_ &&
+            (widget == root_ || root_->isAncestorOf(widget))) {
+            if (event->type() == QEvent::StyleChange) {
+                ++styleCount_;
+            } else if (event->type() == QEvent::FontChange) {
+                ++fontCount_;
+            }
+        }
+        return QObject::eventFilter(watched, event);
+    }
+
+private:
+    QWidget *root_;
+    int styleCount_;
+    int fontCount_;
+};
+
+class ApplicationFontGuard {
+public:
+    ApplicationFontGuard() : original_(QApplication::font()) {}
+    ~ApplicationFontGuard() { QApplication::setFont(original_); }
+
+private:
+    QFont original_;
+};
 
 class RecordingUpstream : public QObject {
 public:
@@ -280,6 +348,97 @@ AboutDialogSnapshot captureAboutDialog(QAction *action)
     return snapshot;
 }
 
+struct InterfaceSettingsSnapshot {
+    bool shown = false;
+    bool frameless = false;
+    bool customTitleBar = false;
+    bool interactionInvoked = false;
+    bool initiallyUsesSystemFont = false;
+    int initialPointSize = 0;
+    QString title;
+    QString useSystemText;
+    QString fontSizeText;
+    QString applyText;
+    QString cancelText;
+};
+
+InterfaceSettingsSnapshot useInterfaceSettingsDialog(QAction *action,
+                                                      int pointSize,
+                                                      bool apply,
+                                                      bool useSystemDefault = false)
+{
+    InterfaceSettingsSnapshot snapshot;
+    QTimer captureTimer;
+    captureTimer.setInterval(5);
+    QObject::connect(&captureTimer, &QTimer::timeout,
+                     [&captureTimer, &snapshot, pointSize, apply,
+                      useSystemDefault]() {
+        const QList<QWidget *> widgets = QApplication::topLevelWidgets();
+        for (int i = 0; i < widgets.size(); ++i) {
+            QWidget *widget = widgets.at(i);
+            if (widget->property("guard_dialog_kind").toString() !=
+                QLatin1String("interface_settings")) {
+                continue;
+            }
+
+            QDialog *dialog = qobject_cast<QDialog *>(widget);
+            if (!dialog) {
+                continue;
+            }
+            snapshot.shown = true;
+            snapshot.frameless = dialog->windowFlags().testFlag(Qt::FramelessWindowHint);
+            snapshot.customTitleBar =
+                dialog->findChild<QWidget *>("guardDialogTitleBar") != 0;
+            snapshot.title = dialog->windowTitle();
+
+            QCheckBox *useSystem =
+                dialog->findChild<QCheckBox *>("interfaceUseSystemFontCheck");
+            QSpinBox *fontSize =
+                dialog->findChild<QSpinBox *>("interfaceFontSizeSpin");
+            QLabel *fontSizeLabel =
+                dialog->findChild<QLabel *>("interfaceFontSizeLabel");
+            QPushButton *applyButton =
+                dialog->findChild<QPushButton *>("interfaceSettingsApplyButton");
+            QPushButton *cancelButton =
+                dialog->findChild<QPushButton *>("interfaceSettingsCancelButton");
+            if (!useSystem || !fontSize || !fontSizeLabel ||
+                !applyButton || !cancelButton) {
+                continue;
+            }
+
+            snapshot.initiallyUsesSystemFont = useSystem->isChecked();
+            snapshot.initialPointSize = fontSize->value();
+            snapshot.useSystemText = useSystem->text();
+            snapshot.fontSizeText = fontSizeLabel->text();
+            snapshot.applyText = applyButton->text();
+            snapshot.cancelText = cancelButton->text();
+            snapshot.interactionInvoked = true;
+            captureTimer.stop();
+
+            useSystem->setChecked(useSystemDefault);
+            if (!useSystemDefault) {
+                fontSize->setValue(pointSize);
+            }
+            (apply ? applyButton : cancelButton)->click();
+            return;
+        }
+    });
+
+    QTimer watchdog;
+    watchdog.setSingleShot(true);
+    QObject::connect(&watchdog, &QTimer::timeout, []() {
+        if (QDialog *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget())) {
+            dialog->reject();
+        }
+    });
+    captureTimer.start();
+    watchdog.start(2000);
+    action->trigger();
+    captureTimer.stop();
+    watchdog.stop();
+    return snapshot;
+}
+
 } // namespace
 
 class MainWindowProfileTest : public QObject {
@@ -304,7 +463,7 @@ private slots:
         QVERIFY2(saveConfig(config, configPath, &error), qPrintable(error));
 
         MainWindow window;
-        QAction *aboutAction = window.findChild<QAction *>("aboutAction");
+        QAction *aboutAction = findWindowChild<QAction>(&window, "aboutAction");
         QVERIFY(aboutAction);
         QCOMPARE(aboutAction->text(), QString("About"));
 
@@ -334,6 +493,521 @@ private slots:
         QCOMPARE(chinese.projectCaption, QString::fromUtf8("项目地址"));
         QCOMPARE(chinese.closeText, QString::fromUtf8("关闭"));
         QVERIFY(chinese.closeInvoked);
+    }
+
+    void interfaceSettingsMenuIsLocalized()
+    {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString configPath = dir.filePath("config.json");
+        qputenv("NET_TUNNEL_CONFIG", configPath.toLocal8Bit());
+
+        AppConfig config;
+        config.lang = "zh";
+        QString error;
+        QVERIFY2(saveConfig(config, configPath, &error), qPrintable(error));
+
+        MainWindow window;
+        QAction *action = findWindowChild<QAction>(&window, "interfaceSettingsAction");
+        QVERIFY(action);
+        QCOMPARE(action->text(), QString::fromUtf8("界面设置"));
+
+        QVERIFY(QMetaObject::invokeMethod(&window, "switchToEnglish", Qt::DirectConnection));
+        QCOMPARE(action->text(), QString("Interface Settings"));
+    }
+
+    void windowResizeDoesNotChangeConfiguredFont()
+    {
+        ApplicationFontGuard fontGuard;
+        QFont applicationFont = QApplication::font();
+        applicationFont.setPointSize(10);
+        QApplication::setFont(applicationFont);
+
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString configPath = dir.filePath("config.json");
+        qputenv("NET_TUNNEL_CONFIG", configPath.toLocal8Bit());
+
+        AppConfig config;
+        config.uiFontPointSize = 14;
+        QString error;
+        QVERIFY2(saveConfig(config, configPath, &error), qPrintable(error));
+
+        MainWindow window;
+        window.setAttribute(Qt::WA_DontShowOnScreen);
+        window.resize(1080, 680);
+        window.show();
+        QTest::qWait(120);
+        QLineEdit *lineEdit = findWindowChild<QLineEdit>(&window, "proxyHostEdit");
+        QComboBox *comboBox = findWindowChild<QComboBox>(&window, "upstreamProfileCombo");
+        QSpinBox *spinBox = findWindowChild<QSpinBox>(&window, "proxyPortSpin");
+        QPushButton *maximizeButton = window.getBtnMenuMax();
+        QVERIFY(lineEdit && comboBox && spinBox && maximizeButton);
+
+        const qreal configuredScale = window.property("ui_scale_factor").toReal();
+        const QFont lineFont = lineEdit->font();
+        const QFont comboFont = comboBox->font();
+        const QFont spinFont = spinBox->font();
+        const QFont maximizeFont = maximizeButton->font();
+        const int lineHeight = lineEdit->sizeHint().height();
+        QVERIFY(configuredScale > 1.0);
+
+        window.resize(1600, 960);
+        QTest::qWait(180);
+        QCOMPARE(window.property("ui_scale_factor").toReal(), configuredScale);
+        QCOMPARE(lineEdit->font(), lineFont);
+        QCOMPARE(comboBox->font(), comboFont);
+        QCOMPARE(spinBox->font(), spinFont);
+        QCOMPARE(maximizeButton->font(), maximizeFont);
+        QCOMPARE(lineEdit->sizeHint().height(), lineHeight);
+
+        window.resize(1080, 680);
+        QTest::qWait(180);
+        QCOMPARE(window.property("ui_scale_factor").toReal(), configuredScale);
+        QCOMPARE(lineEdit->font(), lineFont);
+        QCOMPARE(comboBox->font(), comboFont);
+        QCOMPARE(spinBox->font(), spinFont);
+        QCOMPARE(maximizeButton->font(), maximizeFont);
+        QCOMPARE(lineEdit->sizeHint().height(), lineHeight);
+    }
+
+    void proxyPanelProvidesHorizontalScrollForLargeFixedFont()
+    {
+        ApplicationFontGuard fontGuard;
+        QFont applicationFont = QApplication::font();
+        applicationFont.setPointSize(9);
+        QApplication::setFont(applicationFont);
+
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString configPath = dir.filePath("config.json");
+        qputenv("NET_TUNNEL_CONFIG", configPath.toLocal8Bit());
+
+        AppConfig config;
+        config.uiFontPointSize = 0;
+        QString error;
+        QVERIFY2(saveConfig(config, configPath, &error), qPrintable(error));
+
+        MainWindow window;
+        window.setAttribute(Qt::WA_DontShowOnScreen);
+        window.resize(1000, 680);
+        window.show();
+
+        QScrollArea *scrollArea = findWindowChild<QScrollArea>(&window, "proxyScrollArea");
+        QAction *settingsAction =
+            findWindowChild<QAction>(&window, "interfaceSettingsAction");
+        QVERIFY(scrollArea && settingsAction);
+        QCOMPARE(scrollArea->horizontalScrollBarPolicy(), Qt::ScrollBarAsNeeded);
+
+        QScrollBar *horizontal = scrollArea->horizontalScrollBar();
+        QVERIFY(horizontal);
+        QTRY_COMPARE(horizontal->maximum(), horizontal->minimum());
+
+        const InterfaceSettingsSnapshot snapshot =
+            useInterfaceSettingsDialog(settingsAction, 20, true);
+        QVERIFY(snapshot.shown);
+        QVERIFY(snapshot.interactionInvoked);
+        QCOMPARE(loadConfig(configPath).uiFontPointSize, 20);
+        QVERIFY(waitUntil([horizontal]() {
+            return horizontal->isVisible() && horizontal->isEnabled() &&
+                horizontal->maximum() > horizontal->minimum();
+        }));
+        QVERIFY(horizontal->height() > 9);
+
+        const int minimum = horizontal->minimum();
+        const int maximum = horizontal->maximum();
+        horizontal->setValue(maximum);
+        QCOMPARE(horizontal->value(), maximum);
+        QVERIFY(scrollArea->widget()->pos().x() < 0);
+
+        horizontal->setValue(minimum);
+        QCOMPARE(horizontal->value(), minimum);
+        QCOMPARE(scrollArea->widget()->pos().x(), 0);
+
+        QScrollBar *vertical = scrollArea->verticalScrollBar();
+        QVERIFY(vertical);
+        QCOMPARE(scrollArea->verticalScrollBarPolicy(), Qt::ScrollBarAlwaysOn);
+        QVERIFY(vertical->isVisible());
+    }
+
+    void interfaceSettingsAppliesAndPersistsFontSize()
+    {
+        ApplicationFontGuard fontGuard;
+        QFont applicationFont = QApplication::font();
+        applicationFont.setPointSizeF(9.5);
+        QApplication::setFont(applicationFont);
+
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString configPath = dir.filePath("config.json");
+        qputenv("NET_TUNNEL_CONFIG", configPath.toLocal8Bit());
+
+        AppConfig config;
+        config.lang = "en";
+        config.uiFontPointSize = 0;
+        QString error;
+        QVERIFY2(saveConfig(config, configPath, &error), qPrintable(error));
+
+        MainWindow window;
+        QAction *action = findWindowChild<QAction>(&window, "interfaceSettingsAction");
+        QLineEdit *lineEdit = findWindowChild<QLineEdit>(&window, "proxyHostEdit");
+        QVERIFY(action && lineEdit);
+        const QFont originalFont = lineEdit->font();
+        const qreal originalScale = window.property("ui_scale_factor").toReal();
+
+        const InterfaceSettingsSnapshot snapshot =
+            useInterfaceSettingsDialog(action, 14, true);
+        QVERIFY(snapshot.shown);
+        QVERIFY(snapshot.frameless);
+        QVERIFY(snapshot.customTitleBar);
+        QVERIFY(snapshot.interactionInvoked);
+        QVERIFY(snapshot.initiallyUsesSystemFont);
+        QCOMPARE(snapshot.title, QString("Interface Settings"));
+        QCOMPARE(snapshot.useSystemText, QString("Use system default font size"));
+        QCOMPARE(snapshot.fontSizeText, QString("Font size"));
+        QCOMPARE(snapshot.applyText, QString("Apply"));
+        QCOMPARE(snapshot.cancelText, QString("Cancel"));
+
+        QVERIFY(window.property("ui_scale_factor").toReal() > originalScale);
+        QVERIFY(lineEdit->font().pointSizeF() > originalFont.pointSizeF());
+        QVERIFY(qAbs(lineEdit->font().pointSizeF() - 14.0) < 0.01);
+
+        const AppConfig persisted = loadConfig(configPath);
+        QCOMPARE(persisted.uiFontPointSize, 14);
+    }
+
+    void interfaceSettingsCancelDoesNotChangeFont()
+    {
+        ApplicationFontGuard fontGuard;
+        QFont applicationFont = QApplication::font();
+        applicationFont.setPointSize(10);
+        QApplication::setFont(applicationFont);
+
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString configPath = dir.filePath("config.json");
+        qputenv("NET_TUNNEL_CONFIG", configPath.toLocal8Bit());
+
+        AppConfig config;
+        config.lang = "zh";
+        config.uiFontPointSize = 12;
+        QString error;
+        QVERIFY2(saveConfig(config, configPath, &error), qPrintable(error));
+
+        MainWindow window;
+        QAction *action = findWindowChild<QAction>(&window, "interfaceSettingsAction");
+        QLineEdit *lineEdit = findWindowChild<QLineEdit>(&window, "proxyHostEdit");
+        QVERIFY(action && lineEdit);
+        const QFont originalFont = lineEdit->font();
+        const qreal originalScale = window.property("ui_scale_factor").toReal();
+
+        const InterfaceSettingsSnapshot snapshot =
+            useInterfaceSettingsDialog(action, 18, false);
+        QVERIFY(snapshot.shown);
+        QVERIFY(snapshot.interactionInvoked);
+        QVERIFY(!snapshot.initiallyUsesSystemFont);
+        QCOMPARE(snapshot.initialPointSize, 12);
+        QCOMPARE(snapshot.title, QString::fromUtf8("界面设置"));
+        QCOMPARE(snapshot.useSystemText, QString::fromUtf8("使用系统默认字体大小"));
+        QCOMPARE(snapshot.fontSizeText, QString::fromUtf8("字体大小"));
+        QCOMPARE(snapshot.applyText, QString::fromUtf8("应用"));
+        QCOMPARE(snapshot.cancelText, QString::fromUtf8("取消"));
+
+        QCOMPARE(window.property("ui_scale_factor").toReal(), originalScale);
+        QCOMPARE(lineEdit->font(), originalFont);
+        QCOMPARE(loadConfig(configPath).uiFontPointSize, 12);
+    }
+
+    void interfaceSettingsCanRestoreSystemFont()
+    {
+        ApplicationFontGuard fontGuard;
+        QFont applicationFont = QApplication::font();
+        applicationFont.setPointSize(10);
+        QApplication::setFont(applicationFont);
+
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString configPath = dir.filePath("config.json");
+        qputenv("NET_TUNNEL_CONFIG", configPath.toLocal8Bit());
+
+        AppConfig config;
+        config.lang = "en";
+        config.uiFontPointSize = 14;
+        QString error;
+        QVERIFY2(saveConfig(config, configPath, &error), qPrintable(error));
+
+        MainWindow window;
+        QAction *action = findWindowChild<QAction>(&window, "interfaceSettingsAction");
+        QLineEdit *lineEdit = findWindowChild<QLineEdit>(&window, "proxyHostEdit");
+        QVERIFY(action && lineEdit);
+        QVERIFY(window.property("ui_scale_factor").toReal() > 1.0);
+        QVERIFY(lineEdit->font().pointSizeF() > applicationFont.pointSizeF());
+
+        const InterfaceSettingsSnapshot snapshot =
+            useInterfaceSettingsDialog(action, 14, true, true);
+        QVERIFY(snapshot.shown);
+        QVERIFY(snapshot.interactionInvoked);
+        QVERIFY(!snapshot.initiallyUsesSystemFont);
+
+        QCOMPARE(window.property("ui_scale_factor").toReal(), 1.0);
+        QCOMPARE(lineEdit->font().pointSizeF(), applicationFont.pointSizeF());
+        QCOMPARE(loadConfig(configPath).uiFontPointSize, 0);
+    }
+
+    void controlsHonorSystemLargeFont()
+    {
+        ApplicationFontGuard fontGuard;
+        const QFont originalFont = QApplication::font();
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString configPath = dir.filePath("config.json");
+        qputenv("NET_TUNNEL_CONFIG", configPath.toLocal8Bit());
+        AppConfig config;
+        QString error;
+        QVERIFY2(saveConfig(config, configPath, &error), qPrintable(error));
+
+        int regularHeight = 0;
+        int regularChromeWidth = 0;
+        {
+            MainWindow regularWindow;
+            QLineEdit *regularEdit = findWindowChild<QLineEdit>(&regularWindow, "proxyHostEdit");
+            QPushButton *regularMaximizeButton = regularWindow.getBtnMenuMax();
+            QVERIFY(regularEdit && regularMaximizeButton);
+            regularHeight = regularEdit->sizeHint().height();
+            regularChromeWidth = regularMaximizeButton->width();
+        }
+
+        QFont largeFont(originalFont);
+        largeFont.setPointSizeF(qMax(14.0, originalFont.pointSizeF() + 4.0));
+        QApplication::setFont(largeFont);
+
+        MainWindow largeWindow;
+        QLineEdit *largeEdit = findWindowChild<QLineEdit>(&largeWindow, "proxyHostEdit");
+        QPushButton *maximizeButton = largeWindow.getBtnMenuMax();
+        QVERIFY(largeEdit && maximizeButton);
+        QCOMPARE(largeEdit->font().pointSizeF(), largeFont.pointSizeF());
+        QCOMPARE(maximizeButton->font().pointSizeF(), largeFont.pointSizeF());
+        QVERIFY(largeEdit->sizeHint().height() > regularHeight);
+        QVERIFY(maximizeButton->width() > regularChromeWidth);
+    }
+
+    void framelessWindowSupportsEdgeAndCornerResize()
+    {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString configPath = dir.filePath("config.json");
+        qputenv("NET_TUNNEL_CONFIG", configPath.toLocal8Bit());
+
+        AppConfig config;
+        QString error;
+        QVERIFY2(saveConfig(config, configPath, &error), qPrintable(error));
+
+        MainWindow window;
+        window.setAttribute(Qt::WA_DontShowOnScreen);
+        window.resize(1080, 680);
+        window.show();
+        QTest::qWait(180);
+
+        const auto verifyCursor = [&window](const QPoint &position,
+                                             Qt::CursorShape expected) {
+            QMouseEvent move(QEvent::MouseMove, position,
+                             window.mapToGlobal(position), Qt::NoButton,
+                             Qt::NoButton, Qt::NoModifier);
+            QApplication::sendEvent(&window, &move);
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+            QCOMPARE(window.cursor().shape(), expected);
+        };
+
+        verifyCursor(QPoint(1, window.height() / 2), Qt::SizeHorCursor);
+        QWidget *rootContent = findWindowChild<QWidget>(&window, "rootContent");
+        QVERIFY(rootContent);
+        QEvent childLeave(QEvent::Leave);
+        QApplication::sendEvent(rootContent, &childLeave);
+        QCOMPARE(window.cursor().shape(), Qt::SizeHorCursor);
+        verifyCursor(QPoint(window.width() - 2, window.height() / 2), Qt::SizeHorCursor);
+        verifyCursor(QPoint(window.width() / 2, 1), Qt::SizeVerCursor);
+        verifyCursor(QPoint(window.width() / 2, window.height() - 2), Qt::SizeVerCursor);
+        verifyCursor(QPoint(1, 1), Qt::SizeFDiagCursor);
+        verifyCursor(QPoint(18, 1), Qt::SizeFDiagCursor);
+        verifyCursor(QPoint(1, 18), Qt::SizeFDiagCursor);
+        verifyCursor(QPoint(14, 14), Qt::SizeFDiagCursor);
+        verifyCursor(QPoint(window.width() - 2, window.height() - 2),
+                     Qt::SizeFDiagCursor);
+        // The close button owns the top-right corner and must not be shadowed
+        // by the resize hit area.
+        verifyCursor(QPoint(window.width() - 2, 1), Qt::ArrowCursor);
+        verifyCursor(QPoint(1, window.height() - 2), Qt::SizeBDiagCursor);
+        verifyCursor(window.rect().center(), Qt::ArrowCursor);
+
+        const QRect before = window.geometry();
+        QLineEdit *lineEdit = findWindowChild<QLineEdit>(&window, "proxyHostEdit");
+        QPushButton *maximizeButton = window.getBtnMenuMax();
+        QVERIFY(lineEdit && maximizeButton);
+        const qreal fontBeforeDrag = lineEdit->font().pointSizeF();
+        const qreal maximizeFontBeforeDrag = maximizeButton->font().pointSizeF();
+        const int lineHeightBeforeDrag = lineEdit->sizeHint().height();
+        WindowPresentationChangeCounter presentationChanges(&window);
+        qApp->installEventFilter(&presentationChanges);
+        const QPoint pressLocal(window.width() - 2, window.height() - 2);
+        const QPoint pressGlobal = window.mapToGlobal(pressLocal);
+        QMouseEvent press(QEvent::MouseButtonPress, pressLocal, pressGlobal,
+                          Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(&window, &press);
+        QWidget *resizePreview = findResizeOutline();
+        QVERIFY(resizePreview);
+        QVERIFY(resizePreview->isVisible());
+        QVERIFY(resizePreview->mask().contains(QPoint(1, 1)));
+        QVERIFY(!resizePreview->mask().contains(resizePreview->rect().center()));
+        QCOMPARE(window.property("resize_preview_geometry").toRect(), before);
+
+        const QPoint moveLocal = pressLocal + QPoint(180, 120);
+        const QPoint moveGlobal = pressGlobal + QPoint(180, 120);
+        QMouseEvent move(QEvent::MouseMove, moveLocal, moveGlobal,
+                         Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(&window, &move);
+        QTest::qWait(400);
+        QCOMPARE(window.geometry(), before);
+        const QRect pausedPreviewGeometry =
+            window.property("resize_preview_geometry").toRect();
+        QVERIFY(pausedPreviewGeometry.width() > before.width());
+        QVERIFY(pausedPreviewGeometry.height() > before.height());
+        QMouseEvent pausedMove(QEvent::MouseMove, moveLocal, moveGlobal,
+                               Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(&window, &pausedMove);
+        QTest::qWait(600);
+        QVERIFY(resizePreview->isVisible());
+        QCOMPARE(window.geometry(), before);
+        QCOMPARE(window.property("resize_preview_geometry").toRect(),
+                 pausedPreviewGeometry);
+        QVERIFY(lineEdit->font().pointSizeF() >= fontBeforeDrag);
+        QVERIFY(lineEdit->sizeHint().height() >= lineHeightBeforeDrag);
+
+        const QPoint continuedLocal = pressLocal + QPoint(240, 170);
+        const QPoint continuedGlobal = pressGlobal + QPoint(240, 170);
+        QMouseEvent continuedMove(QEvent::MouseMove, continuedLocal, continuedGlobal,
+                                  Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(&window, &continuedMove);
+        QTest::qWait(120);
+        QCOMPARE(window.geometry(), before);
+        const QRect finalPreviewGeometry =
+            window.property("resize_preview_geometry").toRect();
+        QVERIFY(finalPreviewGeometry.width() > pausedPreviewGeometry.width());
+        QVERIFY(finalPreviewGeometry.height() > pausedPreviewGeometry.height());
+        QVERIFY(lineEdit->font().pointSizeF() >= fontBeforeDrag);
+        QVERIFY(maximizeButton->font().pointSizeF() >= maximizeFontBeforeDrag);
+
+        QMouseEvent release(QEvent::MouseButtonRelease, continuedLocal, continuedGlobal,
+                            Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+        QApplication::sendEvent(&window, &release);
+        QVERIFY(!resizePreview->isVisible());
+        QCOMPARE(window.geometry(), finalPreviewGeometry);
+        QCOMPARE(window.cursor().shape(), Qt::ArrowCursor);
+        QTest::qWait(180);
+        QVERIFY(lineEdit->font().pointSizeF() >= fontBeforeDrag);
+        QVERIFY(maximizeButton->font().pointSizeF() >= maximizeFontBeforeDrag);
+        QVERIFY(lineEdit->sizeHint().height() >= lineHeightBeforeDrag);
+        QCOMPARE(presentationChanges.styleCount(), 0);
+        QVERIFY(window.property("ui_scale_factor").toReal() >= 1.0);
+        qApp->removeEventFilter(&presentationChanges);
+
+        verifyCursor(window.rect().center(), Qt::ArrowCursor);
+        verifyCursor(QPoint(window.width() - 2, window.height() / 2),
+                     Qt::SizeHorCursor);
+
+        // A title button placed in an edge hit zone must keep its normal click.
+        const QPoint buttonPoint(maximizeButton->width() - 1, 1);
+        QTest::mouseClick(maximizeButton, Qt::LeftButton, Qt::NoModifier, buttonPoint);
+        QTRY_VERIFY(window.isMaximized());
+        window.showNormal();
+        QTRY_VERIFY(!window.isMaximized());
+    }
+
+    void manualResizeCancelsWhenWindowDeactivates()
+    {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString configPath = dir.filePath("config.json");
+        qputenv("NET_TUNNEL_CONFIG", configPath.toLocal8Bit());
+
+        AppConfig config;
+        QString error;
+        QVERIFY2(saveConfig(config, configPath, &error), qPrintable(error));
+
+        MainWindow window;
+        window.setAttribute(Qt::WA_DontShowOnScreen);
+        window.resize(1080, 680);
+        window.show();
+        QTest::qWait(120);
+        const QPoint pressLocal(window.width() - 2, window.height() - 2);
+        const QPoint pressGlobal = window.mapToGlobal(pressLocal);
+        QMouseEvent press(QEvent::MouseButtonPress, pressLocal, pressGlobal,
+                          Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(&window, &press);
+        QWidget *resizePreview = findResizeOutline();
+        QVERIFY(resizePreview);
+        QVERIFY(resizePreview->isVisible());
+
+        QEvent deactivate(QEvent::ApplicationDeactivate);
+        QApplication::sendEvent(&window, &deactivate);
+        QVERIFY(!resizePreview->isVisible());
+        QCOMPARE(window.cursor().shape(), Qt::ArrowCursor);
+
+        const QRect beforeMove = window.geometry();
+        const QPoint moveLocal = pressLocal + QPoint(160, 110);
+        QMouseEvent move(QEvent::MouseMove, moveLocal,
+                         window.mapToGlobal(moveLocal), Qt::NoButton,
+                         Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(&window, &move);
+        QCOMPARE(window.geometry(), beforeMove);
+
+        window.show();
+        QTest::qWait(30);
+        const QPoint secondPressLocal(window.width() - 2, window.height() - 2);
+        QMouseEvent secondPress(QEvent::MouseButtonPress, secondPressLocal,
+                                window.mapToGlobal(secondPressLocal),
+                                Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(&window, &secondPress);
+        QVERIFY(resizePreview->isVisible());
+        window.hide();
+        QVERIFY(!resizePreview->isVisible());
+    }
+
+    void edgeResizeCursorDoesNotMutateApplicationOverrideCursor()
+    {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString configPath = dir.filePath("config.json");
+        qputenv("NET_TUNNEL_CONFIG", configPath.toLocal8Bit());
+
+        AppConfig config;
+        QString error;
+        QVERIFY2(saveConfig(config, configPath, &error), qPrintable(error));
+
+        MainWindow window;
+        window.setAttribute(Qt::WA_DontShowOnScreen);
+        window.resize(1080, 680);
+        window.show();
+        QTest::qWait(120);
+
+        QApplication::setOverrideCursor(QCursor(Qt::CrossCursor));
+        QMouseEvent edgeMove(QEvent::MouseMove,
+                             QPoint(1, window.height() / 2),
+                             window.mapToGlobal(QPoint(1, window.height() / 2)),
+                             Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+        QApplication::sendEvent(&window, &edgeMove);
+        QCOMPARE(window.cursor().shape(), Qt::SizeHorCursor);
+        QVERIFY(QApplication::overrideCursor());
+        QCOMPARE(QApplication::overrideCursor()->shape(), Qt::CrossCursor);
+
+        QMouseEvent centerMove(QEvent::MouseMove,
+                               window.rect().center(),
+                               window.mapToGlobal(window.rect().center()),
+                               Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+        QApplication::sendEvent(&window, &centerMove);
+        QCOMPARE(window.cursor().shape(), Qt::ArrowCursor);
+        QVERIFY(QApplication::overrideCursor());
+        QCOMPARE(QApplication::overrideCursor()->shape(), Qt::CrossCursor);
+        QApplication::restoreOverrideCursor();
     }
 
     void selectionPopulatesReadOnlyFieldsAndRemainsAvailableWhileRunning()
@@ -368,14 +1042,14 @@ private slots:
         QVERIFY2(store.setSelectedProfileId(primary.id, &error), qPrintable(error));
 
         MainWindow window;
-        QComboBox *combo = window.findChild<QComboBox *>("upstreamProfileCombo");
-        QLineEdit *url = window.findChild<QLineEdit *>("upstreamBaseUrlEdit");
-        QLineEdit *apiKey = window.findChild<QLineEdit *>("upstreamApiKeyEdit");
-        QLineEdit *userAgent = window.findChild<QLineEdit *>("upstreamUserAgentEdit");
-        QLineEdit *proxy = window.findChild<QLineEdit *>("upstreamProxyEdit");
-        QSpinBox *upstreamTimeout = window.findChild<QSpinBox *>("upstreamTimeoutSpin");
-        QSpinBox *firstTokenTimeout = window.findChild<QSpinBox *>("firstTokenTimeoutSpin");
-        QCheckBox *forwardUserAgent = window.findChild<QCheckBox *>("forwardUserAgentCheck");
+        QComboBox *combo = findWindowChild<QComboBox>(&window, "upstreamProfileCombo");
+        QLineEdit *url = findWindowChild<QLineEdit>(&window, "upstreamBaseUrlEdit");
+        QLineEdit *apiKey = findWindowChild<QLineEdit>(&window, "upstreamApiKeyEdit");
+        QLineEdit *userAgent = findWindowChild<QLineEdit>(&window, "upstreamUserAgentEdit");
+        QLineEdit *proxy = findWindowChild<QLineEdit>(&window, "upstreamProxyEdit");
+        QSpinBox *upstreamTimeout = findWindowChild<QSpinBox>(&window, "upstreamTimeoutSpin");
+        QSpinBox *firstTokenTimeout = findWindowChild<QSpinBox>(&window, "firstTokenTimeoutSpin");
+        QCheckBox *forwardUserAgent = findWindowChild<QCheckBox>(&window, "forwardUserAgentCheck");
         QPushButton *start = buttonWithKey(&window, "start_proxy");
         QPushButton *stop = buttonWithKey(&window, "stop_proxy");
         QVERIFY(combo && url && apiKey && userAgent && proxy);
@@ -448,9 +1122,9 @@ private slots:
         QVERIFY2(store.setSelectedProfileId(primary.id, &error), qPrintable(error));
 
         MainWindow window;
-        QComboBox *combo = window.findChild<QComboBox *>("upstreamProfileCombo");
-        QLineEdit *url = window.findChild<QLineEdit *>("upstreamBaseUrlEdit");
-        HttpProxyServer *proxy = window.findChild<HttpProxyServer *>();
+        QComboBox *combo = findWindowChild<QComboBox>(&window, "upstreamProfileCombo");
+        QLineEdit *url = findWindowChild<QLineEdit>(&window, "upstreamBaseUrlEdit");
+        HttpProxyServer *proxy = findWindowChild<HttpProxyServer>(&window);
         QPushButton *start = buttonWithKey(&window, "start_proxy");
         QPushButton *stop = buttonWithKey(&window, "stop_proxy");
         QVERIFY(combo && url && proxy && start && stop);
@@ -520,9 +1194,9 @@ private slots:
         QVERIFY2(store.setSelectedProfileId(primary.id, &error), qPrintable(error));
 
         MainWindow window;
-        QComboBox *combo = window.findChild<QComboBox *>("upstreamProfileCombo");
-        QSpinBox *proxyPort = window.findChild<QSpinBox *>("proxyPortSpin");
-        HttpProxyServer *proxy = window.findChild<HttpProxyServer *>();
+        QComboBox *combo = findWindowChild<QComboBox>(&window, "upstreamProfileCombo");
+        QSpinBox *proxyPort = findWindowChild<QSpinBox>(&window, "proxyPortSpin");
+        HttpProxyServer *proxy = findWindowChild<HttpProxyServer>(&window);
         QPushButton *start = buttonWithKey(&window, "start_proxy");
         QVERIFY(combo && proxyPort && proxy && start);
 
@@ -572,7 +1246,7 @@ private slots:
         qputenv("NET_TUNNEL_CONFIG", dir.filePath("config.json").toLocal8Bit());
 
         MainWindow window;
-        QComboBox *combo = window.findChild<QComboBox *>("upstreamProfileCombo");
+        QComboBox *combo = findWindowChild<QComboBox>(&window, "upstreamProfileCombo");
         QPushButton *start = buttonWithKey(&window, "start_proxy");
         QVERIFY(combo && start);
         QCOMPARE(combo->count(), 1);
@@ -596,7 +1270,7 @@ private slots:
         dismissNextMessageDialog();
         MainWindow window;
         QPushButton *save = buttonWithKey(&window, "save_config");
-        QLineEdit *host = window.findChild<QLineEdit *>("proxyHostEdit");
+        QLineEdit *host = findWindowChild<QLineEdit>(&window, "proxyHostEdit");
         QVERIFY(save && host);
         QVERIFY(save->isEnabled());
 
@@ -652,8 +1326,8 @@ private slots:
         QVERIFY2(store.setSelectedProfileId(selected.id, &error), qPrintable(error));
 
         MainWindow window;
-        QComboBox *combo = window.findChild<QComboBox *>("upstreamProfileCombo");
-        QLineEdit *url = window.findChild<QLineEdit *>("upstreamBaseUrlEdit");
+        QComboBox *combo = findWindowChild<QComboBox>(&window, "upstreamProfileCombo");
+        QLineEdit *url = findWindowChild<QLineEdit>(&window, "upstreamBaseUrlEdit");
         QVERIFY(combo && url);
         QCOMPARE(combo->count(), 105);
         QCOMPARE(combo->currentData().toString(), selected.id);
@@ -663,6 +1337,17 @@ private slots:
     }
 };
 
-QTEST_MAIN(MainWindowProfileTest)
+int main(int argc, char **argv)
+{
+    QCoreApplication::setAttribute(Qt::AA_EnableHighDpiScaling);
+    QCoreApplication::setAttribute(Qt::AA_UseHighDpiPixmaps);
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+    QGuiApplication::setHighDpiScaleFactorRoundingPolicy(
+        Qt::HighDpiScaleFactorRoundingPolicy::PassThrough);
+#endif
+    QApplication app(argc, argv);
+    MainWindowProfileTest test;
+    return QTest::qExec(&test, argc, argv);
+}
 
 #include "main_window_profile_test.moc"
