@@ -244,6 +244,24 @@ if(NET_TUNNEL_BUILD_TESTS)
     )
     add_test(NAME http-proxy-server-test COMMAND http-proxy-server-test)
 
+    add_executable(app-config-test
+        tests/app_config_test.cpp
+    )
+    net_tunnel_add_private_compile_options(app-config-test)
+    target_link_libraries(app-config-test PRIVATE
+        net-tunnel-core
+        Qt5::Core
+        Qt5::Test
+    )
+    add_test(NAME app-config-test COMMAND app-config-test)
+    if(APPLE)
+        set(_app_config_test_home "${CMAKE_CURRENT_BINARY_DIR}/app-config-test-home")
+        file(MAKE_DIRECTORY "${_app_config_test_home}")
+        set_tests_properties(app-config-test PROPERTIES
+            ENVIRONMENT "HOME=${_app_config_test_home}"
+        )
+    endif()
+
     add_executable(http-proxy-server-stop-test
         tests/http_proxy_server_stop_test.cpp
     )

@@ -364,6 +364,20 @@ if [[ ! -w "/Applications" ]]; then
   mkdir -p "\${HOME}/Applications"
 fi
 
+LEGACY_CONFIG="\${TARGET_APP}/Contents/MacOS/config.json"
+USER_CONFIG_DIR="\${HOME}/Library/Application Support/${APP_NAME}"
+USER_CONFIG="\${USER_CONFIG_DIR}/config.json"
+if [[ -L "\${LEGACY_CONFIG}" || ( -e "\${LEGACY_CONFIG}" && ! -f "\${LEGACY_CONFIG}" ) ]]; then
+  echo "Refusing to remove an app with an invalid legacy config: \${LEGACY_CONFIG}" >&2
+  exit 1
+fi
+if [[ -r "\${LEGACY_CONFIG}" && ! -e "\${USER_CONFIG}" ]]; then
+  mkdir -p "\${USER_CONFIG_DIR}"
+  chmod 700 "\${USER_CONFIG_DIR}"
+  /usr/bin/ditto "\${LEGACY_CONFIG}" "\${USER_CONFIG}"
+  chmod 600 "\${USER_CONFIG}"
+fi
+
 rm -rf "\${TARGET_APP}"
 /usr/bin/ditto "\${SOURCE_APP}" "\${TARGET_APP}"
 /usr/bin/xattr -dr com.apple.quarantine "\${TARGET_APP}" 2>/dev/null || true
@@ -374,9 +388,13 @@ EOF
     cat > "${dmg_root}/README-macOS-Install.txt" <<EOF
 OpenAI Reasoning Guard macOS install
 
-Preferred install:
+Install a new copy:
 1. Drag "${APP_NAME}.app" to Applications.
 2. Open it from Applications.
+
+Upgrade from a version that stored config.json inside the app bundle:
+1. Double-click "OpenAI Reasoning Guard - First Run.command" before replacing the old app.
+2. The helper migrates the legacy config to your user configuration directory, then installs and opens the new app.
 
 If macOS says it was not opened because the developer cannot be verified:
 1. Double-click "OpenAI Reasoning Guard - First Run.command" in this disk image.
@@ -384,7 +402,8 @@ If macOS says it was not opened because the developer cannot be verified:
    quarantine flag from that local copy, and opens it.
 
 For builds signed with a Developer ID certificate and notarized by Apple, the
-helper is not needed.
+helper is not needed to bypass Gatekeeper. It is still required when upgrading
+an old app whose config.json is stored inside the app bundle.
 EOF
 }
 
@@ -734,6 +753,22 @@ else
     }
 fi
 
+INSTALL_USER="$(id -un)"
+INSTALL_GROUP="$(id -gn)"
+INSTALL_HOME="${HOME}"
+if [[ "${EUID}" -eq 0 ]]; then
+    INSTALL_USER="${SUDO_USER:-}"
+    if [[ -z "${INSTALL_USER}" || "${INSTALL_USER}" == "root" ]]; then
+        INSTALL_USER="$(stat -f '%Su' /dev/console 2>/dev/null || true)"
+    fi
+    if [[ -z "${INSTALL_USER}" || "${INSTALL_USER}" == "root" || "${INSTALL_USER}" == "loginwindow" ]]; then
+        INSTALL_HOME=""
+    else
+        INSTALL_GROUP="$(id -gn "${INSTALL_USER}")"
+        INSTALL_HOME="$(dscl . -read "/Users/${INSTALL_USER}" NFSHomeDirectory | awk '{print $2}')"
+    fi
+fi
+
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/${PACKAGE_ID}.install.XXXXXX")"
 DMG_PATH="${TMP_DIR}/${PAYLOAD_NAME}"
 MOUNT_DIR=""
@@ -773,12 +808,48 @@ fi
 [[ -d "${SOURCE_APP}" ]] || die "unable to find app bundle in mounted dmg"
 
 TARGET_APP="/Applications/${APP_NAME}.app"
+LEGACY_CONFIG="${TARGET_APP}/Contents/MacOS/config.json"
+USER_CONFIG_DIR="${INSTALL_HOME}/Library/Application Support/${APP_NAME}"
+USER_CONFIG="${USER_CONFIG_DIR}/config.json"
 echo "Installing ${APP_NAME} to ${TARGET_APP}"
 run_privileged /bin/mkdir -p /Applications
+if [[ -L "${LEGACY_CONFIG}" || ( -e "${LEGACY_CONFIG}" && ! -f "${LEGACY_CONFIG}" ) ]]; then
+    die "refusing to remove an app with an invalid legacy config: ${LEGACY_CONFIG}"
+fi
+if [[ -z "${INSTALL_HOME}" && -e "${LEGACY_CONFIG}" ]]; then
+    die "cannot determine the target user to migrate ${LEGACY_CONFIG}; refusing to remove the existing app"
+fi
+if [[ -n "${INSTALL_HOME}" ]]; then
+    if run_privileged /bin/test -L "${USER_CONFIG_DIR}" || \
+       { run_privileged /bin/test -e "${USER_CONFIG_DIR}" && ! run_privileged /bin/test -d "${USER_CONFIG_DIR}"; }; then
+        die "refusing to use an invalid user configuration directory: ${USER_CONFIG_DIR}"
+    fi
+    if run_privileged /bin/test -d "${USER_CONFIG_DIR}"; then
+        run_privileged /usr/sbin/chown "${INSTALL_USER}:${INSTALL_GROUP}" "${USER_CONFIG_DIR}"
+        run_privileged /bin/chmod 700 "${USER_CONFIG_DIR}"
+    fi
+    if run_privileged /bin/test -L "${USER_CONFIG}" || \
+       { run_privileged /bin/test -e "${USER_CONFIG}" && ! run_privileged /bin/test -f "${USER_CONFIG}"; }; then
+        die "refusing to use an invalid user configuration file: ${USER_CONFIG}"
+    fi
+    if [[ -f "${LEGACY_CONFIG}" ]] && ! run_privileged /bin/test -e "${USER_CONFIG}"; then
+        run_privileged /bin/mkdir -p "${USER_CONFIG_DIR}"
+        run_privileged /usr/bin/ditto "${LEGACY_CONFIG}" "${USER_CONFIG}"
+    fi
+    if [[ -d "${USER_CONFIG_DIR}" ]]; then
+        run_privileged /usr/sbin/chown "${INSTALL_USER}:${INSTALL_GROUP}" "${USER_CONFIG_DIR}"
+        run_privileged /bin/chmod 700 "${USER_CONFIG_DIR}"
+    fi
+    if [[ -f "${USER_CONFIG}" ]]; then
+        run_privileged /usr/sbin/chown "${INSTALL_USER}:${INSTALL_GROUP}" "${USER_CONFIG}"
+        run_privileged /bin/chmod 600 "${USER_CONFIG}"
+    fi
+fi
 run_privileged /bin/rm -rf "${TARGET_APP}"
 run_privileged /usr/bin/ditto "${SOURCE_APP}" "${TARGET_APP}"
 run_privileged /usr/bin/xattr -dr com.apple.quarantine "${TARGET_APP}" 2>/dev/null || true
 run_privileged /usr/sbin/chown -R root:wheel "${TARGET_APP}" 2>/dev/null || true
+run_privileged /bin/chmod -R u=rwX,go=rX "${TARGET_APP}"
 
 CLI_SOURCE="${TARGET_APP}/Contents/Resources/bin/${CLI_COMMAND}"
 if [[ "${INSTALL_CLI_SYMLINK:-1}" == "1" && -x "${CLI_SOURCE}" ]]; then
@@ -817,6 +888,7 @@ build_dmg() {
     stage_app_bundle "${app_bundle}"
     deploy_qt "${app_bundle}"
     validate_deployed_qt_sql "${app_bundle}"
+    chmod -R u=rwX,go=rX "${app_bundle}"
     sign_app_bundle "${app_bundle}"
 
     rm -rf "${dmg_root}"
