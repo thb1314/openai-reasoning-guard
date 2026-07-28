@@ -18,7 +18,7 @@ OpenAI Reasoning Guard is a local quality gateway placed between Codex or anothe
 - **Multiple upstream profiles**: SQLite-backed Base URLs, API keys, User-Agents, proxies, and timeouts with selection, search, pagination, import, and export.
 - **Cross-platform delivery**: GUI and CLI builds with Linux deb/rpm/AppImage, Windows installer/portable, and macOS shell installers.
 
-![OpenAI Reasoning Guard GUI](docs/images/gui-main-window.png)
+![OpenAI Reasoning Guard GUI](docs/images/gui-main-window-en.png)
 
 > The screenshot uses an isolated demo profile. URLs and local paths are redacted.
 
