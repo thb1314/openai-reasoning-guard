@@ -7,6 +7,19 @@ class QuiWidgetTest : public QObject {
     Q_OBJECT
 
 private slots:
+    void minimizeButtonChangesWindowState()
+    {
+        QUIWidget window;
+        QVERIFY(window.windowFlags().testFlag(Qt::WindowMinimizeButtonHint));
+        window.setGeometry(80, 80, 480, 320);
+        window.show();
+        QTRY_VERIFY(window.isVisible());
+
+        window.getBtnMenuMin()->click();
+        QTRY_VERIFY(window.windowState().testFlag(Qt::WindowMinimized));
+        QVERIFY(window.isMinimized());
+    }
+
     void doubleClickOnlyMaximizesFromTitleBar()
     {
         QUIWidget window;

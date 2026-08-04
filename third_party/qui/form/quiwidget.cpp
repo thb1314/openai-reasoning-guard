@@ -1329,7 +1329,10 @@ void QUIWidget::initForm()
     manualMoveActive = false;
     this->setProperty("form", true);
     this->widgetTitle->setProperty("form", "title");
-    this->setWindowFlags(Qt::Window | Qt::FramelessWindowHint | Qt::CustomizeWindowHint);
+    this->setWindowFlags(Qt::Window |
+                         Qt::FramelessWindowHint |
+                         Qt::CustomizeWindowHint |
+                         Qt::WindowMinimizeButtonHint);
 
     //设置标题及对齐方式
     title = "QUI Demo";

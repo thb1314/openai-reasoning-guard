@@ -437,6 +437,12 @@ if(NET_TUNNEL_BUILD_TESTS)
         Qt5::Test
     )
     add_test(NAME qui-widget-test COMMAND qui-widget-test -platform offscreen)
+    if(APPLE)
+        add_test(
+            NAME qui-widget-macos-minimize-test
+            COMMAND qui-widget-test -platform cocoa minimizeButtonChangesWindowState
+        )
+    endif()
 
     set_tests_properties(
         http-proxy-server-test
