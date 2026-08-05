@@ -4,6 +4,7 @@
 #endif
 
 #include <QtCore/QCoreApplication>
+#include <QtGui/QGuiApplication>
 #include <QtTest/QtTest>
 
 class QuiWidgetTest : public QObject {
@@ -19,15 +20,20 @@ private slots:
         window.show();
         QTRY_VERIFY(window.isVisible());
 #ifdef Q_OS_MAC
-        QVERIFY(quiMacWindowCanMinimize(&window));
-        QVERIFY(!quiMacWindowHasNativeTitleBar(&window));
+        const bool runningOnCocoa = QGuiApplication::platformName() == QLatin1String("cocoa");
+        if (runningOnCocoa) {
+            QVERIFY(quiMacWindowCanMinimize(&window));
+            QVERIFY(!quiMacWindowHasNativeTitleBar(&window));
+        }
 #endif
 
         window.getBtnMenuMin()->click();
         QTRY_VERIFY(window.windowState().testFlag(Qt::WindowMinimized));
         QVERIFY(window.isMinimized());
 #ifdef Q_OS_MAC
-        QVERIFY(!quiMacWindowHasNativeTitleBar(&window));
+        if (runningOnCocoa) {
+            QVERIFY(!quiMacWindowHasNativeTitleBar(&window));
+        }
 #endif
     }
 
