@@ -1,5 +1,9 @@
 ﻿#include "quiwidget.h"
 
+#ifdef Q_OS_MAC
+#include "quiwidget_macos.h"
+#endif
+
 int QUIWidget::deskWidth()
 {
     QScreen *screen = QGuiApplication::primaryScreen();
@@ -1331,8 +1335,10 @@ void QUIWidget::initForm()
     this->widgetTitle->setProperty("form", "title");
     this->setWindowFlags(Qt::Window |
                          Qt::FramelessWindowHint |
-                         Qt::CustomizeWindowHint |
-                         Qt::WindowMinimizeButtonHint);
+                         Qt::CustomizeWindowHint);
+#ifdef Q_OS_MAC
+    quiEnsureFramelessWindowCanMinimize(this);
+#endif
 
     //设置标题及对齐方式
     title = "QUI Demo";
@@ -1537,6 +1543,9 @@ void QUIWidget::on_btnMenu_Min_clicked()
     if (minHide) {
         hide();
     } else {
+#ifdef Q_OS_MAC
+        quiEnsureFramelessWindowCanMinimize(this);
+#endif
         showMinimized();
     }
 }

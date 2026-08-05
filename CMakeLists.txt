@@ -2,6 +2,10 @@ cmake_minimum_required(VERSION 3.16)
 
 project(net_tunnel_cpp_client VERSION 0.1.0 LANGUAGES CXX)
 
+if(APPLE)
+    enable_language(OBJCXX)
+endif()
+
 set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -179,6 +183,14 @@ if(WIN32)
     )
 endif()
 
+set(NET_TUNNEL_QUI_PLATFORM_SOURCES)
+if(APPLE)
+    list(APPEND NET_TUNNEL_QUI_PLATFORM_SOURCES
+        third_party/qui/form/quiwidget_macos.h
+        third_party/qui/form/quiwidget_macos.mm
+    )
+endif()
+
 add_executable(net-tunnel-cli
     src/cli/main.cpp
     src/cli/profile_commands.h
@@ -204,6 +216,7 @@ add_executable(net-tunnel-gui
     ${NET_TUNNEL_WINDOWS_ICON_RESOURCE}
     third_party/qui/form/quiwidget.h
     third_party/qui/form/quiwidget.cpp
+    ${NET_TUNNEL_QUI_PLATFORM_SOURCES}
     third_party/qui/qui_resources.qrc
 )
 net_tunnel_add_private_compile_options(net-tunnel-gui)
@@ -344,6 +357,7 @@ if(NET_TUNNEL_BUILD_TESTS)
         assets/app_resources.qrc
         third_party/qui/form/quiwidget.h
         third_party/qui/form/quiwidget.cpp
+        ${NET_TUNNEL_QUI_PLATFORM_SOURCES}
         third_party/qui/qui_resources.qrc
     )
     net_tunnel_add_private_compile_options(main-window-profile-test)
@@ -422,6 +436,7 @@ if(NET_TUNNEL_BUILD_TESTS)
         tests/qui_widget_test.cpp
         third_party/qui/form/quiwidget.h
         third_party/qui/form/quiwidget.cpp
+        ${NET_TUNNEL_QUI_PLATFORM_SOURCES}
         third_party/qui/qui_resources.qrc
     )
     net_tunnel_add_private_compile_options(qui-widget-test)

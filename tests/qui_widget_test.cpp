@@ -1,4 +1,7 @@
 #include "quiwidget.h"
+#ifdef Q_OS_MAC
+#include "quiwidget_macos.h"
+#endif
 
 #include <QtCore/QCoreApplication>
 #include <QtTest/QtTest>
@@ -10,14 +13,22 @@ private slots:
     void minimizeButtonChangesWindowState()
     {
         QUIWidget window;
-        QVERIFY(window.windowFlags().testFlag(Qt::WindowMinimizeButtonHint));
+        QVERIFY(window.windowFlags().testFlag(Qt::FramelessWindowHint));
+        QVERIFY(!window.windowFlags().testFlag(Qt::WindowMinimizeButtonHint));
         window.setGeometry(80, 80, 480, 320);
         window.show();
         QTRY_VERIFY(window.isVisible());
+#ifdef Q_OS_MAC
+        QVERIFY(quiMacWindowCanMinimize(&window));
+        QVERIFY(!quiMacWindowHasNativeTitleBar(&window));
+#endif
 
         window.getBtnMenuMin()->click();
         QTRY_VERIFY(window.windowState().testFlag(Qt::WindowMinimized));
         QVERIFY(window.isMinimized());
+#ifdef Q_OS_MAC
+        QVERIFY(!quiMacWindowHasNativeTitleBar(&window));
+#endif
     }
 
     void doubleClickOnlyMaximizesFromTitleBar()
