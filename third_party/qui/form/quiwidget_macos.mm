@@ -1,5 +1,6 @@
 #include "quiwidget_macos.h"
 
+#include <QGuiApplication>
 #include <QWidget>
 
 #import <AppKit/AppKit.h>
@@ -8,7 +9,7 @@ namespace {
 
 NSWindow *nativeWindowForWidget(QWidget *widget)
 {
-    if (!widget) {
+    if (!widget || QGuiApplication::platformName() != QLatin1String("cocoa")) {
         return nil;
     }
 
