@@ -184,10 +184,15 @@ if(WIN32)
 endif()
 
 set(NET_TUNNEL_QUI_PLATFORM_SOURCES)
+set(NET_TUNNEL_QUI_PLATFORM_LIBRARIES)
 if(APPLE)
+    find_library(NET_TUNNEL_APPKIT_FRAMEWORK AppKit REQUIRED)
     list(APPEND NET_TUNNEL_QUI_PLATFORM_SOURCES
         third_party/qui/form/quiwidget_macos.h
         third_party/qui/form/quiwidget_macos.mm
+    )
+    list(APPEND NET_TUNNEL_QUI_PLATFORM_LIBRARIES
+        "${NET_TUNNEL_APPKIT_FRAMEWORK}"
     )
 endif()
 
@@ -230,6 +235,7 @@ target_link_libraries(net-tunnel-gui PRIVATE
     Qt5::Gui
     Qt5::Widgets
     Qt5::Network
+    ${NET_TUNNEL_QUI_PLATFORM_LIBRARIES}
 )
 if(WIN32)
     set_target_properties(net-tunnel-gui PROPERTIES WIN32_EXECUTABLE TRUE)
@@ -373,6 +379,7 @@ if(NET_TUNNEL_BUILD_TESTS)
         Qt5::Network
         Qt5::Sql
         Qt5::Test
+        ${NET_TUNNEL_QUI_PLATFORM_LIBRARIES}
     )
     add_test(NAME main-window-profile-test COMMAND main-window-profile-test -platform offscreen)
 
@@ -450,6 +457,7 @@ if(NET_TUNNEL_BUILD_TESTS)
         Qt5::Widgets
         Qt5::Network
         Qt5::Test
+        ${NET_TUNNEL_QUI_PLATFORM_LIBRARIES}
     )
     add_test(NAME qui-widget-test COMMAND qui-widget-test -platform offscreen)
     if(APPLE)
