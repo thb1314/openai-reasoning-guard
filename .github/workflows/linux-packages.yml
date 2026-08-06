@@ -1057,12 +1057,25 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git fetch --force --no-tags origin \
-            "+refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
-          tag_commit="$(git rev-parse "${RELEASE_TAG}^{commit}")"
           source_commit="$(git rev-parse HEAD)"
-          if [[ "${tag_commit}" != "${source_commit}" ]]; then
-            echo "Release tag ${RELEASE_TAG} points to ${tag_commit}, expected ${source_commit}" >&2
+          tag_ref="refs/tags/${RELEASE_TAG}"
+          if git fetch --force --no-tags origin "+${tag_ref}:${tag_ref}"; then
+            tag_commit="$(git rev-parse "${RELEASE_TAG}^{commit}")"
+            if [[ "${tag_commit}" != "${source_commit}" ]]; then
+              if [[ "${RELEASE_PRERELEASE}" != "true" ]]; then
+                echo "Release tag ${RELEASE_TAG} points to ${tag_commit}, expected ${source_commit}" >&2
+                exit 2
+              fi
+              echo "Moving prerelease tag ${RELEASE_TAG} from ${tag_commit} to ${source_commit}"
+              git tag -f "${RELEASE_TAG}" "${source_commit}"
+              git push --force origin "${tag_ref}"
+            fi
+          elif [[ "${RELEASE_PRERELEASE}" == "true" ]]; then
+            echo "Creating prerelease tag ${RELEASE_TAG} at ${source_commit}"
+            git tag "${RELEASE_TAG}" "${source_commit}"
+            git push origin "${tag_ref}"
+          else
+            echo "Release tag ${RELEASE_TAG} does not exist" >&2
             exit 2
           fi
           echo "RELEASE_SOURCE_COMMIT=${source_commit}" >> "${GITHUB_ENV}"
