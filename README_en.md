@@ -38,7 +38,8 @@ For first-time CLI use, create and select an upstream profile, then start the lo
 openai-reasoning-guard-cli profile add \
   --name "Primary" \
   --base-url https://api.openai.com/v1 \
-  --api-key sk-example
+  --api-key sk-example \
+  --retry-after-override-sec 30
 
 openai-reasoning-guard-cli --proxy-host 127.0.0.1 --proxy-port 8010
 ```
@@ -158,6 +159,7 @@ Use `--config /path/config.json` or `NET_TUNNEL_CONFIG=/path/config.json` to cho
 | `upstream_proxy` | empty | `"http://127.0.0.1:7890"` | One HTTP/SOCKS5-family proxy; empty means direct. |
 | `upstream_timeout_sec` | `1800` | `600` | Total timeout for one upstream attempt, range `1..86400`; returns `504`. |
 | `first_token_timeout_sec` | `30` | `10` or `0` | Wait for the first non-empty streaming body byte; `0` disables, range `0..3600`. |
+| `retry_after_override_sec` | empty string | `"30"` | Add or replace `Retry-After` only for a final real upstream `429/502/503`; empty passes the upstream header through, range `1..86400` seconds. Intermediate retries are not sent, and locally generated `502` responses never get this header. |
 
 API keys are stored as plaintext in the current user's SQLite database, not in a system keychain. Lists, logs, status endpoints, and normal exports never expose a complete key. Only explicit `--show-secret` or `--include-secrets` operations reveal one.
 

@@ -21,6 +21,7 @@ struct UpstreamProfile {
     QString upstreamProxy;
     int upstreamTimeoutSec;
     int firstTokenTimeoutSec;
+    QString retryAfterOverrideSec;
     QDateTime createdAtUtc;
     QDateTime updatedAtUtc;
 

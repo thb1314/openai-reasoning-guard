@@ -410,6 +410,7 @@ MainWindow::MainWindow(QWidget *parent)
       upstreamProxyEdit_(0),
       upstreamTimeoutSpin_(0),
       firstTokenTimeoutSpin_(0),
+      retryAfterOverrideSpin_(0),
       bufferTimeoutSpin_(0),
       requestBodyLimitSpin_(0),
       responseBufferLimitSpin_(0),
@@ -714,6 +715,12 @@ QWidget *MainWindow::buildProxyPanel()
     firstTokenTimeoutSpin_->setMinimumWidth(118);
     firstTokenTimeoutSpin_->setReadOnly(true);
     firstTokenTimeoutSpin_->setButtonSymbols(QAbstractSpinBox::NoButtons);
+    retryAfterOverrideSpin_ = new QSpinBox(box);
+    retryAfterOverrideSpin_->setObjectName("retryAfterOverrideSpin");
+    retryAfterOverrideSpin_->setRange(0, 86400);
+    retryAfterOverrideSpin_->setMinimumWidth(118);
+    retryAfterOverrideSpin_->setReadOnly(true);
+    retryAfterOverrideSpin_->setButtonSymbols(QAbstractSpinBox::NoButtons);
     bufferTimeoutSpin_ = new QSpinBox(box);
     bufferTimeoutSpin_->setRange(1, 86400);
     bufferTimeoutSpin_->setMinimumWidth(118);
@@ -770,6 +777,8 @@ QWidget *MainWindow::buildProxyPanel()
     grid->addWidget(bufferTimeoutSpin_, 5, 3);
     grid->addWidget(makeFormLabel("first_token_timeout_sec", box), 6, 0);
     grid->addWidget(firstTokenTimeoutSpin_, 6, 1);
+    grid->addWidget(makeFormLabel("retry_after_override_sec", box), 6, 2);
+    grid->addWidget(retryAfterOverrideSpin_, 6, 3);
     grid->addWidget(makeFormLabel("request_body_limit_bytes", box), 7, 0);
     grid->addWidget(requestBodyLimitSpin_, 7, 1);
     grid->addWidget(makeFormLabel("response_buffer_limit_bytes", box), 7, 2);
@@ -834,6 +843,7 @@ QWidget *MainWindow::buildProxyPanel()
     connect(upstreamProxyEdit_, SIGNAL(textChanged(QString)), this, SLOT(updateProxyStats()));
     connect(upstreamTimeoutSpin_, SIGNAL(valueChanged(int)), this, SLOT(updateProxyStats()));
     connect(firstTokenTimeoutSpin_, SIGNAL(valueChanged(int)), this, SLOT(updateProxyStats()));
+    connect(retryAfterOverrideSpin_, SIGNAL(valueChanged(int)), this, SLOT(updateProxyStats()));
     connect(bufferTimeoutSpin_, SIGNAL(valueChanged(int)), this, SLOT(updateProxyStats()));
     connect(requestBodyLimitSpin_, SIGNAL(valueChanged(int)), this, SLOT(updateProxyStats()));
     connect(responseBufferLimitSpin_, SIGNAL(valueChanged(int)), this, SLOT(updateProxyStats()));
@@ -1710,6 +1720,7 @@ QString MainWindow::textFor(const QString &key) const
         : "http://127.0.0.1:7890 或 socks5://127.0.0.1:7890";
     if (key == "upstream_timeout_sec") return en ? "Upstream Timeout (sec)" : "上游超时（秒）";
     if (key == "first_token_timeout_sec") return en ? "First Token Timeout (sec)" : "首 Token 超时（秒）";
+    if (key == "retry_after_override_sec") return en ? "Retry-After Override (sec)" : "Retry-After 覆盖（秒）";
     if (key == "buffer_timeout_sec") return en ? "Buffer Timeout (sec)" : "缓冲超时（秒）";
     if (key == "request_body_limit_bytes") return en ? "Request Body Limit" : "请求体上限";
     if (key == "response_buffer_limit_bytes") return en ? "Response Buffer Limit" : "响应缓冲上限";
@@ -1752,6 +1763,7 @@ QString MainWindow::textFor(const QString &key) const
     if (key == "info_control_endpoints_value") return "/status  |  /healthz  |  /version  |  /props";
     if (key == "info_buffer_limits") return en ? "Buffer Limits" : "缓冲上限";
     if (key == "info_first_token_timeout") return en ? "First Token Timeout" : "首 Token 超时";
+    if (key == "info_retry_after_override") return en ? "Retry-After Override" : "Retry-After 覆盖";
     if (key == "info_policy") return en ? "Guard Policy" : "拦截策略";
     if (key == "info_rule_mode") return en ? "Rule Mode" : "规则模式";
     if (key == "info_guard_paths") return en ? "Guard Paths" : "拦截路径";
@@ -1846,10 +1858,15 @@ void MainWindow::retranslateUi()
     if (trayIcon_) {
         trayIcon_->setToolTip(textFor("tray_tooltip"));
     }
-    if (upstreamTimeoutSpin_ && firstTokenTimeoutSpin_ && bufferTimeoutSpin_) {
+    if (upstreamTimeoutSpin_ && firstTokenTimeoutSpin_ &&
+        retryAfterOverrideSpin_ && bufferTimeoutSpin_) {
         const QString suffix = currentLanguage() == "en" ? QString(" sec") : QString(" 秒");
         upstreamTimeoutSpin_->setSuffix(suffix);
         firstTokenTimeoutSpin_->setSuffix(suffix);
+        retryAfterOverrideSpin_->setSuffix(suffix);
+        retryAfterOverrideSpin_->setSpecialValueText(hasCurrentUpstreamProfile_
+            ? (currentLanguage() == "en" ? QString("Disabled") : QString::fromUtf8("禁用"))
+            : QString("-"));
         bufferTimeoutSpin_->setSuffix(suffix);
     }
     if (requestBodyLimitSpin_ && responseBufferLimitSpin_) {
@@ -2164,6 +2181,12 @@ void MainWindow::applyCurrentUpstreamProfile()
     upstreamTimeoutSpin_->setValue(currentUpstreamProfile_.upstreamTimeoutSec);
     firstTokenTimeoutSpin_->setSpecialValueText(QString());
     firstTokenTimeoutSpin_->setValue(currentUpstreamProfile_.firstTokenTimeoutSec);
+    retryAfterOverrideSpin_->setSpecialValueText(currentLanguage() == "en"
+        ? QString("Disabled")
+        : QString::fromUtf8("禁用"));
+    retryAfterOverrideSpin_->setValue(currentUpstreamProfile_.retryAfterOverrideSec.isEmpty()
+        ? 0
+        : currentUpstreamProfile_.retryAfterOverrideSec.toInt());
     forwardUserAgentCheck_->setChecked(currentUpstreamProfile_.forwardUserAgent);
     refreshInfoPanel();
 }
@@ -2183,6 +2206,8 @@ void MainWindow::clearCurrentUpstreamProfile()
     upstreamTimeoutSpin_->setValue(upstreamTimeoutSpin_->minimum());
     firstTokenTimeoutSpin_->setSpecialValueText("-");
     firstTokenTimeoutSpin_->setValue(firstTokenTimeoutSpin_->minimum());
+    retryAfterOverrideSpin_->setSpecialValueText("-");
+    retryAfterOverrideSpin_->setValue(retryAfterOverrideSpin_->minimum());
     forwardUserAgentCheck_->setChecked(false);
     refreshInfoPanel();
 }
@@ -2335,6 +2360,7 @@ ProxySettings MainWindow::collectProxySettings() const
         settings.upstreamProxy = proxyTextWithDefaultScheme(currentUpstreamProfile_.upstreamProxy);
         settings.upstreamTimeoutSec = currentUpstreamProfile_.upstreamTimeoutSec;
         settings.firstTokenTimeoutSec = currentUpstreamProfile_.firstTokenTimeoutSec;
+        settings.retryAfterOverrideSec = currentUpstreamProfile_.retryAfterOverrideSec;
     }
     settings.upstreamHttpProxy.clear();
     settings.upstreamHttpsProxy.clear();
@@ -2609,6 +2635,9 @@ void MainWindow::refreshInfoPanel()
         .arg(settings.responseBufferLimitBytes));
     lines << infoLine("info_first_token_timeout", QString::number(settings.firstTokenTimeoutSec) +
         (currentLanguage() == "en" ? QString(" sec") : QString(" 秒")));
+    lines << infoLine("info_retry_after_override", settings.retryAfterOverrideSec.isEmpty()
+        ? textFor("info_disabled")
+        : settings.retryAfterOverrideSec + (currentLanguage() == "en" ? QString(" sec") : QString(" 秒")));
     lines << infoSection("info_policy");
     lines << infoIndentedLine("info_rule_mode", settings.interceptRuleMode);
     lines << infoIndentedLine("info_stream_action", settings.streamAction);

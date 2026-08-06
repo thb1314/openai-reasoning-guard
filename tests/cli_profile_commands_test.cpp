@@ -493,7 +493,8 @@ void CliProfileCommandsTest::selectedProfileAndTemporaryOverridesReachRuntime()
         << "--forward-user-agent"
         << "--upstream-proxy" << "http://127.0.0.1:7890"
         << "--upstream-timeout" << "321"
-        << "--first-token-timeout" << "17");
+        << "--first-token-timeout" << "17"
+        << "--retry-after-override-sec" << "30");
     QCOMPARE(result.exitCode, 0);
 
     quint16 port = availablePort();
@@ -508,6 +509,7 @@ void CliProfileCommandsTest::selectedProfileAndTemporaryOverridesReachRuntime()
     QCOMPARE(status.value("upstream_proxy").toString(), QString("http://127.0.0.1:7890"));
     QCOMPARE(status.value("upstream_timeout_sec").toInt(), 321);
     QCOMPARE(status.value("first_token_timeout_sec").toInt(), 17);
+    QCOMPARE(status.value("retry_after_override_sec").toString(), QString("30"));
 
     port = availablePort();
     QVERIFY(port > 0);
@@ -539,6 +541,13 @@ void CliProfileCommandsTest::selectedProfileAndTemporaryOverridesReachRuntime()
     QCOMPARE(persisted.value("upstream_proxy").toString(), QString("http://127.0.0.1:7890"));
     QCOMPARE(persisted.value("upstream_timeout_sec").toInt(), 321);
     QCOMPARE(persisted.value("first_token_timeout_sec").toInt(), 17);
+    QCOMPARE(persisted.value("retry_after_override_sec").toString(), QString("30"));
+
+    result = run(QStringList() << "profile" << "update" << "Runtime" << "--config" << path
+                               << "--retry-after-override-sec=" << "--json");
+    QCOMPARE(result.exitCode, 0);
+    const QJsonObject cleared = parseObject(result.standardOutput).value("profile").toObject();
+    QCOMPARE(cleared.value("retry_after_override_sec").toString(), QString());
 }
 
 void CliProfileCommandsTest::temporaryTimeoutOverridesAreStrictlyValidated()

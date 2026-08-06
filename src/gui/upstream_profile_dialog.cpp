@@ -116,6 +116,7 @@ public:
           proxyEdit_(0),
           upstreamTimeoutSpin_(0),
           firstTokenTimeoutSpin_(0),
+          retryAfterOverrideSpin_(0),
           revealButton_(0),
           copyButton_(0),
           buttons_(0)
@@ -135,6 +136,9 @@ public:
         result.upstreamProxy = proxyEdit_->text().trimmed();
         result.upstreamTimeoutSec = upstreamTimeoutSpin_->value();
         result.firstTokenTimeoutSec = firstTokenTimeoutSpin_->value();
+        result.retryAfterOverrideSec = retryAfterOverrideSpin_->value() == 0
+            ? QString()
+            : QString::number(retryAfterOverrideSpin_->value());
         return result;
     }
 
@@ -235,6 +239,12 @@ private:
         firstTokenTimeoutSpin_->setSuffix(trText(" 秒", " sec"));
         firstTokenTimeoutSpin_->setSpecialValueText(trText("禁用", "Disabled"));
 
+        retryAfterOverrideSpin_ = new QSpinBox(this);
+        retryAfterOverrideSpin_->setObjectName("profileRetryAfterOverrideSpin");
+        retryAfterOverrideSpin_->setRange(0, 86400);
+        retryAfterOverrideSpin_->setSuffix(trText(" 秒", " sec"));
+        retryAfterOverrideSpin_->setSpecialValueText(trText("禁用（透传上游）", "Disabled (pass through upstream)"));
+
         form->addRow(requiredLabel(trText("显示名称", "Display name")), nameEdit_);
         form->addRow(requiredLabel("Base URL"), baseUrlEdit_);
         form->addRow("API Key", apiKeyRow);
@@ -243,6 +253,7 @@ private:
         form->addRow(trText("上游代理", "Upstream proxy"), proxyEdit_);
         form->addRow(trText("上游超时", "Upstream timeout"), upstreamTimeoutSpin_);
         form->addRow(trText("首 Token 超时", "First-token timeout"), firstTokenTimeoutSpin_);
+        form->addRow(trText("Retry-After 覆盖", "Retry-After override"), retryAfterOverrideSpin_);
         root->addLayout(form);
 
         buttons_ = new QDialogButtonBox(this);
@@ -296,6 +307,14 @@ private:
         firstTokenTimeoutSpin_->setReadOnly(!editable_);
         firstTokenTimeoutSpin_->setButtonSymbols(editable_ ? QAbstractSpinBox::UpDownArrows
                                                            : QAbstractSpinBox::NoButtons);
+        bool retryAfterOk = false;
+        const int retryAfter = profile.retryAfterOverrideSec.trimmed().isEmpty()
+            ? 0
+            : profile.retryAfterOverrideSec.trimmed().toInt(&retryAfterOk);
+        retryAfterOverrideSpin_->setValue(retryAfterOk ? retryAfter : 0);
+        retryAfterOverrideSpin_->setReadOnly(!editable_);
+        retryAfterOverrideSpin_->setButtonSymbols(editable_ ? QAbstractSpinBox::UpDownArrows
+                                                             : QAbstractSpinBox::NoButtons);
     }
 
     void attemptAccept()
@@ -310,6 +329,7 @@ private:
             else if (field == "upstream_proxy" || field == "upstreamProxy") focus = proxyEdit_;
             else if (field == "upstream_timeout_sec") focus = upstreamTimeoutSpin_;
             else if (field == "first_token_timeout_sec") focus = firstTokenTimeoutSpin_;
+            else if (field == "retry_after_override_sec") focus = retryAfterOverrideSpin_;
             if (focus) focus->setFocus();
             QString message = error;
             if (field == "display_name" || field == "displayName") {
@@ -327,6 +347,9 @@ private:
             } else if (field == "first_token_timeout_sec") {
                 message = trText("首 Token 超时必须在 0 到 3600 秒之间。",
                                  "First-token timeout must be between 0 and 3600 seconds.");
+            } else if (field == "retry_after_override_sec") {
+                message = trText("Retry-After 覆盖必须留空，或填写 1 到 86400 秒的整数。",
+                                 "Retry-After override must be empty or an integer between 1 and 86400 seconds.");
             }
             showGuardWarning(this,
                              trText("无法保存", "Cannot Save"),
@@ -366,6 +389,7 @@ private:
     QLineEdit *proxyEdit_;
     QSpinBox *upstreamTimeoutSpin_;
     QSpinBox *firstTokenTimeoutSpin_;
+    QSpinBox *retryAfterOverrideSpin_;
     QToolButton *revealButton_;
     QToolButton *copyButton_;
     QDialogButtonBox *buttons_;

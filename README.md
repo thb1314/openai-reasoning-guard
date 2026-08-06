@@ -38,7 +38,8 @@ CLI 首次使用时创建并选择一条上游配置，然后启动本地代理�
 openai-reasoning-guard-cli profile add \
   --name "主线路" \
   --base-url https://api.openai.com/v1 \
-  --api-key sk-example
+  --api-key sk-example \
+  --retry-after-override-sec 30
 
 openai-reasoning-guard-cli --proxy-host 127.0.0.1 --proxy-port 8010
 ```
@@ -158,6 +159,7 @@ openai-reasoning-guard-cli --proxy-host 127.0.0.1 --proxy-port 8010
 | `upstream_proxy` | 空 | `"http://127.0.0.1:7890"` | 单一 HTTP/SOCKS5 系代理；空值表示直连。 |
 | `upstream_timeout_sec` | `1800` | `600` | 单次上游请求总超时，范围 `1..86400`；超时返回 `504`。 |
 | `first_token_timeout_sec` | `30` | `10` 或 `0` | 流式首个非空 body 字节等待时间；`0` 禁用，范围 `0..3600`。 |
+| `retry_after_override_sec` | 空字符串 | `"30"` | 仅对最终真实上游 `429/502/503` 添加或覆盖 `Retry-After`；空值透传上游，范围 `1..86400` 秒。内部重试期间不发送；代理本地生成的 `502` 不添加。 |
 
 API Key 以明文保存在当前用户的 SQLite 数据库中，并非系统 Keychain。列表、日志、状态接口和普通导出不会显示完整 Key；只有明确使用 `--show-secret` 或 `--include-secrets` 才会输出。
 

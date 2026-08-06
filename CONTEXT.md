@@ -18,3 +18,7 @@ _Avoid_: 当前账户
 **客户端授权透传（Client Authorization Passthrough）**:
 上游配置未提供 API Key，由代理原样转发客户端的授权信息；Codex 可以在请求发出前从自身 `auth.json` 取得该信息，但代理本身不读取 `auth.json`。
 _Avoid_: 代理读取 auth.json
+
+**Retry-After 覆盖值（Retry-After Override）**:
+每个上游配置中可选的整秒等待时间；设置后为最终 `429/502/503` 响应写入该 `Retry-After` 值，无论上游是否已返回该字段；未设置时保持上游响应不变。
+_Avoid_: 重试超时、内部重试间隔

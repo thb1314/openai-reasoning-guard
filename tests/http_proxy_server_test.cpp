@@ -446,6 +446,13 @@ static QByteArray chunkedPostRequestToPath(const QByteArray &path, const QList<Q
     return request;
 }
 
+static QMap<QByteArray, QByteArray> responseHeadersWithRetryAfter(const QByteArray &value)
+{
+    QMap<QByteArray, QByteArray> headers;
+    headers.insert("Retry-After", value);
+    return headers;
+}
+
 static QJsonObject runtimeOf(HttpProxyServer *proxy)
 {
     return proxy->statusPayload().value("runtime").toObject();
@@ -530,6 +537,106 @@ private slots:
         QCOMPARE(runtime.value("upstream_http_error_total").toInt(), 0);
         QCOMPARE(runtime.value("last_failure").toObject().value("error_type").toString(),
                  QString("response_buffer_limit_exceeded"));
+    }
+
+    void retryAfterOverridePreservesUpstreamHeaderWhenDisabled()
+    {
+        TestUpstream upstream;
+        QVERIFY(upstream.startJsonResponses(QList<QByteArray>() << "{\"error\":\"busy\"}",
+                                             QList<int>() << 429));
+        upstream.setResponseHeaderSequences(QList<QMap<QByteArray, QByteArray> >()
+                                             << responseHeadersWithRetryAfter("60"));
+
+        HttpProxyServer proxy;
+        ProxySettings settings = baseSettings(reserveFreePort(), upstream.port());
+        settings.retryAfterOverrideSec.clear();
+        QString error;
+        QVERIFY2(proxy.start(settings, &error), qPrintable(error));
+
+        const QByteArray response = sendRequest(settings.listenPort, postRequest("{}"), 2500);
+        QVERIFY(response.contains("429 Too Many Requests"));
+        QVERIFY(response.contains("Retry-After: 60"));
+    }
+
+    void retryAfterOverrideReplacesHeaderOnFinalCapacityError()
+    {
+        const QByteArray body = "{\"error\":\"Selected model is at capacity. Please try a different model.\"}";
+        TestUpstream upstream;
+        QVERIFY(upstream.startJsonResponses(QList<QByteArray>() << body << body,
+                                             QList<int>() << 429 << 503));
+        QList<QMap<QByteArray, QByteArray> > headers;
+        headers << responseHeadersWithRetryAfter("10");
+        headers << responseHeadersWithRetryAfter("60");
+        upstream.setResponseHeaderSequences(headers);
+
+        HttpProxyServer proxy;
+        ProxySettings settings = baseSettings(reserveFreePort(), upstream.port());
+        settings.guardRetryAttempts = 1;
+        settings.retryAfterOverrideSec = "30";
+        QString error;
+        QVERIFY2(proxy.start(settings, &error), qPrintable(error));
+
+        const QByteArray response = sendRequest(settings.listenPort, postRequest("{}"), 2500);
+        QVERIFY(response.contains("503 Service Unavailable"));
+        QVERIFY(response.contains("Retry-After: 30"));
+        QVERIFY(!response.contains("Retry-After: 60"));
+        QCOMPARE(upstream.requestCount(), 2);
+    }
+
+    void retryAfterOverrideAddsHeaderToFinalUpstreamError()
+    {
+        TestUpstream upstream;
+        QVERIFY(upstream.startJsonResponses(QList<QByteArray>() << "{\"error\":\"busy\"}",
+                                             QList<int>() << 503));
+
+        HttpProxyServer proxy;
+        ProxySettings settings = baseSettings(reserveFreePort(), upstream.port());
+        settings.retryAfterOverrideSec = "30";
+        QString error;
+        QVERIFY2(proxy.start(settings, &error), qPrintable(error));
+
+        const QByteArray response = sendRequest(settings.listenPort, postRequest("{}"), 2500);
+        QVERIFY(response.contains("503 Service Unavailable"));
+        QVERIFY(response.contains("Retry-After: 30"));
+    }
+
+    void retryAfterOverrideDoesNotChangeSuccessfulResponse()
+    {
+        TestUpstream upstream;
+        QVERIFY(upstream.startJsonResponses(QList<QByteArray>() << "{\"ok\":true}",
+                                             QList<int>() << 200));
+        upstream.setResponseHeaderSequences(QList<QMap<QByteArray, QByteArray> >()
+                                             << responseHeadersWithRetryAfter("60"));
+
+        HttpProxyServer proxy;
+        ProxySettings settings = baseSettings(reserveFreePort(), upstream.port());
+        settings.retryAfterOverrideSec = "30";
+        QString error;
+        QVERIFY2(proxy.start(settings, &error), qPrintable(error));
+
+        const QByteArray response = sendRequest(settings.listenPort, postRequest("{}"), 2500);
+        QVERIFY(response.contains("200 OK"));
+        QVERIFY(response.contains("Retry-After: 60"));
+        QVERIFY(!response.contains("Retry-After: 30"));
+    }
+
+    void retryAfterOverrideDoesNotApplyToLocalGuardError()
+    {
+        TestUpstream upstream;
+        QVERIFY(upstream.start(TestUpstream::JsonResponse,
+                               "{\"usage\":{\"output_tokens_details\":{\"reasoning_tokens\":516}}}"));
+
+        HttpProxyServer proxy;
+        ProxySettings settings = baseSettings(reserveFreePort(), upstream.port());
+        settings.retryAfterOverrideSec = "30";
+        settings.retryUpstreamCapacityErrors = false;
+        QString error;
+        QVERIFY2(proxy.start(settings, &error), qPrintable(error));
+
+        const QByteArray response = sendRequest(settings.listenPort, postRequest("{}"), 2500);
+        QVERIFY(response.contains("502 Bad Gateway"));
+        QVERIFY(response.contains("reasoning_guard_triggered"));
+        QVERIFY(!response.contains("Retry-After:"));
     }
 
     void chunkedRequestBodyIsDecodedAndForwarded()

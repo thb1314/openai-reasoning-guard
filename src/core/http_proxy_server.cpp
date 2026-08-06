@@ -51,6 +51,23 @@ static QByteArray reasonPhrase(int statusCode)
     }
 }
 
+static bool validRetryAfterOverride(const QString &value, int *seconds = 0)
+{
+    const QString trimmed = value.trimmed();
+    if (trimmed.isEmpty()) {
+        return true;
+    }
+    bool ok = false;
+    const int parsed = trimmed.toInt(&ok);
+    if (!ok || !QRegExp("^[0-9]+$").exactMatch(trimmed) || parsed < 1 || parsed > 86400) {
+        return false;
+    }
+    if (seconds) {
+        *seconds = parsed;
+    }
+    return true;
+}
+
 static void rememberTail(QByteArray *tail, const QByteArray &chunk)
 {
     if (!tail || chunk.isEmpty()) {
@@ -816,6 +833,7 @@ ProxySettings::ProxySettings()
       forwardUserAgent(false),
       upstreamTimeoutSec(1800),
       firstTokenTimeoutSec(30),
+      retryAfterOverrideSec(""),
       bufferTimeoutSec(180),
       requestBodyLimitBytes(defaultRequestBodyLimitBytes()),
       responseBufferLimitBytes(defaultResponseBufferLimitBytes()),
@@ -1851,11 +1869,17 @@ private:
         }
         const QList<QNetworkReply::RawHeaderPair> pairs = reply->rawHeaderPairs();
         const QStringList hopHeaders = hopByHopHeaders();
+        const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        int retryAfterSeconds = 0;
+        const bool overrideRetryAfter = (statusCode == 429 || statusCode == 502 || statusCode == 503) &&
+            validRetryAfterOverride(settings_.retryAfterOverrideSec, &retryAfterSeconds) &&
+            !settings_.retryAfterOverrideSec.trimmed().isEmpty();
         bool hasTurnState = false;
         for (int i = 0; i < pairs.size(); ++i) {
             const QByteArray name = pairs.at(i).first;
             const QString lower = QString::fromLatin1(name).toLower();
-            if (hopHeaders.contains(lower) || lower == "content-length") {
+            if (hopHeaders.contains(lower) || lower == "content-length" ||
+                (overrideRetryAfter && lower == "retry-after")) {
                 continue;
             }
             hasTurnState = hasTurnState || lower == "x-codex-turn-state";
@@ -1864,6 +1888,10 @@ private:
         if (!hasTurnState && !upstreamTurnState_.isEmpty()) {
             headers.append(qMakePair(QByteArray("x-codex-turn-state"),
                                      upstreamTurnState_));
+        }
+        if (overrideRetryAfter) {
+            headers.append(qMakePair(QByteArray("Retry-After"),
+                                     QByteArray::number(retryAfterSeconds)));
         }
         return headers;
     }
@@ -2164,6 +2192,7 @@ private:
             {"proxy_prefix", proxyPrefix_.isEmpty() ? QString("/") : proxyPrefix_},
             {"upstream_timeout_sec", settings.upstreamTimeoutSec},
             {"first_token_timeout_sec", settings.firstTokenTimeoutSec},
+            {"retry_after_override_sec", settings.retryAfterOverrideSec},
             {"buffer_timeout_sec", settings.bufferTimeoutSec},
             {"request_body_limit_bytes", double(settings.requestBodyLimitBytes)},
             {"response_buffer_limit_bytes", double(settings.responseBufferLimitBytes)},
@@ -2202,6 +2231,7 @@ private:
             {"features", QJsonObject{
                 {"buffers_responses_for_reasoning_guard", true},
                 {"first_token_timeout_sec", settings.firstTokenTimeoutSec},
+                {"retry_after_override_sec", settings.retryAfterOverrideSec},
                 {"request_body_limit_bytes", double(settings.requestBodyLimitBytes)},
                 {"response_buffer_limit_bytes", double(settings.responseBufferLimitBytes)},
                 {"intercept_rule_mode", normalizeInterceptRuleMode(settings.interceptRuleMode)},
@@ -2546,6 +2576,16 @@ bool HttpProxyServer::start(const ProxySettings &settings, QString *error)
     settings_.upstreamHttpProxy = proxyUrlText(settings_.upstreamHttpProxy, false);
     settings_.upstreamHttpsProxy = proxyUrlText(settings_.upstreamHttpsProxy, false);
     settings_.upstreamSocksProxy = proxyUrlText(settings_.upstreamSocksProxy, true);
+    settings_.retryAfterOverrideSec = settings_.retryAfterOverrideSec.trimmed();
+    if (settings_.retryAfterOverrideSec.isNull()) {
+        settings_.retryAfterOverrideSec = QString("");
+    }
+    if (!validRetryAfterOverride(settings_.retryAfterOverrideSec)) {
+        if (error) {
+            *error = "retry_after_override_sec must be empty or an integer between 1 and 86400 seconds";
+        }
+        return false;
+    }
     const QStringList configuredProxies = QStringList()
         << settings_.upstreamProxy << settings_.upstreamHttpProxy
         << settings_.upstreamHttpsProxy << settings_.upstreamSocksProxy;
@@ -2631,6 +2671,8 @@ bool HttpProxyServer::start(const ProxySettings &settings, QString *error)
     emit logLine(QString("reasoning_equals=%1").arg(settings_.reasoningEquals.join(",")));
     emit logLine(QString("guard_retry_attempts=%1").arg(settings_.guardRetryAttempts));
     emit logLine(QString("first_token_timeout_sec=%1").arg(settings_.firstTokenTimeoutSec));
+    emit logLine(QString("retry_after_override_sec=%1")
+                 .arg(settings_.retryAfterOverrideSec.isEmpty() ? QString("disabled") : settings_.retryAfterOverrideSec));
     emit logLine(QString("retry_upstream_capacity_errors=%1").arg(settings_.retryUpstreamCapacityErrors ? "true" : "false"));
     return true;
 }
@@ -2691,6 +2733,7 @@ QJsonObject HttpProxyServer::healthPayload() const
             {"proxy_prefix", proxyPrefix_.isEmpty() ? QString("/") : proxyPrefix_},
             {"upstream_timeout_sec", settings_.upstreamTimeoutSec},
             {"first_token_timeout_sec", settings_.firstTokenTimeoutSec},
+            {"retry_after_override_sec", settings_.retryAfterOverrideSec},
             {"buffer_timeout_sec", settings_.bufferTimeoutSec},
             {"request_body_limit_bytes", double(settings_.requestBodyLimitBytes)},
             {"response_buffer_limit_bytes", double(settings_.responseBufferLimitBytes)},

@@ -24,6 +24,7 @@ int profileTokenIndex(const QStringList &arguments)
         << "upstream-base-url" << "upstream-api-key" << "upstream-user-agent"
         << "upstream-proxy" << "upstream-http-proxy" << "upstream-https-proxy" << "upstream-socks-proxy"
         << "upstream-timeout" << "first-token-timeout" << "upstream-first-byte-timeout"
+        << "retry-after-override-sec"
         << "buffer-timeout" << "request-body-limit-bytes" << "response-buffer-limit-bytes"
         << "reasoning-equals" << "intercept-rule-mode" << "guard-retry-attempts"
         << "reasoning-516-retries" << "guard-endpoints" << "non-stream-status-code"
@@ -135,6 +136,7 @@ QJsonObject profileJson(const UpstreamProfile &profile, bool includeSecret)
     object.insert("upstream_proxy", profile.upstreamProxy);
     object.insert("upstream_timeout_sec", profile.upstreamTimeoutSec);
     object.insert("first_token_timeout_sec", profile.firstTokenTimeoutSec);
+    object.insert("retry_after_override_sec", profile.retryAfterOverrideSec);
     object.insert("created_at_utc", isoDate(profile.createdAtUtc));
     object.insert("updated_at_utc", isoDate(profile.updatedAtUtc));
     return object;
@@ -158,6 +160,8 @@ void writeProfile(const UpstreamProfile &profile, bool includeSecret)
            << "Upstream proxy: " << (profile.upstreamProxy.isEmpty() ? "direct" : profile.upstreamProxy) << "\n"
            << "Upstream timeout: " << profile.upstreamTimeoutSec << " s\n"
            << "First-token timeout: " << profile.firstTokenTimeoutSec << " s\n"
+           << "Retry-After override: "
+           << (profile.retryAfterOverrideSec.isEmpty() ? "disabled (pass through upstream)" : profile.retryAfterOverrideSec + " s") << "\n"
            << "Created: " << isoDate(profile.createdAtUtc) << "\n"
            << "Updated: " << isoDate(profile.updatedAtUtc) << "\n";
     stream.flush();
@@ -179,6 +183,28 @@ bool parseIntegerOption(const QCommandLineParser &parser,
         return false;
     }
     *value = parsed;
+    return true;
+}
+
+bool parseRetryAfterOverrideOption(const QCommandLineParser &parser,
+                                   const QCommandLineOption &option,
+                                   QString *value,
+                                   QString *error)
+{
+    const QString text = parser.value(option).trimmed();
+    if (text.isEmpty()) {
+        value->clear();
+        return true;
+    }
+    int seconds = 0;
+    if (!parseIntegerOption(parser, option, 1, &seconds, error) || seconds > 86400) {
+        if (error) {
+            *error = QString("--%1 must be empty or an integer between 1 and 86400 seconds")
+                .arg(option.names().first());
+        }
+        return false;
+    }
+    *value = QString::number(seconds);
     return true;
 }
 
@@ -271,6 +297,7 @@ int runProfileCommand(const QStringList &arguments)
     QCommandLineOption proxyOption(QStringList() << "proxy" << "upstream-proxy", "Proxy used for upstream requests; an empty value means direct", "url");
     QCommandLineOption upstreamTimeoutOption("upstream-timeout", "Upstream timeout in seconds", "seconds");
     QCommandLineOption firstTokenTimeoutOption("first-token-timeout", "First-token timeout in seconds; 0 disables it", "seconds");
+    QCommandLineOption retryAfterOverrideOption("retry-after-override-sec", "Override Retry-After for final upstream HTTP 429/502/503; empty disables", "seconds");
     QCommandLineOption showSecretOption("show-secret", "Show the complete API key (show only)");
     QCommandLineOption inputOption("input", "JSON file to import", "path");
     QCommandLineOption outputOption("output", "JSON file to export", "path");
@@ -282,7 +309,7 @@ int runProfileCommand(const QStringList &arguments)
         << pageOption << pageSizeOption << searchOption << sortOption << orderOption
         << nameOption << baseUrlOption << apiKeyOption << userAgentOption
         << forwardUserAgentOption << noForwardUserAgentOption << proxyOption
-        << upstreamTimeoutOption << firstTokenTimeoutOption << showSecretOption
+        << upstreamTimeoutOption << firstTokenTimeoutOption << retryAfterOverrideOption << showSecretOption
         << inputOption << outputOption << conflictOption << includeSecretsOption);
     parser.addPositionalArgument("command", "list, show, add, update, delete, select, import, or export");
     parser.addPositionalArgument("profile", "Profile display name or UUID for show, update, delete, and select", "[profile]");
@@ -324,7 +351,7 @@ int runProfileCommand(const QStringList &arguments)
     } else if (command == "add" || command == "update") {
         allowedOptionNames << "name" << "base-url" << "api-key" << "user-agent"
                            << "forward-user-agent" << "no-forward-user-agent" << "proxy"
-                           << "upstream-timeout" << "first-token-timeout";
+                           << "upstream-timeout" << "first-token-timeout" << "retry-after-override-sec";
     } else if (command == "import") {
         allowedOptionNames << "input" << "conflict";
     } else if (command == "export") {
@@ -335,7 +362,7 @@ int runProfileCommand(const QStringList &arguments)
         << &pageOption << &pageSizeOption << &searchOption << &sortOption << &orderOption
         << &nameOption << &baseUrlOption << &apiKeyOption << &userAgentOption
         << &forwardUserAgentOption << &noForwardUserAgentOption << &proxyOption
-        << &upstreamTimeoutOption << &firstTokenTimeoutOption << &showSecretOption
+        << &upstreamTimeoutOption << &firstTokenTimeoutOption << &retryAfterOverrideOption << &showSecretOption
         << &inputOption << &outputOption << &conflictOption << &includeSecretsOption;
     for (int i = 0; i < profileSpecificOptions.size(); ++i) {
         const QCommandLineOption &option = *profileSpecificOptions.at(i);
@@ -453,12 +480,17 @@ int runProfileCommand(const QStringList &arguments)
         profile.upstreamProxy = parser.isSet(proxyOption) ? parser.value(proxyOption) : QString();
         profile.upstreamTimeoutSec = 1800;
         profile.firstTokenTimeoutSec = 30;
+        profile.retryAfterOverrideSec.clear();
         if (parser.isSet(upstreamTimeoutOption)
             && !parseIntegerOption(parser, upstreamTimeoutOption, 1, &profile.upstreamTimeoutSec, &error)) {
             return fail(error);
         }
         if (parser.isSet(firstTokenTimeoutOption)
             && !parseIntegerOption(parser, firstTokenTimeoutOption, 0, &profile.firstTokenTimeoutSec, &error)) {
+            return fail(error);
+        }
+        if (parser.isSet(retryAfterOverrideOption)
+            && !parseRetryAfterOverrideOption(parser, retryAfterOverrideOption, &profile.retryAfterOverrideSec, &error)) {
             return fail(error);
         }
         if (!store.addProfile(&profile, &error)) {
@@ -483,7 +515,7 @@ int runProfileCommand(const QStringList &arguments)
             || parser.isSet(apiKeyOption) || parser.isSet(userAgentOption)
             || parser.isSet(forwardUserAgentOption) || parser.isSet(noForwardUserAgentOption)
             || parser.isSet(proxyOption) || parser.isSet(upstreamTimeoutOption)
-            || parser.isSet(firstTokenTimeoutOption);
+            || parser.isSet(firstTokenTimeoutOption) || parser.isSet(retryAfterOverrideOption);
         if (!hasChanges) {
             return fail("update requires at least one profile field option");
         }
@@ -517,6 +549,10 @@ int runProfileCommand(const QStringList &arguments)
         }
         if (parser.isSet(firstTokenTimeoutOption)
             && !parseIntegerOption(parser, firstTokenTimeoutOption, 0, &profile.firstTokenTimeoutSec, &error)) {
+            return fail(error);
+        }
+        if (parser.isSet(retryAfterOverrideOption)
+            && !parseRetryAfterOverrideOption(parser, retryAfterOverrideOption, &profile.retryAfterOverrideSec, &error)) {
             return fail(error);
         }
         if (!store.updateProfile(profile, &error)) {

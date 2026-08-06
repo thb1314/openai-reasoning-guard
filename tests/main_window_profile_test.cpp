@@ -1038,6 +1038,7 @@ private slots:
         backup.upstreamProxy = "http://127.0.0.1:7890";
         backup.upstreamTimeoutSec = 600;
         backup.firstTokenTimeoutSec = 12;
+        backup.retryAfterOverrideSec = "30";
         QVERIFY2(store.addProfile(&backup, &error), qPrintable(error));
         QVERIFY2(store.setSelectedProfileId(primary.id, &error), qPrintable(error));
 
@@ -1049,22 +1050,26 @@ private slots:
         QLineEdit *proxy = findWindowChild<QLineEdit>(&window, "upstreamProxyEdit");
         QSpinBox *upstreamTimeout = findWindowChild<QSpinBox>(&window, "upstreamTimeoutSpin");
         QSpinBox *firstTokenTimeout = findWindowChild<QSpinBox>(&window, "firstTokenTimeoutSpin");
+        QSpinBox *retryAfterOverride = findWindowChild<QSpinBox>(&window, "retryAfterOverrideSpin");
         QCheckBox *forwardUserAgent = findWindowChild<QCheckBox>(&window, "forwardUserAgentCheck");
         QPushButton *start = buttonWithKey(&window, "start_proxy");
         QPushButton *stop = buttonWithKey(&window, "stop_proxy");
         QVERIFY(combo && url && apiKey && userAgent && proxy);
-        QVERIFY(upstreamTimeout && firstTokenTimeout && forwardUserAgent && start && stop);
+        QVERIFY(upstreamTimeout && firstTokenTimeout && retryAfterOverride &&
+                forwardUserAgent && start && stop);
         QVERIFY(url->isReadOnly());
         QVERIFY(apiKey->isReadOnly());
         QVERIFY(userAgent->isReadOnly());
         QVERIFY(proxy->isReadOnly());
         QVERIFY(upstreamTimeout->isReadOnly());
         QVERIFY(firstTokenTimeout->isReadOnly());
+        QVERIFY(retryAfterOverride->isReadOnly());
         QVERIFY(!forwardUserAgent->isEnabled());
 
         QCOMPARE(combo->currentData().toString(), primary.id);
         QCOMPARE(url->text(), primary.baseUrl);
         QCOMPARE(apiKey->text(), primary.apiKey);
+        QCOMPARE(retryAfterOverride->value(), 0);
 
         const int backupIndex = combo->findData(backup.id);
         QVERIFY(backupIndex >= 0);
@@ -1074,6 +1079,7 @@ private slots:
         QCOMPARE(proxy->text(), backup.upstreamProxy);
         QCOMPARE(upstreamTimeout->value(), backup.upstreamTimeoutSec);
         QCOMPARE(firstTokenTimeout->value(), backup.firstTokenTimeoutSec);
+        QCOMPARE(retryAfterOverride->value(), 30);
         QVERIFY(forwardUserAgent->isChecked());
         QCOMPARE(store.selectedProfileId(&error), backup.id);
         QVERIFY2(error.isEmpty(), qPrintable(error));
@@ -1118,6 +1124,7 @@ private slots:
         backup.displayName = "Backup";
         backup.baseUrl = QString("http://127.0.0.1:%1/v1").arg(backupUpstream.port());
         backup.apiKey = "backup-key";
+        backup.retryAfterOverrideSec = "30";
         QVERIFY2(store.addProfile(&backup, &error), qPrintable(error));
         QVERIFY2(store.setSelectedProfileId(primary.id, &error), qPrintable(error));
 
@@ -1153,6 +1160,7 @@ private slots:
         QTRY_VERIFY(proxy->isRunning());
         QVERIFY(!start->isEnabled());
         QVERIFY(stop->isEnabled());
+        QCOMPARE(proxy->settings().retryAfterOverrideSec, QString("30"));
 
         const QByteArray backupResponse = proxyRequest(config.proxyPort);
         QVERIFY2(backupResponse.contains("\"profile\":\"backup\""), backupResponse.constData());

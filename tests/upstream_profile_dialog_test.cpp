@@ -227,9 +227,11 @@ void UpstreamProfileDialogTest::editorUsesDefaultsAndProtectsApiKey()
         QLineEdit *userAgent = editor->findChild<QLineEdit *>("profileUserAgentEdit");
         QSpinBox *upstreamTimeout = editor->findChild<QSpinBox *>("profileUpstreamTimeoutSpin");
         QSpinBox *firstTokenTimeout = editor->findChild<QSpinBox *>("profileFirstTokenTimeoutSpin");
-        defaultsPassed = userAgent && upstreamTimeout && firstTokenTimeout &&
+        QSpinBox *retryAfterOverride = editor->findChild<QSpinBox *>("profileRetryAfterOverrideSpin");
+        defaultsPassed = userAgent && upstreamTimeout && firstTokenTimeout && retryAfterOverride &&
             userAgent->text() == "curl/8.7.1" &&
-            upstreamTimeout->value() == 1800 && firstTokenTimeout->value() == 30;
+            upstreamTimeout->value() == 1800 && firstTokenTimeout->value() == 30 &&
+            retryAfterOverride->value() == 0;
         editor->reject();
     });
     QVERIFY(QMetaObject::invokeMethod(&dialog, "addProfile", Qt::DirectConnection));
@@ -260,12 +262,14 @@ void UpstreamProfileDialogTest::editingNormalizesApiKeyWhitespace()
         QDialog *editor = qobject_cast<QDialog *>(QApplication::activeModalWidget());
         if (!editor) return;
         QLineEdit *key = editor->findChild<QLineEdit *>("profileApiKeyEdit");
+        QSpinBox *retryAfterOverride = editor->findChild<QSpinBox *>("profileRetryAfterOverrideSpin");
         QDialogButtonBox *buttons = editor->findChild<QDialogButtonBox *>("profileEditorButtons");
-        if (!key || !buttons || key->text() != "original-key") {
+        if (!key || !retryAfterOverride || !buttons || key->text() != "original-key") {
             editor->reject();
             return;
         }
         key->setText(paddedApiKey);
+        retryAfterOverride->setValue(30);
         submitted = true;
         buttons->button(QDialogButtonBox::Save)->click();
     });
@@ -275,6 +279,7 @@ void UpstreamProfileDialogTest::editingNormalizesApiKeyWhitespace()
     UpstreamProfile fetched;
     QVERIFY2(store.profileById(profile.id, &fetched, &error), qPrintable(error));
     QCOMPARE(fetched.apiKey, normalizedApiKey);
+    QCOMPARE(fetched.retryAfterOverrideSec, QString("30"));
 }
 
 void UpstreamProfileDialogTest::addsWithoutSelectingWhileSelectionIsLocked()

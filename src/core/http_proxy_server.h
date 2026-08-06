@@ -27,6 +27,7 @@ struct ProxySettings {
     QString upstreamSocksProxy;
     int upstreamTimeoutSec;
     int firstTokenTimeoutSec;
+    QString retryAfterOverrideSec;
     int bufferTimeoutSec;
     qint64 requestBodyLimitBytes;
     qint64 responseBufferLimitBytes;

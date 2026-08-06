@@ -160,6 +160,7 @@ private:
     QLineEdit *upstreamProxyEdit_;
     QSpinBox *upstreamTimeoutSpin_;
     QSpinBox *firstTokenTimeoutSpin_;
+    QSpinBox *retryAfterOverrideSpin_;
     QSpinBox *bufferTimeoutSpin_;
     QSpinBox *requestBodyLimitSpin_;
     QSpinBox *responseBufferLimitSpin_;

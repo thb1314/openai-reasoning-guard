@@ -14,6 +14,7 @@
 #include <QtCore/QStandardPaths>
 #include <QtCore/QUuid>
 #include <QtCore/QUrl>
+#include <QtCore/QRegExp>
 #include <QtSql/QSqlDatabase>
 #include <QtSql/QSqlError>
 #include <QtSql/QSqlQuery>
@@ -23,7 +24,7 @@ namespace net_tunnel {
 
 namespace {
 
-const int kSchemaVersion = 1;
+const int kSchemaVersion = 2;
 const int kBusyTimeoutMs = 5000;
 const char kSelectedProfileKey[] = "selected_profile_id";
 const char kPendingLegacyMigrationKey[] = "legacy_upstream_migration_pending_v1";
@@ -174,6 +175,8 @@ void normalizeProfile(UpstreamProfile *profile)
     profile->userAgent = profile->userAgent.trimmed();
     if (profile->userAgent.isNull()) profile->userAgent = QString("");
     profile->upstreamProxy = normalizedProxy(profile->upstreamProxy);
+    profile->retryAfterOverrideSec = profile->retryAfterOverrideSec.trimmed();
+    if (profile->retryAfterOverrideSec.isNull()) profile->retryAfterOverrideSec = QString("");
 }
 
 QString profileLockPath(const QString &databasePath, const QString &profileId)
@@ -239,8 +242,9 @@ UpstreamProfile profileFromQuery(const QSqlQuery &query)
     profile.upstreamProxy = query.value(6).toString();
     profile.upstreamTimeoutSec = query.value(7).toInt();
     profile.firstTokenTimeoutSec = query.value(8).toInt();
-    profile.createdAtUtc = parseDateTime(query.value(9));
-    profile.updatedAtUtc = parseDateTime(query.value(10));
+    profile.retryAfterOverrideSec = query.value(9).toString();
+    profile.createdAtUtc = parseDateTime(query.value(10));
+    profile.updatedAtUtc = parseDateTime(query.value(11));
     return profile;
 }
 
@@ -248,7 +252,7 @@ QString profileColumns()
 {
     return "id, display_name, base_url, api_key, user_agent, forward_user_agent, "
            "upstream_proxy, upstream_timeout_sec, first_token_timeout_sec, "
-           "created_at_utc, updated_at_utc";
+           "retry_after_override_sec, created_at_utc, updated_at_utc";
 }
 
 bool bindAndInsert(QSqlDatabase database, const UpstreamProfile &profile, QString *error)
@@ -256,8 +260,8 @@ bool bindAndInsert(QSqlDatabase database, const UpstreamProfile &profile, QStrin
     QSqlQuery query(database);
     query.prepare("INSERT INTO upstream_profiles (id, display_name, display_name_key, base_url, api_key, "
                   "user_agent, forward_user_agent, upstream_proxy, upstream_timeout_sec, "
-                  "first_token_timeout_sec, created_at_utc, updated_at_utc) "
-                  "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                  "first_token_timeout_sec, retry_after_override_sec, created_at_utc, updated_at_utc) "
+                  "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
     query.addBindValue(profile.id);
     query.addBindValue(profile.displayName);
     query.addBindValue(profileNameKey(profile.displayName));
@@ -268,6 +272,7 @@ bool bindAndInsert(QSqlDatabase database, const UpstreamProfile &profile, QStrin
     query.addBindValue(profile.upstreamProxy);
     query.addBindValue(profile.upstreamTimeoutSec);
     query.addBindValue(profile.firstTokenTimeoutSec);
+    query.addBindValue(profile.retryAfterOverrideSec);
     query.addBindValue(dateTimeText(profile.createdAtUtc));
     query.addBindValue(dateTimeText(profile.updatedAtUtc));
     if (!query.exec()) {
@@ -281,7 +286,7 @@ bool bindAndUpdate(QSqlDatabase database, const UpstreamProfile &profile, QStrin
     QSqlQuery query(database);
     query.prepare("UPDATE upstream_profiles SET display_name=?, display_name_key=?, base_url=?, api_key=?, user_agent=?, "
                   "forward_user_agent=?, upstream_proxy=?, upstream_timeout_sec=?, "
-                  "first_token_timeout_sec=?, updated_at_utc=? WHERE id=?");
+                  "first_token_timeout_sec=?, retry_after_override_sec=?, updated_at_utc=? WHERE id=?");
     query.addBindValue(profile.displayName);
     query.addBindValue(profileNameKey(profile.displayName));
     query.addBindValue(profile.baseUrl);
@@ -291,6 +296,7 @@ bool bindAndUpdate(QSqlDatabase database, const UpstreamProfile &profile, QStrin
     query.addBindValue(profile.upstreamProxy);
     query.addBindValue(profile.upstreamTimeoutSec);
     query.addBindValue(profile.firstTokenTimeoutSec);
+    query.addBindValue(profile.retryAfterOverrideSec);
     query.addBindValue(dateTimeText(profile.updatedAtUtc));
     query.addBindValue(profile.id);
     if (!query.exec()) {
@@ -454,6 +460,7 @@ QJsonObject profileToJson(const UpstreamProfile &profile, bool includeSecrets)
     object.insert("upstream_proxy", profile.upstreamProxy);
     object.insert("upstream_timeout_sec", profile.upstreamTimeoutSec);
     object.insert("first_token_timeout_sec", profile.firstTokenTimeoutSec);
+    object.insert("retry_after_override_sec", profile.retryAfterOverrideSec);
     object.insert("created_at_utc", dateTimeText(profile.createdAtUtc));
     object.insert("updated_at_utc", dateTimeText(profile.updatedAtUtc));
     object.insert("api_key_configured", !profile.apiKey.isEmpty());
@@ -667,7 +674,8 @@ UpstreamProfile::UpstreamProfile()
     : userAgent("curl/8.7.1"),
       forwardUserAgent(false),
       upstreamTimeoutSec(1800),
-      firstTokenTimeoutSec(30)
+      firstTokenTimeoutSec(30),
+      retryAfterOverrideSec("")
 {
 }
 
@@ -768,6 +776,15 @@ bool validateUpstreamProfile(const UpstreamProfile &profile, QString *field, QSt
     if (profile.firstTokenTimeoutSec < 0 || profile.firstTokenTimeoutSec > 3600) {
         if (field) *field = "first_token_timeout_sec";
         return fail(error, "first-token timeout must be between 0 and 3600 seconds");
+    }
+    const QString retryAfter = profile.retryAfterOverrideSec.trimmed();
+    if (!retryAfter.isEmpty()) {
+        bool numeric = false;
+        const int seconds = retryAfter.toInt(&numeric);
+        if (!numeric || !QRegExp("^[0-9]+$").exactMatch(retryAfter) || seconds < 1 || seconds > 86400) {
+            if (field) *field = "retry_after_override_sec";
+            return fail(error, "Retry-After override must be empty or an integer between 1 and 86400 seconds");
+        }
     }
     return true;
 }
@@ -893,6 +910,7 @@ bool UpstreamProfileStore::open(QString *error)
                     "upstream_proxy TEXT NOT NULL DEFAULT '', "
                     "upstream_timeout_sec INTEGER NOT NULL DEFAULT 1800 CHECK(upstream_timeout_sec BETWEEN 1 AND 86400), "
                     "first_token_timeout_sec INTEGER NOT NULL DEFAULT 30 CHECK(first_token_timeout_sec BETWEEN 0 AND 3600), "
+                    "retry_after_override_sec TEXT NOT NULL DEFAULT '', "
                     "created_at_utc TEXT NOT NULL, updated_at_utc TEXT NOT NULL)", error) &&
             execSql(d->database,
                     "CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL)", error) &&
@@ -901,6 +919,22 @@ bool UpstreamProfileStore::open(QString *error)
                     "ON upstream_profiles(updated_at_utc DESC, id ASC)", error) &&
             execSql(d->database, QString("PRAGMA user_version=%1").arg(kSchemaVersion), error);
         if (!created || !commit(d->database, error)) {
+            rollback(d->database);
+            d->closeAndRemove();
+            return false;
+        }
+    }
+    if (version == 1) {
+        if (!beginImmediate(d->database, error)) {
+            d->closeAndRemove();
+            return false;
+        }
+        const bool migrated =
+            execSql(d->database,
+                    "ALTER TABLE upstream_profiles ADD COLUMN retry_after_override_sec TEXT NOT NULL DEFAULT ''",
+                    error) &&
+            execSql(d->database, QString("PRAGMA user_version=%1").arg(kSchemaVersion), error);
+        if (!migrated || !commit(d->database, error)) {
             rollback(d->database);
             d->closeAndRemove();
             return false;
@@ -1318,7 +1352,9 @@ bool parseImportedProfile(const QJsonValue &value, ImportedProfile *result, QStr
         !jsonInteger(object, "upstream_timeout_sec", parsed.profile.upstreamTimeoutSec,
                      &parsed.profile.upstreamTimeoutSec, error) ||
         !jsonInteger(object, "first_token_timeout_sec", parsed.profile.firstTokenTimeoutSec,
-                     &parsed.profile.firstTokenTimeoutSec, error)) {
+                     &parsed.profile.firstTokenTimeoutSec, error) ||
+        !jsonString(object, "retry_after_override_sec", parsed.profile.retryAfterOverrideSec, false,
+                    &parsed.profile.retryAfterOverrideSec, error)) {
         return false;
     }
     if (object.contains("id")) {

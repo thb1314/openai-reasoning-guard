@@ -51,6 +51,7 @@ private slots:
         QCOMPARE(profile.userAgent, QString("curl/8.7.1"));
         QCOMPARE(profile.upstreamTimeoutSec, 1800);
         QCOMPARE(profile.firstTokenTimeoutSec, 30);
+        QCOMPARE(profile.retryAfterOverrideSec, QString());
 
         QString field;
         QString error;
@@ -103,6 +104,50 @@ private slots:
         profile.apiKey.clear();
         profile.upstreamProxy = "http://127.0.0.1:7890/";
         QVERIFY2(validateUpstreamProfile(profile, &field, &error), qPrintable(error));
+        profile.retryAfterOverrideSec = "0";
+        QVERIFY(!validateUpstreamProfile(profile, &field, &error));
+        QCOMPARE(field, QString("retry_after_override_sec"));
+        profile.retryAfterOverrideSec = "86401";
+        QVERIFY(!validateUpstreamProfile(profile, &field, &error));
+        QCOMPARE(field, QString("retry_after_override_sec"));
+        profile.retryAfterOverrideSec = "1";
+        QVERIFY2(validateUpstreamProfile(profile, &field, &error), qPrintable(error));
+        profile.retryAfterOverrideSec = "86400";
+        QVERIFY2(validateUpstreamProfile(profile, &field, &error), qPrintable(error));
+    }
+
+    void migratesSchemaV1WithEmptyRetryAfterOverride()
+    {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString path = dir.filePath("profiles.sqlite3");
+        const QString connection = "upstream_profile_schema_v1_test";
+        {
+            QSqlDatabase database = QSqlDatabase::addDatabase("QSQLITE", connection);
+            database.setDatabaseName(path);
+            QVERIFY(database.open());
+            QSqlQuery query(database);
+            QVERIFY(query.exec("CREATE TABLE upstream_profiles ("
+                               "id TEXT PRIMARY KEY NOT NULL, display_name TEXT NOT NULL, "
+                               "display_name_key TEXT NOT NULL UNIQUE, base_url TEXT NOT NULL, "
+                               "api_key TEXT NOT NULL DEFAULT '', user_agent TEXT NOT NULL DEFAULT 'curl/8.7.1', "
+                               "forward_user_agent INTEGER NOT NULL DEFAULT 0, upstream_proxy TEXT NOT NULL DEFAULT '', "
+                               "upstream_timeout_sec INTEGER NOT NULL DEFAULT 1800, first_token_timeout_sec INTEGER NOT NULL DEFAULT 30, "
+                               "created_at_utc TEXT NOT NULL, updated_at_utc TEXT NOT NULL)"));
+            QVERIFY(query.exec("CREATE TABLE app_meta (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL)"));
+            QVERIFY(query.exec("PRAGMA user_version=1"));
+            database.close();
+        }
+        QSqlDatabase::removeDatabase(connection);
+
+        UpstreamProfileStore store(path);
+        QString error;
+        QVERIFY2(store.open(&error), qPrintable(error));
+        UpstreamProfile profile = makeProfile("Migrated", "https://example.com/v1");
+        QVERIFY2(store.addProfile(&profile, &error), qPrintable(error));
+        UpstreamProfile loaded;
+        QVERIFY2(store.profileById(profile.id, &loaded, &error), qPrintable(error));
+        QCOMPARE(loaded.retryAfterOverrideSec, QString());
     }
 
     void encodedBaseUrlPathRoundTrip()
@@ -279,6 +324,7 @@ private slots:
         UpstreamProfile profile = makeProfile("Primary", "https://example.com/v1");
         profile.apiKey = "  sk-secret  ";
         profile.forwardUserAgent = true;
+        profile.retryAfterOverrideSec = "30";
         QVERIFY2(source.addProfile(&profile, &error), qPrintable(error));
 
         const QString redactedPath = dir.filePath("redacted.json");
@@ -287,6 +333,7 @@ private slots:
         QJsonObject exportedProfile = exported.value("profiles").toArray().first().toObject();
         QVERIFY(!exportedProfile.contains("api_key"));
         QCOMPARE(exportedProfile.value("api_key_configured").toBool(), true);
+        QCOMPARE(exportedProfile.value("retry_after_override_sec").toString(), QString("30"));
 
         UpstreamProfileStore target(dir.filePath("target.sqlite3"));
         QVERIFY2(target.open(&error), qPrintable(error));
@@ -307,6 +354,7 @@ private slots:
         QCOMPARE(imported.added, 1);
         QVERIFY2(emptyTarget.profileById(profile.id, &fetched, &error), qPrintable(error));
         QCOMPARE(fetched.apiKey, QString(""));
+        QCOMPARE(fetched.retryAfterOverrideSec, QString("30"));
 
         const QString secretPath = dir.filePath("with-secrets.json");
         QVERIFY2(source.exportJson(secretPath, true, &error), qPrintable(error));
