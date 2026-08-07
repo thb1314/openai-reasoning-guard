@@ -22,6 +22,7 @@ struct UpstreamProfile {
     int upstreamTimeoutSec;
     int firstTokenTimeoutSec;
     QString retryAfterOverrideSec;
+    bool mapUpstreamErrorsTo502;
     QDateTime createdAtUtc;
     QDateTime updatedAtUtc;
 

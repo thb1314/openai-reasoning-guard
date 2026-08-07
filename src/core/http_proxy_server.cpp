@@ -68,6 +68,13 @@ static bool validRetryAfterOverride(const QString &value, int *seconds = 0)
     return true;
 }
 
+static int downstreamStatusForUpstream(int upstreamStatus, bool mapErrorsTo502)
+{
+    return mapErrorsTo502 && upstreamStatus >= 400 && upstreamStatus <= 599
+        ? 502
+        : upstreamStatus;
+}
+
 static void rememberTail(QByteArray *tail, const QByteArray &chunk)
 {
     if (!tail || chunk.isEmpty()) {
@@ -197,6 +204,11 @@ static QString streamActionDisconnect()
 {
     return "disconnect";
 }
+static QString streamActionRetryableSse()
+{
+    return "retryable_sse";
+}
+
 
 static QString normalizeInterceptRuleMode(const QString &mode)
 {
@@ -209,10 +221,21 @@ static QString normalizeInterceptRuleMode(const QString &mode)
 static QString normalizeStreamAction(const QString &action)
 {
     const QString normalized = action.trimmed().toLower();
-    return normalized == streamActionDisconnect()
-        ? streamActionDisconnect()
-        : streamActionStrict502();
+    if (normalized == streamActionDisconnect()) {
+        return streamActionDisconnect();
+    }
+    if (normalized == streamActionRetryableSse()) {
+        return streamActionRetryableSse();
+    }
+    return streamActionStrict502();
 }
+
+static bool isRetryableUpstreamStatus(int statusCode)
+{
+    return statusCode == 429 || statusCode == 500 || statusCode == 502 ||
+        statusCode == 503 || statusCode == 504;
+}
+
 
 static QString requestKindNormal()
 {
@@ -834,6 +857,7 @@ ProxySettings::ProxySettings()
       upstreamTimeoutSec(1800),
       firstTokenTimeoutSec(30),
       retryAfterOverrideSec(""),
+      mapUpstreamErrorsTo502(false),
       bufferTimeoutSec(180),
       requestBodyLimitBytes(defaultRequestBodyLimitBytes()),
       responseBufferLimitBytes(defaultResponseBufferLimitBytes()),
@@ -1196,7 +1220,9 @@ private slots:
                 server_->recordInspectedResponse(streamObservedReasoning_, false, "stream");
                 streamInspectedRecorded_ = true;
             }
-            record(responseStatus, errorType, errorMessage, streamObservedReasoning_);
+            record(downstreamStatusForUpstream(
+                       responseStatus, settings_.mapUpstreamErrorsTo502),
+                   errorType, errorMessage, streamObservedReasoning_);
             return;
         }
 
@@ -1333,6 +1359,22 @@ private slots:
             }
         }
 
+        const int originalResponseStatus = responseStatus;
+
+        responseStatus = downstreamStatusForUpstream(
+            responseStatus, settings_.mapUpstreamErrorsTo502);
+        if (isRetryableUpstreamStatus(originalResponseStatus)) {
+            const QString retryMessage = QString("upstream returned HTTP %1")
+                .arg(originalResponseStatus);
+            const QJsonObject retryPayload{{"error", QJsonObject{
+                {"message", retryMessage},
+                {"type", "upstream_http_error"}
+            }}};
+            if (writeRetryableSse(retryPayload, originalResponseStatus)) {
+                record(responseStatus, errorType, retryMessage, reasoningTokens);
+                return;
+            }
+        }
         const QList<QPair<QByteArray, QByteArray> > headers = filteredReplyHeaders(reply);
         writeResponse(responseStatus, headers, responseBody);
         record(responseStatus, errorType, errorMessage, reasoningTokens);
@@ -1926,7 +1968,9 @@ private:
         }
         upstreamPassThrough_ = true;
         responseBufferTimer_.stop();
-        const int statusCode = upstreamResponseStatus_ > 0 ? upstreamResponseStatus_ : 200;
+        const int upstreamStatus = upstreamResponseStatus_ > 0 ? upstreamResponseStatus_ : 200;
+        const int statusCode = downstreamStatusForUpstream(
+            upstreamStatus, settings_.mapUpstreamErrorsTo502);
         writeStreamingResponseHead(statusCode, filteredReplyHeaders(reply));
         if (!upstreamBodyBuffer_.isEmpty()) {
             writeClient(upstreamBodyBuffer_);
@@ -2193,6 +2237,7 @@ private:
             {"upstream_timeout_sec", settings.upstreamTimeoutSec},
             {"first_token_timeout_sec", settings.firstTokenTimeoutSec},
             {"retry_after_override_sec", settings.retryAfterOverrideSec},
+            {"map_upstream_errors_to_502", settings.mapUpstreamErrorsTo502},
             {"buffer_timeout_sec", settings.bufferTimeoutSec},
             {"request_body_limit_bytes", double(settings.requestBodyLimitBytes)},
             {"response_buffer_limit_bytes", double(settings.responseBufferLimitBytes)},
@@ -2232,6 +2277,7 @@ private:
                 {"buffers_responses_for_reasoning_guard", true},
                 {"first_token_timeout_sec", settings.firstTokenTimeoutSec},
                 {"retry_after_override_sec", settings.retryAfterOverrideSec},
+                {"map_upstream_errors_to_502", settings.mapUpstreamErrorsTo502},
                 {"request_body_limit_bytes", double(settings.requestBodyLimitBytes)},
                 {"response_buffer_limit_bytes", double(settings.responseBufferLimitBytes)},
                 {"intercept_rule_mode", normalizeInterceptRuleMode(settings.interceptRuleMode)},
@@ -2253,10 +2299,69 @@ private:
         };
     }
 
+    bool writeRetryableSse(
+        const QJsonObject &payload,
+        int statusCode,
+        const QList<QPair<QByteArray, QByteArray> > &extraHeaders =
+            QList<QPair<QByteArray, QByteArray> >())
+    {
+        int retryAfterSeconds = 0;
+        if ((statusCode != 429 && (statusCode < 500 || statusCode > 599)) ||
+            normalizeStreamAction(settings_.streamAction) != streamActionRetryableSse() ||
+            !requestIsStream_ || !path_.endsWith("/responses") ||
+            !validRetryAfterOverride(settings_.retryAfterOverrideSec, &retryAfterSeconds) ||
+            settings_.retryAfterOverrideSec.trimmed().isEmpty()) {
+            return false;
+        }
+
+        const QJsonObject sourceError = payload.value("error").toObject();
+        QString message = sourceError.value("message").toString().trimmed();
+        if (message.isEmpty()) {
+            message = "Guard rejected a retryable response";
+        }
+        message += QString(". Please try again in %1 seconds.").arg(retryAfterSeconds);
+
+        QJsonObject response;
+        response.insert("id", QString("resp_guard_retry_%1")
+            .arg(QDateTime::currentMSecsSinceEpoch()));
+        response.insert("object", "response");
+        response.insert("created_at", QDateTime::currentMSecsSinceEpoch() / 1000.0);
+        response.insert("status", "failed");
+        response.insert("background", false);
+        response.insert("error", QJsonObject{
+            {"code", "rate_limit_exceeded"},
+            {"message", message}
+        });
+        response.insert("incomplete_details", QJsonValue());
+
+        const QJsonObject event{
+            {"type", "response.failed"},
+            {"sequence_number", 1},
+            {"response", response}
+        };
+        QByteArray body("event: response.failed\n");
+        body += "data: " + QJsonDocument(event).toJson(QJsonDocument::Compact) + "\n\n";
+
+        QList<QPair<QByteArray, QByteArray> > headers;
+        headers.append(qMakePair(QByteArray("Content-Type"), QByteArray("text/event-stream")));
+        headers.append(qMakePair(QByteArray("Cache-Control"), QByteArray("no-cache")));
+        headers.append(qMakePair(QByteArray("Retry-After"), QByteArray::number(retryAfterSeconds)));
+        headers.append(qMakePair(QByteArray("x-codex-retry-gateway-reason"), QByteArray("retryable-sse")));
+        headers.append(extraHeaders);
+        if (!upstreamTurnState_.isEmpty()) {
+            headers.append(qMakePair(QByteArray("x-codex-turn-state"), upstreamTurnState_));
+        }
+        writeResponse(200, headers, method_.toUpper() == "HEAD" ? QByteArray() : body);
+        return true;
+    }
+
     void writeJson(const QJsonObject &payload,
                    int statusCode = 200,
                    const QList<QPair<QByteArray, QByteArray> > &extraHeaders = QList<QPair<QByteArray, QByteArray> >())
     {
+        if (writeRetryableSse(payload, statusCode, extraHeaders)) {
+            return;
+        }
         const QByteArray body = QJsonDocument(payload).toJson(QJsonDocument::Compact);
         QList<QPair<QByteArray, QByteArray> > headers;
         headers.append(qMakePair(QByteArray("Content-Type"), QByteArray("application/json; charset=utf-8")));
@@ -2673,6 +2778,8 @@ bool HttpProxyServer::start(const ProxySettings &settings, QString *error)
     emit logLine(QString("first_token_timeout_sec=%1").arg(settings_.firstTokenTimeoutSec));
     emit logLine(QString("retry_after_override_sec=%1")
                  .arg(settings_.retryAfterOverrideSec.isEmpty() ? QString("disabled") : settings_.retryAfterOverrideSec));
+    emit logLine(QString("map_upstream_errors_to_502=%1")
+                 .arg(settings_.mapUpstreamErrorsTo502 ? "true" : "false"));
     emit logLine(QString("retry_upstream_capacity_errors=%1").arg(settings_.retryUpstreamCapacityErrors ? "true" : "false"));
     return true;
 }
@@ -2734,6 +2841,7 @@ QJsonObject HttpProxyServer::healthPayload() const
             {"upstream_timeout_sec", settings_.upstreamTimeoutSec},
             {"first_token_timeout_sec", settings_.firstTokenTimeoutSec},
             {"retry_after_override_sec", settings_.retryAfterOverrideSec},
+            {"map_upstream_errors_to_502", settings_.mapUpstreamErrorsTo502},
             {"buffer_timeout_sec", settings_.bufferTimeoutSec},
             {"request_body_limit_bytes", double(settings_.requestBodyLimitBytes)},
             {"response_buffer_limit_bytes", double(settings_.responseBufferLimitBytes)},

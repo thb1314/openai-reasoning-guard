@@ -69,6 +69,7 @@ POSIX 系统中，本程序新建的默认配置目录，以及数据库、WAL/S
 
 - `strict_502`：先缓存完整 SSE 响应，确认安全后再透传；命中 guard 时丢弃本次完整响应并重试，预算耗尽后返回本地错误。
 - `disconnect`：有重试预算时同样缓存并整条丢弃；预算耗尽后才边透传边扫描，命中发生在已有数据透传之后时取消上游请求并断开客户端连接，当前命中 chunk 不继续写回。
+- `retryable_sse`：保持完整缓冲；对流式 Responses 请求，把最终可重试的本地错误或上游 `429/5xx` 编码为 HTTP 200 的 `response.failed` 事件。事件使用 `rate_limit_exceeded` 和包含 `Please try again in N seconds` 的消息，使 Codex 0.147+ 将上游配置的 `retry_after_override_sec` 传入可见的流重试延迟。非流式请求及非 Responses 路径保持原 HTTP 状态语义。
 
 ## 资源保护
 

@@ -494,7 +494,8 @@ void CliProfileCommandsTest::selectedProfileAndTemporaryOverridesReachRuntime()
         << "--upstream-proxy" << "http://127.0.0.1:7890"
         << "--upstream-timeout" << "321"
         << "--first-token-timeout" << "17"
-        << "--retry-after-override-sec" << "30");
+        << "--retry-after-override-sec" << "30"
+        << "--map-upstream-errors-to-502");
     QCOMPARE(result.exitCode, 0);
 
     quint16 port = availablePort();
@@ -510,6 +511,7 @@ void CliProfileCommandsTest::selectedProfileAndTemporaryOverridesReachRuntime()
     QCOMPARE(status.value("upstream_timeout_sec").toInt(), 321);
     QCOMPARE(status.value("first_token_timeout_sec").toInt(), 17);
     QCOMPARE(status.value("retry_after_override_sec").toString(), QString("30"));
+    QCOMPARE(status.value("map_upstream_errors_to_502").toBool(), true);
 
     port = availablePort();
     QVERIFY(port > 0);
@@ -542,12 +544,19 @@ void CliProfileCommandsTest::selectedProfileAndTemporaryOverridesReachRuntime()
     QCOMPARE(persisted.value("upstream_timeout_sec").toInt(), 321);
     QCOMPARE(persisted.value("first_token_timeout_sec").toInt(), 17);
     QCOMPARE(persisted.value("retry_after_override_sec").toString(), QString("30"));
+    QCOMPARE(persisted.value("map_upstream_errors_to_502").toBool(), true);
 
     result = run(QStringList() << "profile" << "update" << "Runtime" << "--config" << path
                                << "--retry-after-override-sec=" << "--json");
     QCOMPARE(result.exitCode, 0);
     const QJsonObject cleared = parseObject(result.standardOutput).value("profile").toObject();
     QCOMPARE(cleared.value("retry_after_override_sec").toString(), QString());
+
+    result = run(QStringList() << "profile" << "update" << "Runtime" << "--config" << path
+                               << "--no-map-upstream-errors-to-502" << "--json");
+    QCOMPARE(result.exitCode, 0);
+    const QJsonObject unmapped = parseObject(result.standardOutput).value("profile").toObject();
+    QCOMPARE(unmapped.value("map_upstream_errors_to_502").toBool(), false);
 }
 
 void CliProfileCommandsTest::temporaryTimeoutOverridesAreStrictlyValidated()

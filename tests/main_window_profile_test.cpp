@@ -15,6 +15,7 @@
 #include <QtNetwork/QTcpServer>
 #include <QtNetwork/QTcpSocket>
 #include <QtGui/QGuiApplication>
+#include <QtTest/QSignalSpy>
 #include <QtTest/QTest>
 #include <QtWidgets/QAction>
 #include <QtWidgets/QApplication>
@@ -22,11 +23,13 @@
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QLineEdit>
 #include <QtWidgets/QDialog>
+#include <QtWidgets/QDialogButtonBox>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QScrollArea>
 #include <QtWidgets/QScrollBar>
 #include <QtWidgets/QSpinBox>
+#include <QtWidgets/QTableWidget>
 
 #include <functional>
 
@@ -1039,6 +1042,7 @@ private slots:
         backup.upstreamTimeoutSec = 600;
         backup.firstTokenTimeoutSec = 12;
         backup.retryAfterOverrideSec = "30";
+        backup.mapUpstreamErrorsTo502 = true;
         QVERIFY2(store.addProfile(&backup, &error), qPrintable(error));
         QVERIFY2(store.setSelectedProfileId(primary.id, &error), qPrintable(error));
 
@@ -1052,11 +1056,13 @@ private slots:
         QSpinBox *firstTokenTimeout = findWindowChild<QSpinBox>(&window, "firstTokenTimeoutSpin");
         QSpinBox *retryAfterOverride = findWindowChild<QSpinBox>(&window, "retryAfterOverrideSpin");
         QCheckBox *forwardUserAgent = findWindowChild<QCheckBox>(&window, "forwardUserAgentCheck");
+        QCheckBox *mapErrors =
+            findWindowChild<QCheckBox>(&window, "mapUpstreamErrorsTo502Check");
         QPushButton *start = buttonWithKey(&window, "start_proxy");
         QPushButton *stop = buttonWithKey(&window, "stop_proxy");
         QVERIFY(combo && url && apiKey && userAgent && proxy);
         QVERIFY(upstreamTimeout && firstTokenTimeout && retryAfterOverride &&
-                forwardUserAgent && start && stop);
+                forwardUserAgent && mapErrors && start && stop);
         QVERIFY(url->isReadOnly());
         QVERIFY(apiKey->isReadOnly());
         QVERIFY(userAgent->isReadOnly());
@@ -1065,11 +1071,13 @@ private slots:
         QVERIFY(firstTokenTimeout->isReadOnly());
         QVERIFY(retryAfterOverride->isReadOnly());
         QVERIFY(!forwardUserAgent->isEnabled());
+        QVERIFY(!mapErrors->isEnabled());
 
         QCOMPARE(combo->currentData().toString(), primary.id);
         QCOMPARE(url->text(), primary.baseUrl);
         QCOMPARE(apiKey->text(), primary.apiKey);
         QCOMPARE(retryAfterOverride->value(), 0);
+        QVERIFY(!mapErrors->isChecked());
 
         const int backupIndex = combo->findData(backup.id);
         QVERIFY(backupIndex >= 0);
@@ -1081,6 +1089,7 @@ private slots:
         QCOMPARE(firstTokenTimeout->value(), backup.firstTokenTimeoutSec);
         QCOMPARE(retryAfterOverride->value(), 30);
         QVERIFY(forwardUserAgent->isChecked());
+        QVERIFY(mapErrors->isChecked());
         QCOMPARE(store.selectedProfileId(&error), backup.id);
         QVERIFY2(error.isEmpty(), qPrintable(error));
 
@@ -1125,6 +1134,7 @@ private slots:
         backup.baseUrl = QString("http://127.0.0.1:%1/v1").arg(backupUpstream.port());
         backup.apiKey = "backup-key";
         backup.retryAfterOverrideSec = "30";
+        backup.mapUpstreamErrorsTo502 = true;
         QVERIFY2(store.addProfile(&backup, &error), qPrintable(error));
         QVERIFY2(store.setSelectedProfileId(primary.id, &error), qPrintable(error));
 
@@ -1147,9 +1157,29 @@ private slots:
         QTRY_COMPARE(primaryUpstream.requestCount(), 1);
         QCOMPARE(primaryUpstream.lastAuthorization(), QByteArray("Bearer primary-key"));
 
-        const int backupIndex = combo->findData(backup.id);
-        QVERIFY(backupIndex >= 0);
-        combo->setCurrentIndex(backupIndex);
+        bool activationRequested = false;
+        QTimer::singleShot(0, [&activationRequested, &backup]() {
+            QDialog *manager = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+            if (!manager) return;
+            QTableWidget *table = manager->findChild<QTableWidget *>("profileTable");
+            QPushButton *select = manager->findChild<QPushButton *>("profileSelectButton");
+            if (!table || !select) {
+                manager->reject();
+                return;
+            }
+            for (int row = 0; row < table->rowCount(); ++row) {
+                if (table->item(row, 0)->data(Qt::UserRole).toString() == backup.id) {
+                    table->selectRow(row);
+                    break;
+                }
+            }
+            activationRequested = select->isEnabled();
+            select->click();
+            manager->accept();
+        });
+        QVERIFY(QMetaObject::invokeMethod(&window, "openUpstreamProfiles",
+                                          Qt::DirectConnection));
+        QVERIFY(activationRequested);
 
         QTRY_COMPARE(combo->currentData().toString(), backup.id);
         QTRY_COMPARE(url->text(), backup.baseUrl);
@@ -1161,6 +1191,7 @@ private slots:
         QVERIFY(!start->isEnabled());
         QVERIFY(stop->isEnabled());
         QCOMPARE(proxy->settings().retryAfterOverrideSec, QString("30"));
+        QCOMPARE(proxy->settings().mapUpstreamErrorsTo502, true);
 
         const QByteArray backupResponse = proxyRequest(config.proxyPort);
         QVERIFY2(backupResponse.contains("\"profile\":\"backup\""), backupResponse.constData());
@@ -1171,6 +1202,99 @@ private slots:
         QVERIFY(QMetaObject::invokeMethod(&window, "stopProxy", Qt::DirectConnection));
         QTRY_VERIFY(!proxy->isRunning());
         QVERIFY(!store.isProfileLocked(backup.id));
+    }
+
+    void runningIdleProfileRetryAfterEditDoesNotRestartProxy()
+    {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString configPath = dir.filePath("config.json");
+        qputenv("NET_TUNNEL_CONFIG", configPath.toLocal8Bit());
+
+        AppConfig config;
+        config.proxyPort = reservePort();
+        QVERIFY(config.proxyPort > 0);
+        QString error;
+        QVERIFY2(saveConfig(config, configPath, &error), qPrintable(error));
+
+        UpstreamProfileStore store(upstreamProfileDatabasePath(configPath));
+        QVERIFY2(store.open(&error), qPrintable(error));
+        UpstreamProfile active;
+        active.displayName = "Active";
+        active.baseUrl = "https://active.example/v1";
+        QVERIFY2(store.addProfile(&active, &error), qPrintable(error));
+        UpstreamProfile idle;
+        idle.displayName = "Editable Idle";
+        idle.baseUrl = "https://idle.example/v1";
+        QVERIFY2(store.addProfile(&idle, &error), qPrintable(error));
+        QVERIFY2(store.setSelectedProfileId(active.id, &error), qPrintable(error));
+
+        MainWindow window;
+        HttpProxyServer *proxy = findWindowChild<HttpProxyServer>(&window);
+        QVERIFY(proxy);
+        QVERIFY(QMetaObject::invokeMethod(&window, "startProxy", Qt::DirectConnection));
+        QTRY_VERIFY(proxy->isRunning());
+        QVERIFY(store.isProfileLocked(active.id));
+        QVERIFY(!store.isProfileLocked(idle.id));
+        QSignalSpy stopped(proxy, SIGNAL(stopped()));
+        QSignalSpy started(proxy, SIGNAL(started(QString)));
+
+        bool editorSubmitted = false;
+        bool proxyStayedRunningWhileEditing = false;
+        QTimer::singleShot(0, [&editorSubmitted, &proxyStayedRunningWhileEditing,
+                               &active, &idle, &proxy, &store]() {
+            QDialog *manager = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+            if (!manager) return;
+            QTableWidget *table = manager->findChild<QTableWidget *>("profileTable");
+            if (!table) {
+                manager->reject();
+                return;
+            }
+            for (int row = 0; row < table->rowCount(); ++row) {
+                if (table->item(row, 0)->data(Qt::UserRole).toString() == idle.id) {
+                    table->selectRow(row);
+                    break;
+                }
+            }
+            QTimer::singleShot(0, [&editorSubmitted, &proxyStayedRunningWhileEditing,
+                                   &active, &proxy, &store]() {
+                QDialog *editor = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+                if (!editor) return;
+                QSpinBox *retryAfter =
+                    editor->findChild<QSpinBox *>("profileRetryAfterOverrideSpin");
+                QDialogButtonBox *buttons =
+                    editor->findChild<QDialogButtonBox *>("profileEditorButtons");
+                if (!retryAfter || !buttons || retryAfter->isReadOnly()) {
+                    editor->reject();
+                    return;
+                }
+                proxyStayedRunningWhileEditing = proxy->isRunning() &&
+                    store.isProfileLocked(active.id);
+                retryAfter->setValue(75);
+                editorSubmitted = true;
+                buttons->button(QDialogButtonBox::Save)->click();
+            });
+            QMetaObject::invokeMethod(manager, "viewOrEditSelectedProfile",
+                                      Qt::DirectConnection);
+            manager->accept();
+        });
+        QVERIFY(QMetaObject::invokeMethod(&window, "openUpstreamProfiles",
+                                          Qt::DirectConnection));
+
+        QVERIFY(editorSubmitted);
+        QVERIFY(proxyStayedRunningWhileEditing);
+        QVERIFY(proxy->isRunning());
+        QCOMPARE(stopped.count(), 0);
+        QCOMPARE(started.count(), 0);
+        QCOMPARE(proxy->settings().retryAfterOverrideSec, QString());
+        QVERIFY(store.isProfileLocked(active.id));
+        UpstreamProfile updated;
+        QVERIFY2(store.profileById(idle.id, &updated, &error), qPrintable(error));
+        QCOMPARE(updated.retryAfterOverrideSec, QString("75"));
+
+        QVERIFY(QMetaObject::invokeMethod(&window, "stopProxy", Qt::DirectConnection));
+        QTRY_VERIFY(!proxy->isRunning());
+        QVERIFY(!store.isProfileLocked(active.id));
     }
 
     void failedRunningProfileSwitchLeavesProxyStoppedAndUnlocksProfiles()

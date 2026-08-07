@@ -12,10 +12,10 @@ OpenAI Reasoning Guard 是放在 Codex / OpenAI 兼容客户端与真实上游�
 - **降智拦截**：检查 OpenAI usage 中的 `reasoning_tokens`，默认拦截 `516,1034,1552` 等可疑固定值。
 - **完整性保护**：同时检查 JSON 与流式 SSE，识别空文本、缺 usage、缺 terminal event、`failed/error` 事件和意外断流。
 - **无感内部重试**：Guard 命中、首 Token 超时及明确的上游 capacity 错误共享重试预算；中间失败不会暴露给客户端。
-- **错误保真**：重试仍失败时，保留并转发最后一次真实上游错误；本地 Guard 错误使用明确状态码和 `error_type`。
+- **错误兼容策略**：重试仍失败时默认保留最后一次真实上游错误；也可按上游配置把最终 `4xx/5xx` 状态统一映射为 `502`。
 - **资源与超时保护**：支持请求/响应大小上限、缓冲超时、首 Token 超时、上游总超时及客户端断开取消。
 - **完整 HTTP 请求支持**：支持 `Content-Length` 和 `Transfer-Encoding: chunked`，可代理 Responses 与 Chat Completions 路径。
-- **多上游管理**：用 SQLite 管理多组 Base URL、API Key、User-Agent、代理和超时，支持选择、搜索、分页及导入导出。
+- **多上游管理**：用 SQLite 管理多组 Base URL、API Key、User-Agent、代理和超时，支持选择、搜索、分页及导入导出；运行中的当前配置保持只读，其他配置仍可编辑，“设为当前”会自动停止并重启代理。
 - **跨平台交付**：同时提供 GUI 与 CLI，发布 Linux deb/rpm/AppImage、Windows installer/portable 和 macOS shell installer。
 
 ![OpenAI Reasoning Guard 图形界面](docs/images/gui-main-window.png)
@@ -39,7 +39,8 @@ openai-reasoning-guard-cli profile add \
   --name "主线路" \
   --base-url https://api.openai.com/v1 \
   --api-key sk-example \
-  --retry-after-override-sec 30
+  --retry-after-override-sec 30 \
+  --map-upstream-errors-to-502
 
 openai-reasoning-guard-cli --proxy-host 127.0.0.1 --proxy-port 8010
 ```
@@ -55,7 +56,7 @@ openai-reasoning-guard-cli --proxy-host 127.0.0.1 --proxy-port 8010
 2. Guard 转发请求并检查 JSON 或 SSE 响应结构。
 3. Responses API 读取 `usage.output_tokens_details.reasoning_tokens`；Chat Completions 读取 `usage.completion_tokens_details.reasoning_tokens`。
 4. 命中 `reasoning_equals`、流式响应不完整、首 Token 超时或明确 capacity 错误时，丢弃本次上游结果并在预算内重试。
-5. 通过检查的响应才返回客户端；重试耗尽后返回 Guard 错误，或按原状态码、响应头和 body 转发最后一次真实上游错误。
+5. 通过检查的响应才返回客户端；重试耗尽后返回 Guard 错误，或转发最后一次真实上游错误。可选的状态映射只把最终上游 `4xx/5xx` 状态行改为 `502`，body 和允许转发的响应头保持不变。
 
 `reasoning_tokens` 是 OpenAI 在 `usage` 元数据中返回的推理 Token 计数，不是可见回答的字符长度，也不是本项目重新分词计算的长度。例如：
 
@@ -72,9 +73,9 @@ openai-reasoning-guard-cli --proxy-host 127.0.0.1 --proxy-port 8010
 
 已有观测中，`516`、`1034`、`1552` 符合 `518*n - 2`，常与异常或明显推理不足的响应同时出现，因此作为默认 Guard 集合。该规则可完全配置，也可关闭流式或非流式拦截。
 
-严格流式模式会先缓存完整 SSE，只有确认 terminal event、usage 和内容结构正常后才整体写回。这样才能在末尾 usage 命中 Guard 时丢掉整条结果并重新请求，避免客户端收到半条答案。`stream_action=disconnect` 在仍有重试预算时同样整条丢弃；预算耗尽后才允许边转发边扫描，并在后续命中时断开。
+严格流式模式会先缓存完整 SSE，只有确认 terminal event、usage 和内容结构正常后才整体写回。这样才能在末尾 usage 命中 Guard 时丢掉整条结果并重新请求，避免客户端收到半条答案。`stream_action=disconnect` 在仍有重试预算时同样整条丢弃；预算耗尽后才允许边转发边扫描，并在后续命中时断开。`stream_action=retryable_sse` 仍完整缓冲，但会把 Responses 流式请求的最终可重试失败编码为标准 `response.failed` SSE；错误消息携带上游配置的 `retry_after_override_sec`，供不读取 HTTP 502 `Retry-After` 的 Codex 客户端显示并执行延迟重试。
 
-本项目不改变模型、不修改 Prompt，也不做模型协议转换；它只在请求链路中提供可观察、可配置的响应质量门禁。
+除显式启用的 `retryable_sse` 兼容模式外，本项目不改变模型、不修改 Prompt，也不做模型协议转换；它只在请求链路中提供可观察、可配置的响应质量门禁。
 
 参考：
 
@@ -144,7 +145,7 @@ openai-reasoning-guard-cli --proxy-host 127.0.0.1 --proxy-port 8010
 | `intercept_streaming` | `true` | `false` | 是否实际拦截流式 SSE；关闭后仍保留观察统计。 |
 | `intercept_non_streaming` | `true` | `false` | 是否实际拦截非流式 JSON。 |
 | `non_stream_status_code` | `502` | `503` | Guard 重试耗尽后的本地响应状态码。 |
-| `stream_action` | `strict_502` | `"disconnect"` | 严格整流缓冲，或预算耗尽后的边转发边扫描模式。 |
+| `stream_action` | `strict_502` | `"retryable_sse"` | `strict_502` 返回最终 HTTP 错误；`disconnect` 在预算耗尽后边转发边扫描；`retryable_sse` 为流式 Responses 请求返回携带配置延迟的 `response.failed` SSE。 |
 
 ### 上游配置字段
 
@@ -160,6 +161,7 @@ openai-reasoning-guard-cli --proxy-host 127.0.0.1 --proxy-port 8010
 | `upstream_timeout_sec` | `1800` | `600` | 单次上游请求总超时，范围 `1..86400`；超时返回 `504`。 |
 | `first_token_timeout_sec` | `30` | `10` 或 `0` | 流式首个非空 body 字节等待时间；`0` 禁用，范围 `0..3600`。 |
 | `retry_after_override_sec` | 空字符串 | `"30"` | 仅对最终真实上游 `429/502/503` 添加或覆盖 `Retry-After`；空值透传上游，范围 `1..86400` 秒。内部重试期间不发送；代理本地生成的 `502` 不添加。 |
+| `map_upstream_errors_to_502` | `false` | `true` | 是否在内部重试结束后，把最终真实上游 `400..599` 状态统一映射为客户端 `502`；body 和允许转发的响应头保持不变。 |
 
 API Key 以明文保存在当前用户的 SQLite 数据库中，并非系统 Keychain。列表、日志、状态接口和普通导出不会显示完整 Key；只有明确使用 `--show-secret` 或 `--include-secrets` 才会输出。
 

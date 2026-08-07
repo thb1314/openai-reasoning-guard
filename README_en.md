@@ -12,10 +12,10 @@ OpenAI Reasoning Guard is a local quality gateway placed between Codex or anothe
 - **Degradation interception**: inspects `reasoning_tokens` in OpenAI usage metadata and guards suspicious fixed values such as `516,1034,1552` by default.
 - **Completeness protection**: validates JSON and streaming SSE for empty text, missing usage, missing terminal events, `failed/error` events, and unexpected disconnects.
 - **Transparent internal retries**: Guard matches, first-token timeouts, and explicit upstream capacity errors share one retry budget; intermediate failures stay hidden from the client.
-- **Faithful final errors**: forwards the final real upstream error when retries still fail; local Guard failures use explicit status codes and `error_type` values.
+- **Compatible error policy**: preserves the final real upstream error by default, with a per-profile option to map final upstream `4xx/5xx` statuses to `502`.
 - **Resource and timeout protection**: request/response size limits, buffer timeout, first-token timeout, total upstream timeout, and upstream cancellation after a client disconnect.
 - **Complete HTTP request support**: handles `Content-Length` and `Transfer-Encoding: chunked` for Responses and Chat Completions routes.
-- **Multiple upstream profiles**: SQLite-backed Base URLs, API keys, User-Agents, proxies, and timeouts with selection, search, pagination, import, and export.
+- **Multiple upstream profiles**: SQLite-backed Base URLs, API keys, User-Agents, proxies, and timeouts with selection, search, pagination, import, and export; the active profile stays read-only while running, other profiles remain editable, and activating another profile automatically stops and restarts the proxy.
 - **Cross-platform delivery**: GUI and CLI builds with Linux deb/rpm/AppImage, Windows installer/portable, and macOS shell installers.
 
 ![OpenAI Reasoning Guard GUI](docs/images/gui-main-window-en.png)
@@ -39,7 +39,8 @@ openai-reasoning-guard-cli profile add \
   --name "Primary" \
   --base-url https://api.openai.com/v1 \
   --api-key sk-example \
-  --retry-after-override-sec 30
+  --retry-after-override-sec 30 \
+  --map-upstream-errors-to-502
 
 openai-reasoning-guard-cli --proxy-host 127.0.0.1 --proxy-port 8010
 ```
@@ -55,7 +56,7 @@ Point Codex or another client at `http://127.0.0.1:8010/v1`. A non-empty profile
 2. The Guard forwards the request and inspects the JSON or SSE response structure.
 3. Responses API reads `usage.output_tokens_details.reasoning_tokens`; Chat Completions reads `usage.completion_tokens_details.reasoning_tokens`.
 4. A `reasoning_equals` match, incomplete stream, first-token timeout, or explicit capacity error discards the current upstream result and retries within the shared budget.
-5. Only a response that passes inspection reaches the client. After exhaustion, the Guard returns a local Guard error or faithfully forwards the final real upstream status, headers, and body.
+5. Only a response that passes inspection reaches the client. After exhaustion, the Guard returns a local Guard error or forwards the final real upstream error. Optional status mapping changes only a final upstream `4xx/5xx` status line to `502`; the body and permitted response headers remain intact.
 
 `reasoning_tokens` is the reasoning-token count returned by OpenAI in `usage` metadata. It is not the visible answer's character length, and this project does not recalculate it with its own tokenizer. For example:
 
@@ -72,9 +73,9 @@ Point Codex or another client at `http://127.0.0.1:8010/v1`. A non-empty profile
 
 Observed values `516`, `1034`, and `1552` follow `518*n - 2` and frequently coincide with abnormal or clearly under-reasoned responses, so they form the default Guard set. The rule is fully configurable, and streaming or non-streaming interception can be disabled independently.
 
-Strict streaming mode buffers the complete SSE response and writes it only after terminal events, usage, and content structure are validated. This allows a late usage match to discard the whole response and retry, instead of exposing half an answer. With `stream_action=disconnect`, responses are still fully discarded while retry budget remains; pass-through scanning is only used after exhaustion, disconnecting on a later match.
+Strict streaming mode buffers the complete SSE response and writes it only after terminal events, usage, and content structure are validated. This allows a late usage match to discard the whole response and retry, instead of exposing half an answer. With `stream_action=disconnect`, responses are still fully discarded while retry budget remains; pass-through scanning is only used after exhaustion, disconnecting on a later match. `stream_action=retryable_sse` also buffers the complete response, but encodes a final retryable failure for a streaming Responses request as a standard `response.failed` SSE event. Its message carries the upstream profile's `retry_after_override_sec`, allowing Codex clients that ignore HTTP 502 `Retry-After` to display and honor the delay.
 
-The project does not change the model, modify prompts, or translate model protocols. It only supplies an observable and configurable quality gate in the request path.
+Except for the explicitly enabled `retryable_sse` compatibility mode, the project does not change the model, modify prompts, or translate model protocols. It only supplies an observable and configurable quality gate in the request path.
 
 References:
 
@@ -144,7 +145,7 @@ Use `--config /path/config.json` or `NET_TUNNEL_CONFIG=/path/config.json` to cho
 | `intercept_streaming` | `true` | `false` | Actually intercept SSE; disabled mode still records observations. |
 | `intercept_non_streaming` | `true` | `false` | Actually intercept non-streaming JSON. |
 | `non_stream_status_code` | `502` | `503` | Local status after Guard retries are exhausted. |
-| `stream_action` | `strict_502` | `"disconnect"` | Strict full-stream buffering or post-exhaustion pass-through scanning. |
+| `stream_action` | `strict_502` | `"retryable_sse"` | `strict_502` returns the final HTTP error; `disconnect` scans while passing through after exhaustion; `retryable_sse` returns a delay-bearing `response.failed` SSE for streaming Responses requests. |
 
 ### Upstream Profile Fields
 
@@ -160,6 +161,7 @@ Use `--config /path/config.json` or `NET_TUNNEL_CONFIG=/path/config.json` to cho
 | `upstream_timeout_sec` | `1800` | `600` | Total timeout for one upstream attempt, range `1..86400`; returns `504`. |
 | `first_token_timeout_sec` | `30` | `10` or `0` | Wait for the first non-empty streaming body byte; `0` disables, range `0..3600`. |
 | `retry_after_override_sec` | empty string | `"30"` | Add or replace `Retry-After` only for a final real upstream `429/502/503`; empty passes the upstream header through, range `1..86400` seconds. Intermediate retries are not sent, and locally generated `502` responses never get this header. |
+| `map_upstream_errors_to_502` | `false` | `true` | After internal retries, map a final real upstream `400..599` status to client-facing `502`; preserve the body and permitted response headers. |
 
 API keys are stored as plaintext in the current user's SQLite database, not in a system keychain. Lists, logs, status endpoints, and normal exports never expose a complete key. Only explicit `--show-secret` or `--include-secrets` operations reveal one.
 

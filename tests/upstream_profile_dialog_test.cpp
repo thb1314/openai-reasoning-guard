@@ -32,7 +32,7 @@ class UpstreamProfileDialogTest : public QObject {
 
 private slots:
     void paginatesAndSelectsCurrentProfile();
-    void locksActiveProfileWhileProxyRuns();
+    void keepsActiveProfileReadOnlyAndEditsIdleProfileWhileProxyRuns();
     void editorUsesDefaultsAndProtectsApiKey();
     void editingNormalizesApiKeyWhitespace();
     void addsWithoutSelectingWhileSelectionIsLocked();
@@ -136,7 +136,7 @@ void UpstreamProfileDialogTest::paginatesAndSelectsCurrentProfile()
     QCOMPARE(spy.count(), 1);
 }
 
-void UpstreamProfileDialogTest::locksActiveProfileWhileProxyRuns()
+void UpstreamProfileDialogTest::keepsActiveProfileReadOnlyAndEditsIdleProfileWhileProxyRuns()
 {
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
@@ -166,9 +166,18 @@ void UpstreamProfileDialogTest::locksActiveProfileWhileProxyRuns()
     QVERIFY(!remove->isEnabled());
     QVERIFY(!select->isEnabled());
 
-    dialog.setRuntimeState(false, QString());
-    QCOMPARE(viewEdit->text(), QString::fromUtf8("编辑"));
-    QVERIFY(remove->isEnabled());
+    bool activeReadOnly = false;
+    QTimer::singleShot(0, [&activeReadOnly]() {
+        QDialog *editor = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+        if (!editor) return;
+        QSpinBox *retryAfter =
+            editor->findChild<QSpinBox *>("profileRetryAfterOverrideSpin");
+        activeReadOnly = retryAfter && retryAfter->isReadOnly();
+        editor->reject();
+    });
+    QVERIFY(QMetaObject::invokeMethod(&dialog, "viewOrEditSelectedProfile",
+                                      Qt::DirectConnection));
+    QVERIFY(activeReadOnly);
 
     for (int row = 0; row < table->rowCount(); ++row) {
         if (table->item(row, 0)->data(Qt::UserRole).toString() == idle.id) {
@@ -176,7 +185,38 @@ void UpstreamProfileDialogTest::locksActiveProfileWhileProxyRuns()
             break;
         }
     }
+    QCOMPARE(viewEdit->text(), QString::fromUtf8("编辑"));
+    QVERIFY(remove->isEnabled());
     QVERIFY(select->isEnabled());
+
+    bool idleSubmitted = false;
+    QTimer::singleShot(0, [&idleSubmitted]() {
+        QDialog *editor = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+        if (!editor) return;
+        QSpinBox *retryAfter =
+            editor->findChild<QSpinBox *>("profileRetryAfterOverrideSpin");
+        QDialogButtonBox *buttons =
+            editor->findChild<QDialogButtonBox *>("profileEditorButtons");
+        if (!retryAfter || !buttons || retryAfter->isReadOnly()) {
+            editor->reject();
+            return;
+        }
+        retryAfter->setValue(45);
+        idleSubmitted = true;
+        buttons->button(QDialogButtonBox::Save)->click();
+    });
+    QVERIFY(QMetaObject::invokeMethod(&dialog, "viewOrEditSelectedProfile",
+                                      Qt::DirectConnection));
+    QVERIFY(idleSubmitted);
+    UpstreamProfile updatedIdle;
+    QVERIFY2(store.profileById(idle.id, &updatedIdle, &error), qPrintable(error));
+    QCOMPARE(updatedIdle.retryAfterOverrideSec, QString("45"));
+
+    QSignalSpy activation(&dialog, SIGNAL(profileActivationRequested(QString)));
+    select->click();
+    QCOMPARE(activation.count(), 1);
+    QCOMPARE(activation.at(0).at(0).toString(), idle.id);
+    QCOMPARE(store.selectedProfileId(&error), active.id);
 }
 
 void UpstreamProfileDialogTest::editorUsesDefaultsAndProtectsApiKey()
@@ -228,10 +268,13 @@ void UpstreamProfileDialogTest::editorUsesDefaultsAndProtectsApiKey()
         QSpinBox *upstreamTimeout = editor->findChild<QSpinBox *>("profileUpstreamTimeoutSpin");
         QSpinBox *firstTokenTimeout = editor->findChild<QSpinBox *>("profileFirstTokenTimeoutSpin");
         QSpinBox *retryAfterOverride = editor->findChild<QSpinBox *>("profileRetryAfterOverrideSpin");
-        defaultsPassed = userAgent && upstreamTimeout && firstTokenTimeout && retryAfterOverride &&
+        QCheckBox *mapErrors =
+            editor->findChild<QCheckBox *>("profileMapUpstreamErrorsTo502Check");
+        defaultsPassed = userAgent && upstreamTimeout && firstTokenTimeout &&
+            retryAfterOverride && mapErrors &&
             userAgent->text() == "curl/8.7.1" &&
             upstreamTimeout->value() == 1800 && firstTokenTimeout->value() == 30 &&
-            retryAfterOverride->value() == 0;
+            retryAfterOverride->value() == 0 && !mapErrors->isChecked();
         editor->reject();
     });
     QVERIFY(QMetaObject::invokeMethod(&dialog, "addProfile", Qt::DirectConnection));
@@ -263,13 +306,17 @@ void UpstreamProfileDialogTest::editingNormalizesApiKeyWhitespace()
         if (!editor) return;
         QLineEdit *key = editor->findChild<QLineEdit *>("profileApiKeyEdit");
         QSpinBox *retryAfterOverride = editor->findChild<QSpinBox *>("profileRetryAfterOverrideSpin");
+        QCheckBox *mapErrors =
+            editor->findChild<QCheckBox *>("profileMapUpstreamErrorsTo502Check");
         QDialogButtonBox *buttons = editor->findChild<QDialogButtonBox *>("profileEditorButtons");
-        if (!key || !retryAfterOverride || !buttons || key->text() != "original-key") {
+        if (!key || !retryAfterOverride || !mapErrors || !buttons ||
+            key->text() != "original-key") {
             editor->reject();
             return;
         }
         key->setText(paddedApiKey);
         retryAfterOverride->setValue(30);
+        mapErrors->setChecked(true);
         submitted = true;
         buttons->button(QDialogButtonBox::Save)->click();
     });
@@ -280,6 +327,7 @@ void UpstreamProfileDialogTest::editingNormalizesApiKeyWhitespace()
     QVERIFY2(store.profileById(profile.id, &fetched, &error), qPrintable(error));
     QCOMPARE(fetched.apiKey, normalizedApiKey);
     QCOMPARE(fetched.retryAfterOverrideSec, QString("30"));
+    QCOMPARE(fetched.mapUpstreamErrorsTo502, true);
 }
 
 void UpstreamProfileDialogTest::addsWithoutSelectingWhileSelectionIsLocked()

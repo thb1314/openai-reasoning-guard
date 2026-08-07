@@ -341,6 +341,7 @@ int main(int argc, char **argv)
     settings.firstTokenTimeoutSec = parser.isSet(firstTokenTimeoutOpt)
         ? firstTokenTimeoutOverride : upstreamDefaults.firstTokenTimeoutSec;
     settings.retryAfterOverrideSec = upstreamDefaults.retryAfterOverrideSec;
+    settings.mapUpstreamErrorsTo502 = upstreamDefaults.mapUpstreamErrorsTo502;
     settings.bufferTimeoutSec = optionInt(parser, bufferTimeoutOpt, config.bufferTimeoutSec);
     settings.requestBodyLimitBytes = optionInt64(parser, requestBodyLimitOpt, config.requestBodyLimitBytes);
     settings.responseBufferLimitBytes = optionInt64(parser, responseBufferLimitOpt, config.responseBufferLimitBytes);

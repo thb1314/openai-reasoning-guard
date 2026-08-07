@@ -28,6 +28,7 @@ public slots:
 
 signals:
     void selectedProfileChanged(const QString &profileId);
+    void profileActivationRequested(const QString &profileId);
 
 protected:
     void uiScaleChanged() override;

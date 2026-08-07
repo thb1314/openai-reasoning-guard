@@ -174,6 +174,7 @@ private:
     QCheckBox *interceptNonStreamingCheck_;
     QCheckBox *retryCapacityCheck_;
     QCheckBox *forwardUserAgentCheck_;
+    QCheckBox *mapUpstreamErrorsTo502Check_;
     QPushButton *startProxyButton_;
     QPushButton *stopProxyButton_;
     QPushButton *copyProxyButton_;

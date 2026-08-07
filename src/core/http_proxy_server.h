@@ -28,6 +28,7 @@ struct ProxySettings {
     int upstreamTimeoutSec;
     int firstTokenTimeoutSec;
     QString retryAfterOverrideSec;
+    bool mapUpstreamErrorsTo502;
     int bufferTimeoutSec;
     qint64 requestBodyLimitBytes;
     qint64 responseBufferLimitBytes;

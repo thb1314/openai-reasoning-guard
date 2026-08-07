@@ -177,6 +177,11 @@ public:
         responseHeaderSequences_ = responseHeaderSequences;
     }
 
+    void setResponseStatusSequences(const QList<int> &responseStatusSequences)
+    {
+        responseStatusSequences_ = responseStatusSequences;
+    }
+
     QMap<QByteArray, QByteArray> requestHeaders(int attemptIndex) const
     {
         return attemptIndex >= 0 && attemptIndex < receivedHeaders_.size()
@@ -295,9 +300,34 @@ private slots:
                         const int sequenceIndex = qMin(requestCount_ - 1, streamFirstChunkDelaySequencesMs_.size() - 1);
                         firstChunkDelayMs = streamFirstChunkDelaySequencesMs_.at(sequenceIndex);
                     }
+                    int statusCode = 200;
+                    if (!responseStatusSequences_.isEmpty()) {
+                        const int sequenceIndex = qMin(
+                            requestCount_ - 1, responseStatusSequences_.size() - 1);
+                        statusCode = responseStatusSequences_.at(sequenceIndex);
+                    }
+                    QByteArray reason = "OK";
+                    if (statusCode == 429) {
+                        reason = "Too Many Requests";
+                    } else if (statusCode == 502) {
+                        reason = "Bad Gateway";
+                    } else if (statusCode == 503) {
+                        reason = "Service Unavailable";
+                    }
                     QByteArray response;
-                    response += "HTTP/1.1 200 OK\r\n";
+                    response += "HTTP/1.1 " + QByteArray::number(statusCode) + " " + reason + "\r\n";
                     response += "Content-Type: text/event-stream\r\n";
+                    if (!responseHeaderSequences_.isEmpty()) {
+                        const int sequenceIndex = qMin(
+                            requestCount_ - 1, responseHeaderSequences_.size() - 1);
+                        const QMap<QByteArray, QByteArray> responseHeaders =
+                            responseHeaderSequences_.at(sequenceIndex);
+                        for (QMap<QByteArray, QByteArray>::const_iterator it =
+                                 responseHeaders.constBegin();
+                             it != responseHeaders.constEnd(); ++it) {
+                            response += it.key() + ": " + it.value() + "\r\n";
+                        }
+                    }
                     response += "Connection: close\r\n\r\n";
                     socket->write(response);
                     socket->flush();
@@ -558,6 +588,59 @@ private slots:
         QVERIFY(response.contains("Retry-After: 60"));
     }
 
+    void upstreamErrorMappingMapsFinal429AndKeepsRetryAfterOverride()
+    {
+        TestUpstream upstream;
+        QVERIFY(upstream.startJsonResponses(QList<QByteArray>() << "{\"error\":\"busy\"}",
+                                             QList<int>() << 429));
+        upstream.setResponseHeaderSequences(QList<QMap<QByteArray, QByteArray> >()
+                                             << responseHeadersWithRetryAfter("60"));
+
+        HttpProxyServer proxy;
+        ProxySettings settings = baseSettings(reserveFreePort(), upstream.port());
+        settings.retryAfterOverrideSec = "30";
+        settings.mapUpstreamErrorsTo502 = true;
+        QString error;
+        QVERIFY2(proxy.start(settings, &error), qPrintable(error));
+
+        const QByteArray response = sendRequest(settings.listenPort, postRequest("{}"), 2500);
+        QVERIFY2(response.contains("502 Bad Gateway"), response.constData());
+        QVERIFY(response.contains("Retry-After: 30"));
+        QVERIFY(!response.contains("Retry-After: 60"));
+        QVERIFY(response.contains("{\"error\":\"busy\"}"));
+
+        const QJsonObject runtime = runtimeOf(&proxy);
+        QCOMPARE(runtime.value("status_code_counts").toObject().value("502").toInt(), 1);
+        QCOMPARE(runtime.value("status_code_counts").toObject().value("429").toInt(), 0);
+        QCOMPARE(runtime.value("last_failure").toObject().value("status_code").toInt(), 502);
+        QCOMPARE(runtime.value("last_failure").toObject().value("error_type").toString(),
+                 QString("upstream_http_error"));
+    }
+
+    void upstreamErrorMappingMapsOther4xxAnd5xxStatuses()
+    {
+        const QList<int> upstreamStatuses = QList<int>() << 404 << 503;
+        for (int i = 0; i < upstreamStatuses.size(); ++i) {
+            TestUpstream upstream;
+            const QByteArray body = QByteArray("{\"upstream_status\":") +
+                QByteArray::number(upstreamStatuses.at(i)) + "}";
+            QVERIFY(upstream.startJsonResponses(QList<QByteArray>() << body,
+                                                 QList<int>() << upstreamStatuses.at(i)));
+
+            HttpProxyServer proxy;
+            ProxySettings settings = baseSettings(reserveFreePort(), upstream.port());
+            settings.mapUpstreamErrorsTo502 = true;
+            QString error;
+            QVERIFY2(proxy.start(settings, &error), qPrintable(error));
+
+            const QByteArray response = sendRequest(
+                settings.listenPort, postRequest("{}"), 2500);
+            QVERIFY2(response.contains("502 Bad Gateway"), response.constData());
+            QVERIFY(response.contains(body));
+            QVERIFY(!response.contains("Retry-After:"));
+        }
+    }
+
     void retryAfterOverrideReplacesHeaderOnFinalCapacityError()
     {
         const QByteArray body = "{\"error\":\"Selected model is at capacity. Please try a different model.\"}";
@@ -573,11 +656,12 @@ private slots:
         ProxySettings settings = baseSettings(reserveFreePort(), upstream.port());
         settings.guardRetryAttempts = 1;
         settings.retryAfterOverrideSec = "30";
+        settings.mapUpstreamErrorsTo502 = true;
         QString error;
         QVERIFY2(proxy.start(settings, &error), qPrintable(error));
 
         const QByteArray response = sendRequest(settings.listenPort, postRequest("{}"), 2500);
-        QVERIFY(response.contains("503 Service Unavailable"));
+        QVERIFY(response.contains("502 Bad Gateway"));
         QVERIFY(response.contains("Retry-After: 30"));
         QVERIFY(!response.contains("Retry-After: 60"));
         QCOMPARE(upstream.requestCount(), 2);
@@ -611,6 +695,7 @@ private slots:
         HttpProxyServer proxy;
         ProxySettings settings = baseSettings(reserveFreePort(), upstream.port());
         settings.retryAfterOverrideSec = "30";
+        settings.mapUpstreamErrorsTo502 = true;
         QString error;
         QVERIFY2(proxy.start(settings, &error), qPrintable(error));
 
@@ -618,6 +703,32 @@ private slots:
         QVERIFY(response.contains("200 OK"));
         QVERIFY(response.contains("Retry-After: 60"));
         QVERIFY(!response.contains("Retry-After: 30"));
+    }
+
+    void upstreamErrorMappingAppliesToStreamingResponseHead()
+    {
+        QList<QByteArray> chunks;
+        chunks << "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"output_tokens_details\":{\"reasoning_tokens\":10}}}}\n\n";
+        TestUpstream upstream;
+        QVERIFY(upstream.start(TestUpstream::StreamingSse, QByteArray(), chunks));
+        upstream.setResponseStatusSequences(QList<int>() << 429);
+        upstream.setResponseHeaderSequences(QList<QMap<QByteArray, QByteArray> >()
+                                             << responseHeadersWithRetryAfter("60"));
+
+        HttpProxyServer proxy;
+        ProxySettings settings = baseSettings(reserveFreePort(), upstream.port());
+        settings.retryAfterOverrideSec = "30";
+        settings.mapUpstreamErrorsTo502 = true;
+        QString error;
+        QVERIFY2(proxy.start(settings, &error), qPrintable(error));
+
+        const QByteArray response = sendRequest(
+            settings.listenPort, postRequest("{\"stream\":true}"), 2500);
+        QVERIFY2(response.contains("502 Bad Gateway"), response.constData());
+        QVERIFY(response.contains("Retry-After: 30"));
+        QVERIFY(response.contains("response.completed"));
+        const QJsonObject runtime = runtimeOf(&proxy);
+        QCOMPARE(runtime.value("last_failure").toObject().value("status_code").toInt(), 502);
     }
 
     void retryAfterOverrideDoesNotApplyToLocalGuardError()
@@ -629,6 +740,7 @@ private slots:
         HttpProxyServer proxy;
         ProxySettings settings = baseSettings(reserveFreePort(), upstream.port());
         settings.retryAfterOverrideSec = "30";
+        settings.mapUpstreamErrorsTo502 = true;
         settings.retryUpstreamCapacityErrors = false;
         QString error;
         QVERIFY2(proxy.start(settings, &error), qPrintable(error));
@@ -1585,6 +1697,96 @@ private slots:
         const QJsonObject object = QJsonDocument::fromJson(file.readAll()).object();
         QVERIFY(!object.contains("upstream_proxy"));
         QVERIFY(!object.contains("upstream_https_proxy"));
+    }
+
+    void retryableSseSignalsLocalGuardFailureWithConfiguredDelay()
+    {
+        QList<QByteArray> chunks;
+        chunks << "data: {\"type\":\"response.output_text.delta\",\"delta\":\"discard me\"}\n\n";
+        chunks << "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"output_tokens_details\":{\"reasoning_tokens\":516}}}}\n\n";
+        TestUpstream upstream;
+        QVERIFY(upstream.start(TestUpstream::StreamingSse, QByteArray(), chunks));
+
+        HttpProxyServer proxy;
+        ProxySettings settings = baseSettings(reserveFreePort(), upstream.port());
+        settings.streamAction = "retryable_sse";
+        settings.retryAfterOverrideSec = "60";
+        settings.guardRetryAttempts = 0;
+        QString error;
+        QVERIFY2(proxy.start(settings, &error), qPrintable(error));
+
+        const QByteArray response = sendRequest(
+            settings.listenPort, postRequest("{\"stream\":true}"), 3000);
+        QVERIFY2(response.contains("200 OK"), response.constData());
+        QVERIFY(response.contains("Content-Type: text/event-stream"));
+        QVERIFY(response.contains("Retry-After: 60"));
+        QVERIFY(response.contains("event: response.failed"));
+        QVERIFY(response.contains("\"code\":\"rate_limit_exceeded\""));
+        QVERIFY(response.contains("Please try again in 60 seconds."));
+        QVERIFY(!response.contains("discard me"));
+
+        const QJsonObject runtime = runtimeOf(&proxy);
+        QCOMPARE(runtime.value("last_failure").toObject().value("status_code").toInt(), 502);
+        QCOMPARE(runtime.value("last_failure").toObject().value("error_type").toString(),
+                 QString("reasoning_guard_triggered"));
+    }
+
+    void retryableSseTranslatesUpstreamFailureForStreamingResponsesRequest()
+    {
+        TestUpstream upstream;
+        QVERIFY(upstream.startJsonResponses(
+            QList<QByteArray>() << "{\"error\":\"busy\"}",
+            QList<int>() << 503));
+
+        HttpProxyServer proxy;
+        ProxySettings settings = baseSettings(reserveFreePort(), upstream.port());
+        settings.streamAction = "retryable_sse";
+        settings.retryAfterOverrideSec = "60";
+        settings.mapUpstreamErrorsTo502 = true;
+        QString error;
+        QVERIFY2(proxy.start(settings, &error), qPrintable(error));
+
+        const QByteArray response = sendRequest(
+            settings.listenPort, postRequest("{\"stream\":true}"), 3000);
+        QVERIFY2(response.contains("200 OK"), response.constData());
+        QVERIFY(response.contains("Content-Type: text/event-stream"));
+        QVERIFY(response.contains("Retry-After: 60"));
+        QVERIFY(response.contains("event: response.failed"));
+        QVERIFY(response.contains("\"code\":\"rate_limit_exceeded\""));
+        QVERIFY(response.contains("upstream returned HTTP 503"));
+
+        const QJsonObject runtime = runtimeOf(&proxy);
+        QCOMPARE(runtime.value("last_failure").toObject().value("status_code").toInt(), 502);
+        QCOMPARE(runtime.value("last_failure").toObject().value("error_type").toString(),
+                 QString("upstream_http_error"));
+    }
+
+    void retryableSseTranslates429WithoutStatusMapping()
+    {
+        TestUpstream upstream;
+        QVERIFY(upstream.startJsonResponses(
+            QList<QByteArray>() << "{\"error\":\"rate limited\"}",
+            QList<int>() << 429));
+
+        HttpProxyServer proxy;
+        ProxySettings settings = baseSettings(reserveFreePort(), upstream.port());
+        settings.streamAction = "retryable_sse";
+        settings.retryAfterOverrideSec = "45";
+        settings.mapUpstreamErrorsTo502 = false;
+        QString error;
+        QVERIFY2(proxy.start(settings, &error), qPrintable(error));
+
+        const QByteArray response = sendRequest(
+            settings.listenPort, postRequest("{\"stream\":true}"), 3000);
+        QVERIFY2(response.contains("200 OK"), response.constData());
+        QVERIFY(response.contains("Retry-After: 45"));
+        QVERIFY(response.contains("event: response.failed"));
+        QVERIFY(response.contains("upstream returned HTTP 429"));
+
+        const QJsonObject runtime = runtimeOf(&proxy);
+        QCOMPARE(runtime.value("last_failure").toObject().value("status_code").toInt(), 429);
+        QCOMPARE(runtime.value("last_failure").toObject().value("error_type").toString(),
+                 QString("upstream_http_error"));
     }
 
     void streamActionDisconnectDropsConnectionAfterPassThrough()

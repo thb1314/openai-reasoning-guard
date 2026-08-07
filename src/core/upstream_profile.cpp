@@ -24,7 +24,7 @@ namespace net_tunnel {
 
 namespace {
 
-const int kSchemaVersion = 2;
+const int kSchemaVersion = 3;
 const int kBusyTimeoutMs = 5000;
 const char kSelectedProfileKey[] = "selected_profile_id";
 const char kPendingLegacyMigrationKey[] = "legacy_upstream_migration_pending_v1";
@@ -243,8 +243,9 @@ UpstreamProfile profileFromQuery(const QSqlQuery &query)
     profile.upstreamTimeoutSec = query.value(7).toInt();
     profile.firstTokenTimeoutSec = query.value(8).toInt();
     profile.retryAfterOverrideSec = query.value(9).toString();
-    profile.createdAtUtc = parseDateTime(query.value(10));
-    profile.updatedAtUtc = parseDateTime(query.value(11));
+    profile.mapUpstreamErrorsTo502 = query.value(10).toInt() != 0;
+    profile.createdAtUtc = parseDateTime(query.value(11));
+    profile.updatedAtUtc = parseDateTime(query.value(12));
     return profile;
 }
 
@@ -252,7 +253,8 @@ QString profileColumns()
 {
     return "id, display_name, base_url, api_key, user_agent, forward_user_agent, "
            "upstream_proxy, upstream_timeout_sec, first_token_timeout_sec, "
-           "retry_after_override_sec, created_at_utc, updated_at_utc";
+           "retry_after_override_sec, map_upstream_errors_to_502, "
+           "created_at_utc, updated_at_utc";
 }
 
 bool bindAndInsert(QSqlDatabase database, const UpstreamProfile &profile, QString *error)
@@ -260,8 +262,9 @@ bool bindAndInsert(QSqlDatabase database, const UpstreamProfile &profile, QStrin
     QSqlQuery query(database);
     query.prepare("INSERT INTO upstream_profiles (id, display_name, display_name_key, base_url, api_key, "
                   "user_agent, forward_user_agent, upstream_proxy, upstream_timeout_sec, "
-                  "first_token_timeout_sec, retry_after_override_sec, created_at_utc, updated_at_utc) "
-                  "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                  "first_token_timeout_sec, retry_after_override_sec, map_upstream_errors_to_502, "
+                  "created_at_utc, updated_at_utc) "
+                  "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
     query.addBindValue(profile.id);
     query.addBindValue(profile.displayName);
     query.addBindValue(profileNameKey(profile.displayName));
@@ -273,6 +276,7 @@ bool bindAndInsert(QSqlDatabase database, const UpstreamProfile &profile, QStrin
     query.addBindValue(profile.upstreamTimeoutSec);
     query.addBindValue(profile.firstTokenTimeoutSec);
     query.addBindValue(profile.retryAfterOverrideSec);
+    query.addBindValue(profile.mapUpstreamErrorsTo502 ? 1 : 0);
     query.addBindValue(dateTimeText(profile.createdAtUtc));
     query.addBindValue(dateTimeText(profile.updatedAtUtc));
     if (!query.exec()) {
@@ -286,7 +290,8 @@ bool bindAndUpdate(QSqlDatabase database, const UpstreamProfile &profile, QStrin
     QSqlQuery query(database);
     query.prepare("UPDATE upstream_profiles SET display_name=?, display_name_key=?, base_url=?, api_key=?, user_agent=?, "
                   "forward_user_agent=?, upstream_proxy=?, upstream_timeout_sec=?, "
-                  "first_token_timeout_sec=?, retry_after_override_sec=?, updated_at_utc=? WHERE id=?");
+                  "first_token_timeout_sec=?, retry_after_override_sec=?, "
+                  "map_upstream_errors_to_502=?, updated_at_utc=? WHERE id=?");
     query.addBindValue(profile.displayName);
     query.addBindValue(profileNameKey(profile.displayName));
     query.addBindValue(profile.baseUrl);
@@ -297,6 +302,7 @@ bool bindAndUpdate(QSqlDatabase database, const UpstreamProfile &profile, QStrin
     query.addBindValue(profile.upstreamTimeoutSec);
     query.addBindValue(profile.firstTokenTimeoutSec);
     query.addBindValue(profile.retryAfterOverrideSec);
+    query.addBindValue(profile.mapUpstreamErrorsTo502 ? 1 : 0);
     query.addBindValue(dateTimeText(profile.updatedAtUtc));
     query.addBindValue(profile.id);
     if (!query.exec()) {
@@ -461,6 +467,7 @@ QJsonObject profileToJson(const UpstreamProfile &profile, bool includeSecrets)
     object.insert("upstream_timeout_sec", profile.upstreamTimeoutSec);
     object.insert("first_token_timeout_sec", profile.firstTokenTimeoutSec);
     object.insert("retry_after_override_sec", profile.retryAfterOverrideSec);
+    object.insert("map_upstream_errors_to_502", profile.mapUpstreamErrorsTo502);
     object.insert("created_at_utc", dateTimeText(profile.createdAtUtc));
     object.insert("updated_at_utc", dateTimeText(profile.updatedAtUtc));
     object.insert("api_key_configured", !profile.apiKey.isEmpty());
@@ -675,7 +682,8 @@ UpstreamProfile::UpstreamProfile()
       forwardUserAgent(false),
       upstreamTimeoutSec(1800),
       firstTokenTimeoutSec(30),
-      retryAfterOverrideSec("")
+      retryAfterOverrideSec(""),
+      mapUpstreamErrorsTo502(false)
 {
 }
 
@@ -911,6 +919,8 @@ bool UpstreamProfileStore::open(QString *error)
                     "upstream_timeout_sec INTEGER NOT NULL DEFAULT 1800 CHECK(upstream_timeout_sec BETWEEN 1 AND 86400), "
                     "first_token_timeout_sec INTEGER NOT NULL DEFAULT 30 CHECK(first_token_timeout_sec BETWEEN 0 AND 3600), "
                     "retry_after_override_sec TEXT NOT NULL DEFAULT '', "
+                    "map_upstream_errors_to_502 INTEGER NOT NULL DEFAULT 0 "
+                    "CHECK(map_upstream_errors_to_502 IN (0,1)), "
                     "created_at_utc TEXT NOT NULL, updated_at_utc TEXT NOT NULL)", error) &&
             execSql(d->database,
                     "CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL)", error) &&
@@ -932,6 +942,24 @@ bool UpstreamProfileStore::open(QString *error)
         const bool migrated =
             execSql(d->database,
                     "ALTER TABLE upstream_profiles ADD COLUMN retry_after_override_sec TEXT NOT NULL DEFAULT ''",
+                    error) &&
+            execSql(d->database, "PRAGMA user_version=2", error);
+        if (!migrated || !commit(d->database, error)) {
+            rollback(d->database);
+            d->closeAndRemove();
+            return false;
+        }
+        version = 2;
+    }
+    if (version == 2) {
+        if (!beginImmediate(d->database, error)) {
+            d->closeAndRemove();
+            return false;
+        }
+        const bool migrated =
+            execSql(d->database,
+                    "ALTER TABLE upstream_profiles ADD COLUMN map_upstream_errors_to_502 "
+                    "INTEGER NOT NULL DEFAULT 0 CHECK(map_upstream_errors_to_502 IN (0,1))",
                     error) &&
             execSql(d->database, QString("PRAGMA user_version=%1").arg(kSchemaVersion), error);
         if (!migrated || !commit(d->database, error)) {
@@ -1376,6 +1404,13 @@ bool parseImportedProfile(const QJsonValue &value, ImportedProfile *result, QStr
             return fail(error, "forward_user_agent must be a boolean");
         }
         parsed.profile.forwardUserAgent = object.value("forward_user_agent").toBool();
+    }
+    if (object.contains("map_upstream_errors_to_502")) {
+        if (!object.value("map_upstream_errors_to_502").isBool()) {
+            return fail(error, "map_upstream_errors_to_502 must be a boolean");
+        }
+        parsed.profile.mapUpstreamErrorsTo502 =
+            object.value("map_upstream_errors_to_502").toBool();
     }
     const QDateTime now = QDateTime::currentDateTimeUtc();
     parsed.profile.createdAtUtc = now;

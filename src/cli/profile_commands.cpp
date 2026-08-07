@@ -35,6 +35,7 @@ int profileTokenIndex(const QStringList &arguments)
     const QSet<QString> flagOptions = QSet<QString>()
         << "h" << "help" << "v" << "version" << "json" << "api-proxy"
         << "forward-user-agent" << "no-forward-user-agent"
+        << "map-upstream-errors-to-502" << "no-map-upstream-errors-to-502"
         << "retry-upstream-capacity-errors" << "no-retry-upstream-capacity-errors"
         << "no-intercept-streaming" << "no-intercept-non-streaming"
         << "status-json" << "query-status" << "keep-config"
@@ -137,6 +138,7 @@ QJsonObject profileJson(const UpstreamProfile &profile, bool includeSecret)
     object.insert("upstream_timeout_sec", profile.upstreamTimeoutSec);
     object.insert("first_token_timeout_sec", profile.firstTokenTimeoutSec);
     object.insert("retry_after_override_sec", profile.retryAfterOverrideSec);
+    object.insert("map_upstream_errors_to_502", profile.mapUpstreamErrorsTo502);
     object.insert("created_at_utc", isoDate(profile.createdAtUtc));
     object.insert("updated_at_utc", isoDate(profile.updatedAtUtc));
     return object;
@@ -162,6 +164,8 @@ void writeProfile(const UpstreamProfile &profile, bool includeSecret)
            << "First-token timeout: " << profile.firstTokenTimeoutSec << " s\n"
            << "Retry-After override: "
            << (profile.retryAfterOverrideSec.isEmpty() ? "disabled (pass through upstream)" : profile.retryAfterOverrideSec + " s") << "\n"
+           << "Map upstream 4xx/5xx to 502: "
+           << (profile.mapUpstreamErrorsTo502 ? "true" : "false") << "\n"
            << "Created: " << isoDate(profile.createdAtUtc) << "\n"
            << "Updated: " << isoDate(profile.updatedAtUtc) << "\n";
     stream.flush();
@@ -298,6 +302,8 @@ int runProfileCommand(const QStringList &arguments)
     QCommandLineOption upstreamTimeoutOption("upstream-timeout", "Upstream timeout in seconds", "seconds");
     QCommandLineOption firstTokenTimeoutOption("first-token-timeout", "First-token timeout in seconds; 0 disables it", "seconds");
     QCommandLineOption retryAfterOverrideOption("retry-after-override-sec", "Override Retry-After for final upstream HTTP 429/502/503; empty disables", "seconds");
+    QCommandLineOption mapUpstreamErrorsOption("map-upstream-errors-to-502", "Map final upstream HTTP 4xx/5xx status codes to 502");
+    QCommandLineOption noMapUpstreamErrorsOption("no-map-upstream-errors-to-502", "Preserve final upstream HTTP 4xx/5xx status codes");
     QCommandLineOption showSecretOption("show-secret", "Show the complete API key (show only)");
     QCommandLineOption inputOption("input", "JSON file to import", "path");
     QCommandLineOption outputOption("output", "JSON file to export", "path");
@@ -309,7 +315,8 @@ int runProfileCommand(const QStringList &arguments)
         << pageOption << pageSizeOption << searchOption << sortOption << orderOption
         << nameOption << baseUrlOption << apiKeyOption << userAgentOption
         << forwardUserAgentOption << noForwardUserAgentOption << proxyOption
-        << upstreamTimeoutOption << firstTokenTimeoutOption << retryAfterOverrideOption << showSecretOption
+        << upstreamTimeoutOption << firstTokenTimeoutOption << retryAfterOverrideOption
+        << mapUpstreamErrorsOption << noMapUpstreamErrorsOption << showSecretOption
         << inputOption << outputOption << conflictOption << includeSecretsOption);
     parser.addPositionalArgument("command", "list, show, add, update, delete, select, import, or export");
     parser.addPositionalArgument("profile", "Profile display name or UUID for show, update, delete, and select", "[profile]");
@@ -351,7 +358,8 @@ int runProfileCommand(const QStringList &arguments)
     } else if (command == "add" || command == "update") {
         allowedOptionNames << "name" << "base-url" << "api-key" << "user-agent"
                            << "forward-user-agent" << "no-forward-user-agent" << "proxy"
-                           << "upstream-timeout" << "first-token-timeout" << "retry-after-override-sec";
+                           << "upstream-timeout" << "first-token-timeout" << "retry-after-override-sec"
+                           << "map-upstream-errors-to-502" << "no-map-upstream-errors-to-502";
     } else if (command == "import") {
         allowedOptionNames << "input" << "conflict";
     } else if (command == "export") {
@@ -362,7 +370,8 @@ int runProfileCommand(const QStringList &arguments)
         << &pageOption << &pageSizeOption << &searchOption << &sortOption << &orderOption
         << &nameOption << &baseUrlOption << &apiKeyOption << &userAgentOption
         << &forwardUserAgentOption << &noForwardUserAgentOption << &proxyOption
-        << &upstreamTimeoutOption << &firstTokenTimeoutOption << &retryAfterOverrideOption << &showSecretOption
+        << &upstreamTimeoutOption << &firstTokenTimeoutOption << &retryAfterOverrideOption
+        << &mapUpstreamErrorsOption << &noMapUpstreamErrorsOption << &showSecretOption
         << &inputOption << &outputOption << &conflictOption << &includeSecretsOption;
     for (int i = 0; i < profileSpecificOptions.size(); ++i) {
         const QCommandLineOption &option = *profileSpecificOptions.at(i);
@@ -471,6 +480,9 @@ int runProfileCommand(const QStringList &arguments)
         if (parser.isSet(forwardUserAgentOption) && parser.isSet(noForwardUserAgentOption)) {
             return fail("--forward-user-agent and --no-forward-user-agent are mutually exclusive");
         }
+        if (parser.isSet(mapUpstreamErrorsOption) && parser.isSet(noMapUpstreamErrorsOption)) {
+            return fail("--map-upstream-errors-to-502 and --no-map-upstream-errors-to-502 are mutually exclusive");
+        }
         UpstreamProfile profile;
         profile.displayName = parser.value(nameOption);
         profile.baseUrl = parser.value(baseUrlOption);
@@ -481,6 +493,7 @@ int runProfileCommand(const QStringList &arguments)
         profile.upstreamTimeoutSec = 1800;
         profile.firstTokenTimeoutSec = 30;
         profile.retryAfterOverrideSec.clear();
+        profile.mapUpstreamErrorsTo502 = parser.isSet(mapUpstreamErrorsOption);
         if (parser.isSet(upstreamTimeoutOption)
             && !parseIntegerOption(parser, upstreamTimeoutOption, 1, &profile.upstreamTimeoutSec, &error)) {
             return fail(error);
@@ -511,11 +524,15 @@ int runProfileCommand(const QStringList &arguments)
         if (parser.isSet(forwardUserAgentOption) && parser.isSet(noForwardUserAgentOption)) {
             return fail("--forward-user-agent and --no-forward-user-agent are mutually exclusive");
         }
+        if (parser.isSet(mapUpstreamErrorsOption) && parser.isSet(noMapUpstreamErrorsOption)) {
+            return fail("--map-upstream-errors-to-502 and --no-map-upstream-errors-to-502 are mutually exclusive");
+        }
         const bool hasChanges = parser.isSet(nameOption) || parser.isSet(baseUrlOption)
             || parser.isSet(apiKeyOption) || parser.isSet(userAgentOption)
             || parser.isSet(forwardUserAgentOption) || parser.isSet(noForwardUserAgentOption)
             || parser.isSet(proxyOption) || parser.isSet(upstreamTimeoutOption)
-            || parser.isSet(firstTokenTimeoutOption) || parser.isSet(retryAfterOverrideOption);
+            || parser.isSet(firstTokenTimeoutOption) || parser.isSet(retryAfterOverrideOption)
+            || parser.isSet(mapUpstreamErrorsOption) || parser.isSet(noMapUpstreamErrorsOption);
         if (!hasChanges) {
             return fail("update requires at least one profile field option");
         }
@@ -554,6 +571,11 @@ int runProfileCommand(const QStringList &arguments)
         if (parser.isSet(retryAfterOverrideOption)
             && !parseRetryAfterOverrideOption(parser, retryAfterOverrideOption, &profile.retryAfterOverrideSec, &error)) {
             return fail(error);
+        }
+        if (parser.isSet(mapUpstreamErrorsOption)) {
+            profile.mapUpstreamErrorsTo502 = true;
+        } else if (parser.isSet(noMapUpstreamErrorsOption)) {
+            profile.mapUpstreamErrorsTo502 = false;
         }
         if (!store.updateProfile(profile, &error)) {
             return fail(error);

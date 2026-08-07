@@ -424,6 +424,7 @@ MainWindow::MainWindow(QWidget *parent)
       interceptNonStreamingCheck_(0),
       retryCapacityCheck_(0),
       forwardUserAgentCheck_(0),
+      mapUpstreamErrorsTo502Check_(0),
       startProxyButton_(0),
       stopProxyButton_(0),
       copyProxyButton_(0),
@@ -733,6 +734,7 @@ QWidget *MainWindow::buildProxyPanel()
     streamActionCombo_ = new QComboBox(box);
     streamActionCombo_->addItem("strict_502", "strict_502");
     streamActionCombo_->addItem("disconnect", "disconnect");
+    streamActionCombo_->addItem("retryable_sse", "retryable_sse");
     interceptRuleModeCombo_ = new QComboBox(box);
     interceptRuleModeCombo_->addItem("", "reasoning_tokens");
     interceptRuleModeCombo_->addItem("", "final_answer_only_high_xhigh");
@@ -754,6 +756,10 @@ QWidget *MainWindow::buildProxyPanel()
     forwardUserAgentCheck_->setObjectName("forwardUserAgentCheck");
     forwardUserAgentCheck_->setProperty("i18n_key", "forward_user_agent");
     forwardUserAgentCheck_->setEnabled(false);
+    mapUpstreamErrorsTo502Check_ = new QCheckBox(box);
+    mapUpstreamErrorsTo502Check_->setObjectName("mapUpstreamErrorsTo502Check");
+    mapUpstreamErrorsTo502Check_->setProperty("i18n_key", "map_upstream_errors_to_502");
+    mapUpstreamErrorsTo502Check_->setEnabled(false);
 
     grid->addWidget(makeFormLabel("upstream_profile", box), 0, 0);
     grid->addWidget(upstreamProfileCombo_, 0, 1, 1, 3);
@@ -799,6 +805,7 @@ QWidget *MainWindow::buildProxyPanel()
     grid->addWidget(interceptNonStreamingCheck_, 13, 2, 1, 2);
     grid->addWidget(retryCapacityCheck_, 14, 0, 1, 2);
     grid->addWidget(forwardUserAgentCheck_, 14, 2, 1, 2);
+    grid->addWidget(mapUpstreamErrorsTo502Check_, 15, 0, 1, 4);
     grid->setColumnStretch(1, 2);
     grid->setColumnStretch(3, 3);
     contentLayout->addLayout(grid);
@@ -857,6 +864,7 @@ QWidget *MainWindow::buildProxyPanel()
     connect(interceptNonStreamingCheck_, SIGNAL(stateChanged(int)), this, SLOT(updateProxyStats()));
     connect(retryCapacityCheck_, SIGNAL(stateChanged(int)), this, SLOT(updateProxyStats()));
     connect(forwardUserAgentCheck_, SIGNAL(stateChanged(int)), this, SLOT(updateProxyStats()));
+    connect(mapUpstreamErrorsTo502Check_, SIGNAL(stateChanged(int)), this, SLOT(updateProxyStats()));
     return box;
 }
 
@@ -1736,6 +1744,7 @@ QString MainWindow::textFor(const QString &key) const
     if (key == "intercept_non_streaming") return en ? "Intercept Non-streaming" : "拦截非流式";
     if (key == "retry_upstream_capacity_errors") return en ? "Retry upstream capacity errors" : "上游 capacity 错误内重试";
     if (key == "forward_user_agent") return en ? "Forward Client User-Agent" : "转发客户端 User-Agent";
+    if (key == "map_upstream_errors_to_502") return en ? "Map upstream 4xx/5xx to 502" : "将上游 4xx/5xx 映射为 502";
     if (key == "start_proxy") return en ? "Start Proxy" : "启动代理";
     if (key == "stop_proxy") return en ? "Stop Proxy" : "停止代理";
     if (key == "copy_proxy_url") return en ? "Copy Proxy URL" : "复制代理地址";
@@ -1764,6 +1773,7 @@ QString MainWindow::textFor(const QString &key) const
     if (key == "info_buffer_limits") return en ? "Buffer Limits" : "缓冲上限";
     if (key == "info_first_token_timeout") return en ? "First Token Timeout" : "首 Token 超时";
     if (key == "info_retry_after_override") return en ? "Retry-After Override" : "Retry-After 覆盖";
+    if (key == "info_map_upstream_errors") return en ? "Upstream Error Mapping" : "上游错误映射";
     if (key == "info_policy") return en ? "Guard Policy" : "拦截策略";
     if (key == "info_rule_mode") return en ? "Rule Mode" : "规则模式";
     if (key == "info_guard_paths") return en ? "Guard Paths" : "拦截路径";
@@ -2188,6 +2198,8 @@ void MainWindow::applyCurrentUpstreamProfile()
         ? 0
         : currentUpstreamProfile_.retryAfterOverrideSec.toInt());
     forwardUserAgentCheck_->setChecked(currentUpstreamProfile_.forwardUserAgent);
+    mapUpstreamErrorsTo502Check_->setChecked(
+        currentUpstreamProfile_.mapUpstreamErrorsTo502);
     refreshInfoPanel();
 }
 
@@ -2209,6 +2221,7 @@ void MainWindow::clearCurrentUpstreamProfile()
     retryAfterOverrideSpin_->setSpecialValueText("-");
     retryAfterOverrideSpin_->setValue(retryAfterOverrideSpin_->minimum());
     forwardUserAgentCheck_->setChecked(false);
+    mapUpstreamErrorsTo502Check_->setChecked(false);
     refreshInfoPanel();
 }
 
@@ -2295,6 +2308,27 @@ void MainWindow::openUpstreamProfiles()
         : QString();
     UpstreamProfileDialog dialog(upstreamProfileStore_, currentLanguage(), activeProfileId,
                                  proxy_.isRunning(), this);
+    connect(&dialog, &UpstreamProfileDialog::profileActivationRequested,
+            this, [this, &dialog](const QString &profileId) {
+        const int index = upstreamProfileCombo_->findData(profileId);
+        if (index < 0) {
+            refreshUpstreamProfiles();
+            dialog.refresh();
+            return;
+        }
+        upstreamProfileCombo_->setCurrentIndex(index);
+        dialog.refresh();
+    });
+    connect(&proxy_, &HttpProxyServer::stopped, &dialog, [&dialog]() {
+        dialog.setRuntimeState(false, QString());
+    });
+    connect(&proxy_, &HttpProxyServer::started, &dialog,
+            [this, &dialog](const QString &) {
+        dialog.setRuntimeState(true, hasCurrentUpstreamProfile_
+                                     ? currentUpstreamProfile_.id
+                                     : QString());
+        dialog.refresh();
+    });
     dialog.exec();
     refreshUpstreamProfiles();
 }
@@ -2361,6 +2395,8 @@ ProxySettings MainWindow::collectProxySettings() const
         settings.upstreamTimeoutSec = currentUpstreamProfile_.upstreamTimeoutSec;
         settings.firstTokenTimeoutSec = currentUpstreamProfile_.firstTokenTimeoutSec;
         settings.retryAfterOverrideSec = currentUpstreamProfile_.retryAfterOverrideSec;
+        settings.mapUpstreamErrorsTo502 =
+            currentUpstreamProfile_.mapUpstreamErrorsTo502;
     }
     settings.upstreamHttpProxy.clear();
     settings.upstreamHttpsProxy.clear();
@@ -2394,7 +2430,9 @@ QString MainWindow::selectedStreamAction() const
     const QString value = streamActionCombo_
         ? streamActionCombo_->currentData().toString().trimmed()
         : QString();
-    return value == "disconnect" ? value : QString("strict_502");
+    return value == "disconnect" || value == "retryable_sse"
+        ? value
+        : QString("strict_502");
 }
 
 void MainWindow::startProxy()
@@ -2638,6 +2676,8 @@ void MainWindow::refreshInfoPanel()
     lines << infoLine("info_retry_after_override", settings.retryAfterOverrideSec.isEmpty()
         ? textFor("info_disabled")
         : settings.retryAfterOverrideSec + (currentLanguage() == "en" ? QString(" sec") : QString(" 秒")));
+    lines << infoLine("info_map_upstream_errors",
+        settings.mapUpstreamErrorsTo502 ? textFor("info_enabled") : textFor("info_disabled"));
     lines << infoSection("info_policy");
     lines << infoIndentedLine("info_rule_mode", settings.interceptRuleMode);
     lines << infoIndentedLine("info_stream_action", settings.streamAction);

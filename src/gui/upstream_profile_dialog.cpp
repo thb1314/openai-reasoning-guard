@@ -117,6 +117,7 @@ public:
           upstreamTimeoutSpin_(0),
           firstTokenTimeoutSpin_(0),
           retryAfterOverrideSpin_(0),
+          mapUpstreamErrorsTo502Check_(0),
           revealButton_(0),
           copyButton_(0),
           buttons_(0)
@@ -139,6 +140,7 @@ public:
         result.retryAfterOverrideSec = retryAfterOverrideSpin_->value() == 0
             ? QString()
             : QString::number(retryAfterOverrideSpin_->value());
+        result.mapUpstreamErrorsTo502 = mapUpstreamErrorsTo502Check_->isChecked();
         return result;
     }
 
@@ -245,6 +247,12 @@ private:
         retryAfterOverrideSpin_->setSuffix(trText(" 秒", " sec"));
         retryAfterOverrideSpin_->setSpecialValueText(trText("禁用（透传上游）", "Disabled (pass through upstream)"));
 
+        mapUpstreamErrorsTo502Check_ = new QCheckBox(
+            trText("将上游 4xx/5xx 映射为 502",
+                   "Map upstream 4xx/5xx to 502"),
+            this);
+        mapUpstreamErrorsTo502Check_->setObjectName("profileMapUpstreamErrorsTo502Check");
+
         form->addRow(requiredLabel(trText("显示名称", "Display name")), nameEdit_);
         form->addRow(requiredLabel("Base URL"), baseUrlEdit_);
         form->addRow("API Key", apiKeyRow);
@@ -254,6 +262,7 @@ private:
         form->addRow(trText("上游超时", "Upstream timeout"), upstreamTimeoutSpin_);
         form->addRow(trText("首 Token 超时", "First-token timeout"), firstTokenTimeoutSpin_);
         form->addRow(trText("Retry-After 覆盖", "Retry-After override"), retryAfterOverrideSpin_);
+        form->addRow("", mapUpstreamErrorsTo502Check_);
         root->addLayout(form);
 
         buttons_ = new QDialogButtonBox(this);
@@ -315,6 +324,8 @@ private:
         retryAfterOverrideSpin_->setReadOnly(!editable_);
         retryAfterOverrideSpin_->setButtonSymbols(editable_ ? QAbstractSpinBox::UpDownArrows
                                                              : QAbstractSpinBox::NoButtons);
+        mapUpstreamErrorsTo502Check_->setChecked(profile.mapUpstreamErrorsTo502);
+        mapUpstreamErrorsTo502Check_->setEnabled(editable_);
     }
 
     void attemptAccept()
@@ -390,6 +401,7 @@ private:
     QSpinBox *upstreamTimeoutSpin_;
     QSpinBox *firstTokenTimeoutSpin_;
     QSpinBox *retryAfterOverrideSpin_;
+    QCheckBox *mapUpstreamErrorsTo502Check_;
     QToolButton *revealButton_;
     QToolButton *copyButton_;
     QDialogButtonBox *buttons_;
@@ -974,7 +986,11 @@ void UpstreamProfileDialog::selectCurrentProfile()
                              language_ == "en" ? "OK" : "确定");
         return;
     }
-    if (proxyRunning_ || store_->isSelectionLocked()) {
+    if (proxyRunning_) {
+        emit profileActivationRequested(id);
+        return;
+    }
+    if (store_->isSelectionLocked()) {
         showGuardInformation(this, textFor("title"), textFor("selection_locked_tip"),
                              language_ == "en" ? "OK" : "确定");
         return;
@@ -1123,8 +1139,9 @@ void UpstreamProfileDialog::updateActionStates()
     const QString id = currentRowProfileId();
     const bool hasSelection = !id.isEmpty();
     const bool locked = hasSelection && profileIsLocked(id);
-    const bool selectionLocked = proxyRunning_ || (store_ && store_->isSelectionLocked());
-    const bool deletingWouldChangeSelection = id == selectedProfileId_ && selectionLocked;
+    const bool selectionLocked = store_ && store_->isSelectionLocked();
+    const bool deletingWouldChangeSelection = id == selectedProfileId_ &&
+        (proxyRunning_ || selectionLocked);
 
     addButton_->setEnabled(storeAvailable);
     importButton_->setEnabled(storeAvailable);
@@ -1137,8 +1154,9 @@ void UpstreamProfileDialog::updateActionStates()
                                      : (deletingWouldChangeSelection
                                             ? textFor("selection_locked_tip")
                                             : textFor("remove")));
-    selectButton_->setEnabled(hasSelection && id != selectedProfileId_ && !selectionLocked);
-    selectButton_->setToolTip(selectionLocked ? textFor("selection_locked_tip") : textFor("select"));
+    const bool canActivate = proxyRunning_ || !selectionLocked;
+    selectButton_->setEnabled(hasSelection && id != selectedProfileId_ && canActivate);
+    selectButton_->setToolTip(canActivate ? textFor("select") : textFor("selection_locked_tip"));
     firstPageButton_->setEnabled(totalPages_ > 0 && currentPage_ > 1);
     previousPageButton_->setEnabled(totalPages_ > 0 && currentPage_ > 1);
     nextPageButton_->setEnabled(totalPages_ > 0 && currentPage_ < totalPages_);
